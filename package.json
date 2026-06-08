@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "A lightweight desktop GUI for Hermes Agent.",
+  "author": "Bailey",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -10,19 +11,24 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1",
-    "desktop": "npm run build && electron ."
+    "desktop": "npm run build && electron .",
+    "smoke:ui": "node scripts/verify-ui-contract.mjs",
+    "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
+    "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "pack": "npm run build && node scripts/package-mac.mjs --app-only",
+    "dist:mac": "npm run build && node scripts/package-mac.mjs"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^5.1.1",
-    "electron": "^39.2.7",
     "lucide-react": "^0.561.0",
     "react": "^19.2.1",
-    "react-dom": "^19.2.1",
-    "typescript": "^5.9.3",
-    "vite": "^7.2.7"
+    "react-dom": "^19.2.1"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3"
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^39.2.7",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7"
   }
 }
