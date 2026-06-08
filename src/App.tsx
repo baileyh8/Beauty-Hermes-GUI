@@ -90,6 +90,7 @@ type ChatMessageKind =
 interface SidebarItem {
   active?: boolean;
   color?: string;
+  id?: string;
   meta: string;
   title: string;
 }
@@ -164,8 +165,10 @@ interface HermesRuntime {
   pendingApproval: null | PendingApproval;
   pendingClarify: null | PendingClarify;
   recentSessions: SidebarItem[];
+  selectedStoredSessionId: null | string;
   socketState: GatewayConnectionState;
   statusText: string;
+  selectSession: (sessionId: string) => Promise<void>;
   submitPrompt: (text: string) => Promise<void>;
   respondApproval: (choice: 'once' | 'session' | 'always' | 'deny') => Promise<void>;
   respondClarify: (answer: string) => Promise<void>;
@@ -190,13 +193,29 @@ interface SessionInfoResponse {
 }
 
 interface SessionListResponse {
+  data?: SessionInfoResponse[];
   sessions?: SessionInfoResponse[];
 }
 
 interface SessionMessageResponse {
   content?: unknown;
+  finish_reason?: null | string;
+  id?: string;
+  reasoning?: null | string;
+  reasoning_content?: null | string;
+  session_id?: string;
+  timestamp?: number;
+  tool_name?: string;
+  tool_call_id?: null | string;
+  tool_calls?: unknown;
   role?: 'assistant' | 'system' | 'tool' | 'user';
   text?: unknown;
+}
+
+interface SessionMessagesResponse {
+  data?: SessionMessageResponse[];
+  messages?: SessionMessageResponse[];
+  session_id: string;
 }
 
 interface SessionRuntimeInfo {
@@ -338,8 +357,45 @@ function payloadRecord(event: GatewayEvent): Record<string, unknown> {
     : {};
 }
 
-function coerceGatewayText(payload: Record<string, unknown>) {
-  return textFromUnknown(payload.text ?? payload.rendered ?? payload.result_text ?? payload.summary).trim();
+function coerceGatewayText(payload: Record<string, unknown>, options: { trim?: boolean } = {}) {
+  const text = textFromUnknown(payload.text ?? payload.rendered ?? payload.result_text ?? payload.summary);
+  return options.trim === false ? text : text.trim();
+}
+
+function cleanDisplayText(text: string) {
+  return text.replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{4,}/g, '\n\n\n');
+}
+
+function normalizeStatusText(text: string) {
+  const value = cleanDisplayText(text).trim();
+
+  if (/^[_◉○\s-]*analy[sz]ing/i.test(value)) {
+    return '正在分析请求';
+  }
+
+  return value;
+}
+
+function compactDuplicateReasoning(previous: string, incoming: string, replace = false) {
+  const next = cleanDisplayText(incoming);
+
+  if (replace || !previous) {
+    return next.trim();
+  }
+
+  if (!next) {
+    return previous;
+  }
+
+  if (previous.includes(next)) {
+    return previous;
+  }
+
+  if (next.includes(previous)) {
+    return next.trim();
+  }
+
+  return `${previous}${next}`;
 }
 
 function eventSessionId(event: GatewayEvent, fallback: null | string) {
@@ -392,43 +448,55 @@ function formatSessionTime(value?: number) {
   return `${Math.round(hours / 24)} 天`;
 }
 
+function sessionsFromResponse(response: SessionListResponse) {
+  return response.sessions ?? response.data ?? [];
+}
+
+function sessionMessagesFromResponse(response: SessionMessagesResponse) {
+  return response.messages ?? response.data ?? [];
+}
+
 function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
-  const sessions = response.sessions ?? [];
+  const sessions = sessionsFromResponse(response);
 
   return sessions.slice(0, 5).map((session, index) => ({
-    active: index === 0,
     color: index === 0 ? 'blue' : 'gray',
+    id: session.id,
     meta: `${session.message_count ?? 0} 条消息 · ${formatSessionTime(session.last_active)}`,
     title: session.title || session.preview || '未命名会话',
   }));
 }
 
-function messagesFromStoredTranscript(messages: SessionMessageResponse[]): ChatMessageModel[] {
+function messagesFromStoredTranscript(messages: SessionMessageResponse[], sessionId?: null | string): ChatMessageModel[] {
   return messages
     .map((message, index): ChatMessageModel | null => {
       const text = textFromUnknown(message.text ?? message.content).trim();
+      const id = message.id || `${message.role || 'message'}-${index}`;
 
       if (!text) {
         return null;
       }
 
       if (message.role === 'user') {
-        return { id: `stored-user-${index}`, kind: 'user', text };
+        return { id: `stored-user-${id}`, kind: 'user', sessionId, text };
       }
 
       if (message.role === 'tool') {
         return {
-          id: `stored-tool-${index}`,
+          id: `stored-tool-${id}`,
           kind: 'tool',
+          sessionId,
           status: 'done',
           text,
           title: '历史工具输出',
+          toolName: message.tool_name,
         };
       }
 
       return {
-        id: `stored-assistant-${index}`,
+        id: `stored-assistant-${id}`,
         kind: message.role === 'system' ? 'status' : 'assistant',
+        sessionId,
         status: 'done',
         text,
       };
@@ -442,6 +510,7 @@ function useHermesRuntime(): HermesRuntime {
   const [socketState, setSocketState] = useState<GatewayConnectionState>('idle');
   const [messages, setMessages] = useState<ChatMessageModel[]>(demoMessages);
   const [activeSessionId, setActiveSessionId] = useState<null | string>(null);
+  const [selectedStoredSessionId, setSelectedStoredSessionId] = useState<null | string>(null);
   const [model, setModel] = useState('deepseek-v4-flash');
   const [cwd, setCwd] = useState('Hermes Desktop优化');
   const [contextPercent, setContextPercent] = useState(42);
@@ -455,6 +524,7 @@ function useHermesRuntime(): HermesRuntime {
 
   const clientRef = useRef<JsonRpcGatewayClient | null>(null);
   const activeSessionIdRef = useRef<null | string>(null);
+  const selectedStoredSessionIdRef = useRef<null | string>(null);
   const assistantMessageIdRef = useRef<null | string>(null);
   const reasoningMessageIdRef = useRef<null | string>(null);
   const statusMessageIdRef = useRef<null | string>(null);
@@ -464,6 +534,10 @@ function useHermesRuntime(): HermesRuntime {
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    selectedStoredSessionIdRef.current = selectedStoredSessionId;
+  }, [selectedStoredSessionId]);
 
   useEffect(() => {
     pendingApprovalRef.current = pendingApproval;
@@ -490,53 +564,90 @@ function useHermesRuntime(): HermesRuntime {
     }
   }, []);
 
-  const upsertMessage = useCallback((message: ChatMessageModel) => {
+  const upsertMessage = useCallback((message: ChatMessageModel, options: { beforeId?: null | string; moveToEnd?: boolean } = {}) => {
     setMessages((current) => {
       const index = current.findIndex((item) => item.id === message.id);
+      const merged = index === -1 ? message : { ...current[index], ...message };
 
-      if (index === -1) {
-        return [...current, message];
+      if (index >= 0 && !options.beforeId && !options.moveToEnd) {
+        const next = [...current];
+        next[index] = merged;
+        return next;
       }
 
-      const next = [...current];
-      next[index] = { ...next[index], ...message };
+      const next = index === -1 ? [...current] : current.filter((_, itemIndex) => itemIndex !== index);
+      let insertAt = next.length;
+
+      if (options.beforeId && options.beforeId !== message.id) {
+        const beforeIndex = next.findIndex((item) => item.id === options.beforeId);
+        if (beforeIndex >= 0) {
+          insertAt = beforeIndex;
+        }
+      }
+
+      next.splice(insertAt, 0, merged);
       return next;
     });
   }, []);
 
-  const appendToMessage = useCallback((id: string, delta: string, fallback: ChatMessageModel) => {
+  const appendToMessage = useCallback((id: string, delta: string, fallback: ChatMessageModel, options: { beforeId?: null | string; moveToEnd?: boolean } = {}) => {
     setMessages((current) => {
       const index = current.findIndex((item) => item.id === id);
 
       if (index === -1) {
-        return [...current, { ...fallback, text: delta }];
+        const next = [...current];
+        let insertAt = next.length;
+        if (options.beforeId && options.beforeId !== id) {
+          const beforeIndex = next.findIndex((item) => item.id === options.beforeId);
+          if (beforeIndex >= 0) {
+            insertAt = beforeIndex;
+          }
+        }
+        next.splice(insertAt, 0, { ...fallback, text: delta });
+        return next;
       }
 
-      const next = [...current];
-      next[index] = {
-        ...next[index],
-        text: `${next[index].text}${delta}`,
+      const merged = {
+        ...current[index],
+        text: `${current[index].text}${delta}`,
       };
+
+      if (!options.beforeId && !options.moveToEnd) {
+        const next = [...current];
+        next[index] = merged;
+        return next;
+      }
+
+      const next = current.filter((_, itemIndex) => itemIndex !== index);
+      let insertAt = next.length;
+      if (options.beforeId && options.beforeId !== id) {
+        const beforeIndex = next.findIndex((item) => item.id === options.beforeId);
+        if (beforeIndex >= 0) {
+          insertAt = beforeIndex;
+        }
+      }
+      next.splice(insertAt, 0, merged);
       return next;
     });
   }, []);
 
   const updateStatusMessage = useCallback(
     (text: string, status: ChatMessageModel['status'] = 'running') => {
-      if (!text.trim()) {
+      const displayText = normalizeStatusText(text);
+      if (!displayText) {
         return;
       }
 
       const id = statusMessageIdRef.current || makeId('status');
       statusMessageIdRef.current = id;
-      setStatusText(text);
+      setStatusText(displayText);
       upsertMessage({
         id,
         kind: 'status',
         status,
-        text,
+        text: displayText,
         title: '状态更新',
-      });
+      }, { beforeId: assistantMessageIdRef.current });
     },
     [upsertMessage],
   );
@@ -545,6 +656,10 @@ function useHermesRuntime(): HermesRuntime {
     (event: GatewayEvent) => {
       const payload = payloadRecord(event);
       const sessionId = eventSessionId(event, activeSessionIdRef.current);
+
+      if (event.session_id && activeSessionIdRef.current && event.session_id !== activeSessionIdRef.current) {
+        return;
+      }
 
       if (sessionId && !activeSessionIdRef.current) {
         setActiveSessionId(sessionId);
@@ -570,6 +685,7 @@ function useHermesRuntime(): HermesRuntime {
           const id = makeId('assistant');
           assistantMessageIdRef.current = id;
           reasoningMessageIdRef.current = null;
+          statusMessageIdRef.current = null;
           setStatusText('Agent 正在生成回复');
           upsertMessage({
             id,
@@ -577,12 +693,13 @@ function useHermesRuntime(): HermesRuntime {
             sessionId,
             status: 'running',
             text: '',
-          });
+            title: '最终结果',
+          }, { moveToEnd: true });
           break;
         }
         case 'message.delta': {
-          const delta = coerceGatewayText(payload);
-          if (!delta) {
+          const delta = coerceGatewayText(payload, { trim: false });
+          if (delta.length === 0) {
             break;
           }
 
@@ -594,7 +711,8 @@ function useHermesRuntime(): HermesRuntime {
             sessionId,
             status: 'running',
             text: '',
-          });
+            title: '最终结果',
+          }, { moveToEnd: true });
           break;
         }
         case 'message.complete': {
@@ -613,6 +731,7 @@ function useHermesRuntime(): HermesRuntime {
                       sessionId,
                       status: payload.status === 'error' ? 'error' : 'done',
                       text: finalText,
+                      title: '最终结果',
                     },
                   ]
                 : current;
@@ -623,7 +742,10 @@ function useHermesRuntime(): HermesRuntime {
               ...next[index],
               status: payload.status === 'error' ? 'error' : 'done',
               text: finalText || next[index].text,
+              title: '最终结果',
             };
+            const [finalMessage] = next.splice(index, 1);
+            next.push(finalMessage);
             return next;
           });
 
@@ -639,20 +761,53 @@ function useHermesRuntime(): HermesRuntime {
         }
         case 'reasoning.delta':
         case 'reasoning.available': {
-          const delta = coerceGatewayText(payload);
-          if (!delta) {
+          const delta = coerceGatewayText(payload, { trim: event.type === 'reasoning.available' });
+          if (delta.length === 0) {
             break;
           }
 
           const id = reasoningMessageIdRef.current || makeId('reasoning');
           reasoningMessageIdRef.current = id;
-          appendToMessage(id, delta, {
-            id,
-            kind: 'reasoning',
-            sessionId,
-            status: event.type === 'reasoning.available' ? 'done' : 'running',
-            text: '',
-            title: '推理过程',
+
+          if (event.type === 'reasoning.available') {
+            setMessages((current) => {
+              const index = current.findIndex((item) => item.id === id);
+              const existing = index >= 0 ? current[index] : null;
+              const message: ChatMessageModel = {
+                ...(existing ?? {}),
+                id,
+                kind: 'reasoning',
+                sessionId,
+                status: 'done',
+                text: compactDuplicateReasoning(existing?.text ?? '', delta, true),
+                title: '推理过程',
+              };
+              const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
+              const beforeId = assistantMessageIdRef.current;
+              const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+              next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
+              return next;
+            });
+            break;
+          }
+
+          setMessages((current) => {
+            const index = current.findIndex((item) => item.id === id);
+            const existing = index >= 0 ? current[index] : null;
+            const message: ChatMessageModel = {
+              ...(existing ?? {}),
+              id,
+              kind: 'reasoning',
+              sessionId,
+              status: 'running',
+              text: compactDuplicateReasoning(existing?.text ?? '', delta),
+              title: '推理过程',
+            };
+            const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
+            const beforeId = assistantMessageIdRef.current;
+            const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+            next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
+            return next;
           });
           break;
         }
@@ -699,7 +854,7 @@ function useHermesRuntime(): HermesRuntime {
             text,
             title: name,
             toolName: name,
-          });
+          }, { beforeId: assistantMessageIdRef.current });
 
           if (typeof payload.inline_diff === 'string' && payload.inline_diff.trim()) {
             setFiles((current) => [
@@ -725,7 +880,7 @@ function useHermesRuntime(): HermesRuntime {
             status: 'pending',
             text: description,
             title: '需要手动确认',
-          });
+          }, { beforeId: assistantMessageIdRef.current });
           break;
         }
         case 'clarify.request': {
@@ -747,7 +902,7 @@ function useHermesRuntime(): HermesRuntime {
             status: 'pending',
             text: question || 'Hermes 需要你补充信息。',
             title: '需要澄清',
-          });
+          }, { beforeId: assistantMessageIdRef.current });
           break;
         }
         case 'error': {
@@ -759,7 +914,7 @@ function useHermesRuntime(): HermesRuntime {
             status: 'error',
             text,
             title: 'Hermes 错误',
-          });
+          }, { beforeId: assistantMessageIdRef.current });
           setStatusText('出现错误');
           break;
         }
@@ -849,6 +1004,116 @@ function useHermesRuntime(): HermesRuntime {
     };
   }, [connectGateway]);
 
+  const selectSession = useCallback(
+    async (sessionId: string) => {
+      const storedSessionId = sessionId.trim();
+      if (!storedSessionId) {
+        return;
+      }
+
+      setSelectedStoredSessionId(storedSessionId);
+      selectedStoredSessionIdRef.current = storedSessionId;
+      setActiveSessionId(null);
+      activeSessionIdRef.current = null;
+      assistantMessageIdRef.current = null;
+      reasoningMessageIdRef.current = null;
+      statusMessageIdRef.current = null;
+      setStatusText('正在加载会话');
+
+      if (!window.hermesDesktop) {
+        setMessages([
+          {
+            id: makeId('browser-session'),
+            kind: 'status',
+            status: 'done',
+            text: '浏览器预览模式无法读取真实 Hermes 会话。',
+            title: '会话预览不可用',
+          },
+        ]);
+        return;
+      }
+
+      let paintedTranscript = false;
+
+      try {
+        const response = await window.hermesDesktop.api<SessionMessagesResponse>({
+          path: `/api/sessions/${encodeURIComponent(storedSessionId)}/messages`,
+          timeoutMs: 60000,
+        });
+        const transcript = messagesFromStoredTranscript(sessionMessagesFromResponse(response), storedSessionId);
+
+        if (transcript.length > 0) {
+          setMessages(transcript);
+          paintedTranscript = true;
+        } else {
+          setMessages([
+            {
+              id: makeId('empty-session'),
+              kind: 'status',
+              sessionId: storedSessionId,
+              status: 'done',
+              text: '这个会话暂时没有可显示的消息。',
+              title: '空会话',
+            },
+          ]);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setMessages([
+          {
+            id: makeId('session-load-error'),
+            kind: 'error',
+            sessionId: storedSessionId,
+            status: 'error',
+            text: message,
+            title: '会话读取失败',
+          },
+        ]);
+      }
+
+      const client = clientRef.current;
+      if (!client || client.connectionState !== 'open') {
+        setActiveSessionId(storedSessionId);
+        activeSessionIdRef.current = storedSessionId;
+        setStatusText('已打开历史会话');
+        return;
+      }
+
+      try {
+        const resumed = await client.request<SessionCreateResponse>(
+          'session.resume',
+          { cols: 96, session_id: storedSessionId },
+          60000,
+        );
+        const runtimeSessionId = resumed.session_id || storedSessionId;
+        setActiveSessionId(runtimeSessionId);
+        activeSessionIdRef.current = runtimeSessionId;
+        patchRuntimeInfo(resumed.info);
+
+        const resumedTranscript = messagesFromStoredTranscript(resumed.messages ?? [], runtimeSessionId);
+        if (!paintedTranscript && resumedTranscript.length > 0) {
+          setMessages(resumedTranscript);
+        }
+
+        setStatusText('就绪');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setActiveSessionId(storedSessionId);
+        activeSessionIdRef.current = storedSessionId;
+        setStatusText('历史会话已打开，运行时恢复失败');
+        upsertMessage({
+          id: makeId('session-resume-error'),
+          kind: 'error',
+          sessionId: storedSessionId,
+          status: 'error',
+          text: message,
+          title: '会话恢复失败',
+        });
+      }
+    },
+    [patchRuntimeInfo, upsertMessage],
+  );
+
   const submitPrompt = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -882,10 +1147,11 @@ function useHermesRuntime(): HermesRuntime {
           const created = await client.request<SessionCreateResponse>('session.create', { cols: 96 }, 60000);
           sessionId = created.session_id;
           setActiveSessionId(sessionId);
+          setSelectedStoredSessionId(created.stored_session_id || created.session_id);
           patchRuntimeInfo(created.info);
 
           if (created.messages?.length) {
-            const transcript = messagesFromStoredTranscript(created.messages);
+            const transcript = messagesFromStoredTranscript(created.messages, sessionId);
             if (transcript.length) {
               setMessages(transcript);
             }
@@ -998,6 +1264,8 @@ function useHermesRuntime(): HermesRuntime {
     pendingApproval,
     pendingClarify,
     recentSessions: recentSessionItems,
+    selectedStoredSessionId,
+    selectSession,
     respondApproval,
     respondClarify,
     socketState,
@@ -1042,12 +1310,18 @@ function App() {
   return (
     <div className="appShell" data-testid="app-shell">
       <Sidebar
+        activeSessionId={runtime.activeSessionId}
         activeSurface={surface}
         gatewayStatus={runtime.gatewayStatus}
         model={runtime.model}
         onSurfaceChange={setSurface}
         onOpenCommand={() => setCommandOpen(true)}
+        onSelectSession={(sessionId) => {
+          setSurface('chat');
+          void runtime.selectSession(sessionId);
+        }}
         recentItems={runtime.recentSessions}
+        selectedStoredSessionId={runtime.selectedStoredSessionId}
         statusText={runtime.connectionLabel}
       />
 
@@ -1168,20 +1442,26 @@ function App() {
 }
 
 function Sidebar({
+  activeSessionId,
   activeSurface,
   gatewayStatus,
   model,
   onSurfaceChange,
   onOpenCommand,
+  onSelectSession,
   recentItems,
+  selectedStoredSessionId,
   statusText,
 }: {
+  activeSessionId: null | string;
   activeSurface: Surface;
   gatewayStatus: GatewayStatus;
   model: string;
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
+  onSelectSession: (sessionId: string) => void;
   recentItems: SidebarItem[];
+  selectedStoredSessionId: null | string;
   statusText: string;
 }) {
   const utilityItems: Array<{ id: Surface; label: string; meta: string; icon: React.ReactNode }> = [
@@ -1222,9 +1502,22 @@ function Sidebar({
       </button>
 
       <nav className="sidebarScroll" aria-label="会话导航">
-        <SidebarSection title="置顶" items={pinnedSessions} />
+        <SidebarSection
+          title="置顶"
+          items={pinnedSessions}
+          onOpenChat={() => onSurfaceChange('chat')}
+          onSelectSession={onSelectSession}
+          selectedSessionId={selectedStoredSessionId || activeSessionId}
+        />
         <ProjectSection items={projects} onOpenProjects={() => onSurfaceChange('projects')} />
-        <SidebarSection title="最近" items={recentItems.length > 0 ? recentItems : recentSessions} muted />
+        <SidebarSection
+          title="最近"
+          items={recentItems.length > 0 ? recentItems : recentSessions}
+          muted
+          onOpenChat={() => onSurfaceChange('chat')}
+          onSelectSession={onSelectSession}
+          selectedSessionId={selectedStoredSessionId || activeSessionId}
+        />
 
         <section className="navSection">
           <h2>工作台</h2>
@@ -1280,16 +1573,33 @@ function SidebarSection({
   title,
   items,
   muted,
+  onOpenChat,
+  onSelectSession,
+  selectedSessionId,
 }: {
   title: string;
   muted?: boolean;
-  items: Array<{ title: string; meta: string; color?: string }>;
+  items: SidebarItem[];
+  onOpenChat: () => void;
+  onSelectSession: (sessionId: string) => void;
+  selectedSessionId: null | string;
 }) {
   return (
     <section className="navSection">
       <h2>{title}</h2>
       {items.map((item, index) => (
-        <SessionRow key={item.title} item={item} muted={muted} active={!muted && index === 0} />
+        <SessionRow
+          key={item.id || item.title}
+          item={item}
+          muted={muted}
+          active={item.id ? item.id === selectedSessionId : !muted && index === 0}
+          onSelect={() => {
+            onOpenChat();
+            if (item.id) {
+              onSelectSession(item.id);
+            }
+          }}
+        />
       ))}
     </section>
   );
@@ -1311,7 +1621,12 @@ function ProjectSection({
         </button>
       </div>
       {items.map((item) => (
-        <SessionRow key={item.title} item={{ ...item, color: item.active ? 'indigo' : 'gray' }} active={item.active} />
+        <SessionRow
+          key={item.title}
+          item={{ ...item, color: item.active ? 'indigo' : 'gray' }}
+          active={item.active}
+          onSelect={onOpenProjects}
+        />
       ))}
     </section>
   );
@@ -1321,18 +1636,22 @@ function SessionRow({
   item,
   active,
   muted,
+  onSelect,
 }: {
-  item: { title: string; meta: string; color?: string };
+  item: SidebarItem;
   active?: boolean;
   muted?: boolean;
+  onSelect: () => void;
 }) {
   return (
     <div className={active ? 'sessionRow active' : 'sessionRow'}>
-      <span className={`statusDot ${item.color ?? (muted ? 'gray' : 'blue')}`} />
-      <div className="sessionText">
-        <strong>{item.title}</strong>
-        <span>{item.meta}</span>
-      </div>
+      <button className="sessionMain" data-session-id={item.id} type="button" onClick={onSelect}>
+        <span className={`statusDot ${item.color ?? (muted ? 'gray' : 'blue')}`} />
+        <span className="sessionText">
+          <strong>{item.title}</strong>
+          <span>{item.meta}</span>
+        </span>
+      </button>
       <div className="rowActions" aria-label="会话操作">
         <button type="button" aria-label="归档" title="归档">
           <Archive size={14} />
@@ -1363,9 +1682,22 @@ function ChatSurface({
   onOpenApproval: () => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
 }) {
+  const messageStackRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const stack = messageStackRef.current;
+    if (!stack) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      stack.scrollTo({ top: stack.scrollHeight, behavior: 'smooth' });
+    });
+  }, [runtime.messages, runtime.statusText]);
+
   return (
     <section className="chatSurface" aria-label="会话">
-      <div className="messageStack">
+      <div className="messageStack" ref={messageStackRef}>
         {runtime.messages.map((message) => (
           <ChatMessage
             key={message.id}
@@ -1439,23 +1771,10 @@ function ChatMessage({
       <div className="miniAvatar agentMark">H</div>
       <div className="agentContent">
         {message.kind === 'assistant' ? (
-          <>
-            <p>{message.text || '正在生成...'}</p>
-            {message.checks && <CheckListCard items={message.checks} />}
-            {message.artifacts && (
-              <div className="artifactGrid">
-                {message.artifacts.map((artifact) => (
-                  <Artifact
-                    icon={artifact.kind === 'file' ? <File size={19} /> : artifact.kind === 'terminal' ? <TerminalSquare size={19} /> : <Eye size={19} />}
-                    key={`${artifact.title}-${artifact.meta}`}
-                    meta={artifact.meta}
-                    onClick={() => onOpenWorkbenchTab(artifact.tab)}
-                    title={artifact.title}
-                  />
-                ))}
-              </div>
-            )}
-          </>
+          <FinalAnswerMessage
+            message={message}
+            onOpenWorkbenchTab={onOpenWorkbenchTab}
+          />
         ) : (
           <MessageEventCard
             icon={icon}
@@ -1467,6 +1786,40 @@ function ChatMessage({
         )}
       </div>
     </article>
+  );
+}
+
+function FinalAnswerMessage({
+  message,
+  onOpenWorkbenchTab,
+}: {
+  message: ChatMessageModel;
+  onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
+}) {
+  return (
+    <div className={`finalAnswerCard ${message.status === 'running' ? 'streaming' : ''}`}>
+      <div className="finalAnswerHead">
+        <span>
+          {message.status === 'running' ? <CircleDot size={15} /> : <CheckCircle2 size={15} />}
+        </span>
+        <strong>{message.title || '最终结果'}</strong>
+      </div>
+      <div className="finalAnswerBody">{message.text || '正在生成...'}</div>
+      {message.checks && <CheckListCard items={message.checks} />}
+      {message.artifacts && (
+        <div className="artifactGrid">
+          {message.artifacts.map((artifact) => (
+            <Artifact
+              icon={artifact.kind === 'file' ? <File size={19} /> : artifact.kind === 'terminal' ? <TerminalSquare size={19} /> : <Eye size={19} />}
+              key={`${artifact.title}-${artifact.meta}`}
+              meta={artifact.meta}
+              onClick={() => onOpenWorkbenchTab(artifact.tab)}
+              title={artifact.title}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1506,15 +1859,19 @@ function MessageEventCard({
         <span>{icon}</span>
         <div>
           <strong>{message.title || cardTitle(message)}</strong>
-          {message.meta && <small>{message.meta}</small>}
+          {message.kind === 'reasoning' ? (
+            <small>{message.status === 'running' ? '正在更新，默认折叠' : '已折叠'}</small>
+          ) : (
+            message.meta && <small>{message.meta}</small>
+          )}
         </div>
       </div>
-      <p>{message.text}</p>
+      {message.kind !== 'reasoning' && <p>{message.text}</p>}
       {message.command && (
         <pre className="inlineCommand"><code>{message.command}</code></pre>
       )}
       {message.kind === 'reasoning' && (
-        <details className="reasoningDetails" open={message.status === 'running'}>
+        <details className="reasoningDetails">
           <summary>查看推理文本</summary>
           <p>{message.text}</p>
         </details>

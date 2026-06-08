@@ -27,6 +27,10 @@ const requiredText = [
   '粘贴图片',
   'URL...',
   '提示片段...',
+  'selectSession',
+  'session.resume',
+  'messageStackRef',
+  'finalAnswerCard',
 ];
 
 const requiredStyles = [
@@ -37,6 +41,9 @@ const requiredStyles = [
   '.approvalModal',
   '.composerWrap',
   '.floatingWorkbenchButton',
+  '.sessionMain',
+  '.finalAnswerCard',
+  '.finalAnswerBody',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));

@@ -3462,3 +3462,117 @@ kbd {
     padding-right: 10px;
   }
 }
+
+/* Interaction and transcript polish */
+.sessionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 0 5px 0 0;
+  overflow: hidden;
+}
+
+.sessionMain {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 11px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.sessionMain:focus-visible {
+  outline: 2px solid rgba(47, 103, 232, 0.24);
+  outline-offset: -2px;
+}
+
+.sessionRow.active .sessionMain {
+  color: #20242a;
+}
+
+.finalAnswerCard {
+  width: min(760px, 100%);
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.finalAnswerHead {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  margin-bottom: 7px;
+  color: #6f7782;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.finalAnswerHead span {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #1f5fd6;
+  background: #eef3ff;
+}
+
+.finalAnswerCard.streaming .finalAnswerHead span {
+  color: #64748b;
+  background: #f1f3f6;
+}
+
+.finalAnswerBody {
+  color: #20242a;
+  font-size: 15px;
+  line-height: 1.78;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.messageCard.reasoning {
+  width: min(720px, 100%);
+  padding: 11px 13px;
+  border: 1px solid #e4e8ef;
+  border-style: dashed;
+  border-radius: 16px;
+  background: rgba(250, 251, 252, 0.86);
+  box-shadow: none;
+}
+
+.messageCard.reasoning .messageCardHead {
+  margin-bottom: 3px;
+}
+
+.messageCard.reasoning .messageCardHead > span {
+  color: #3f6fe8;
+  background: #edf3ff;
+}
+
+.reasoningDetails {
+  margin-top: 5px;
+}
+
+.reasoningDetails summary {
+  width: fit-content;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 650;
+  list-style-position: outside;
+}
+
+.reasoningDetails p {
+  margin: 10px 0 2px;
+  color: #4b5565;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
