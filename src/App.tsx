@@ -112,6 +112,7 @@ interface ChatMessageModel {
   checks?: ChatCheckItem[];
   choices?: string[];
   command?: string;
+  details?: string;
   id: string;
   kind: ChatMessageKind;
   meta?: string;
@@ -120,6 +121,12 @@ interface ChatMessageModel {
   text: string;
   title?: string;
   toolName?: string;
+}
+
+interface ToolDisplayInfo {
+  details: string;
+  label: string;
+  summary: string;
 }
 
 interface GatewayToolItem {
@@ -358,7 +365,17 @@ function payloadRecord(event: GatewayEvent): Record<string, unknown> {
 }
 
 function coerceGatewayText(payload: Record<string, unknown>, options: { trim?: boolean } = {}) {
-  const text = textFromUnknown(payload.text ?? payload.rendered ?? payload.result_text ?? payload.summary);
+  const text = textFromUnknown(
+    payload.text
+      ?? payload.delta
+      ?? payload.rendered
+      ?? payload.result_text
+      ?? payload.summary
+      ?? payload.message
+      ?? payload.content
+      ?? payload.reasoning_content
+      ?? payload.reasoning,
+  );
   return options.trim === false ? text : text.trim();
 }
 
@@ -366,11 +383,20 @@ function cleanDisplayText(text: string) {
   return text.replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{4,}/g, '\n\n\n');
 }
 
+function compactLine(text: string, maxLength = 96) {
+  const line = cleanDisplayText(text).split('\n').map((item) => item.trim()).find(Boolean) || '';
+  return line.length > maxLength ? `${line.slice(0, maxLength - 1)}…` : line;
+}
+
+function truncateText(text: string, maxLength = 1800) {
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
 function normalizeStatusText(text: string) {
   const value = cleanDisplayText(text).trim();
 
-  if (/^[_◉○\s-]*analy[sz]ing/i.test(value)) {
-    return '正在分析请求';
+  if (/(analy[sz]ing|cogitating|synthesizing|pondering|musing)/i.test(value)) {
+    return '正在思考';
   }
 
   return value;
@@ -396,6 +422,127 @@ function compactDuplicateReasoning(previous: string, incoming: string, replace =
   }
 
   return `${previous}${next}`;
+}
+
+function maybeJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function commandFromUnknown(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  const record = maybeJsonRecord(value);
+  if (!record) {
+    return '';
+  }
+
+  return textFromUnknown(record.command ?? record.cmd ?? record.shell ?? record.args);
+}
+
+function toolDisplayFromContent(value: unknown, fallbackName = '工具调用'): ToolDisplayInfo {
+  const record = maybeJsonRecord(value);
+  const rawText = cleanDisplayText(textFromUnknown(value)).trim();
+
+  if (!record) {
+    const summary = compactLine(rawText || fallbackName);
+    return {
+      details: rawText,
+      label: fallbackName,
+      summary,
+    };
+  }
+
+  const command = commandFromUnknown(record.command ?? record.args ?? record.input);
+  const output = cleanDisplayText(textFromUnknown(record.output ?? record.stdout ?? record.stderr ?? record.result ?? record.message)).trim();
+  const error = cleanDisplayText(textFromUnknown(record.error)).trim();
+  const exitCode = record.exit_code ?? record.exitCode;
+  const detailParts = [
+    command ? `$ ${command}` : '',
+    output,
+    error && error !== 'null' ? error : '',
+    exitCode !== undefined && exitCode !== null ? `exit: ${String(exitCode)}` : '',
+  ].filter(Boolean);
+  const details = detailParts.join('\n\n') || rawText;
+  const summary = compactLine(command || output || error || rawText || fallbackName);
+
+  return {
+    details: truncateText(details, 4000),
+    label: command ? '运行命令' : fallbackName,
+    summary,
+  };
+}
+
+function toolDisplayFromPayload(payload: Record<string, unknown>, fallbackName = '工具调用'): ToolDisplayInfo {
+  const args = payload.args && typeof payload.args === 'object' ? (payload.args as Record<string, unknown>) : null;
+  const command = commandFromUnknown(payload.command ?? payload.args_text ?? args?.command ?? args?.cmd ?? args);
+  const output = cleanDisplayText(
+    textFromUnknown(payload.output ?? payload.stdout ?? payload.stderr ?? payload.result ?? payload.preview ?? payload.context),
+  ).trim();
+  const details = [command ? `$ ${command}` : '', output].filter(Boolean).join('\n\n');
+  const summary = compactLine(command || output || coerceGatewayText(payload) || fallbackName);
+
+  return {
+    details: truncateText(details || textFromUnknown(payload), 4000),
+    label: command ? '运行命令' : fallbackName,
+    summary,
+  };
+}
+
+function toolEventKey(payload: Record<string, unknown>, name: string, display: ToolDisplayInfo) {
+  const explicitId = payload.tool_id ?? payload.id ?? payload.call_id ?? payload.run_id;
+  if (explicitId) {
+    return String(explicitId);
+  }
+
+  const firstDetail = compactLine(display.details, 80);
+  return `${name}:${display.label}:${firstDetail || display.summary}`;
+}
+
+function toolGroupMessage(
+  group: Array<{ id: string; info: ToolDisplayInfo; name?: string }>,
+  sessionId?: null | string,
+): ChatMessageModel | null {
+  if (group.length === 0) {
+    return null;
+  }
+
+  const visible = group.slice(0, 4).map((item) => `• ${item.info.summary}`);
+  const hiddenCount = Math.max(0, group.length - visible.length);
+
+  return {
+    details: truncateText(
+      group.map((item, index) => `${index + 1}. ${item.name || item.info.label}\n${item.info.details || item.info.summary}`).join('\n\n---\n\n'),
+      10000,
+    ),
+    id: `stored-tool-group-${group[0].id}`,
+    kind: 'tool',
+    meta: hiddenCount > 0 ? `另有 ${hiddenCount} 次已折叠` : '已折叠',
+    sessionId,
+    status: 'done',
+    text: hiddenCount > 0 ? `${visible.join('\n')}\n• 另有 ${hiddenCount} 次工具调用` : visible.join('\n'),
+    title: group.length > 1 ? `${group.length} 次工具调用` : group[0].info.label,
+    toolName: group[0].name,
+  };
 }
 
 function eventSessionId(event: GatewayEvent, fallback: null | string) {
@@ -468,40 +615,53 @@ function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
 }
 
 function messagesFromStoredTranscript(messages: SessionMessageResponse[], sessionId?: null | string): ChatMessageModel[] {
-  return messages
-    .map((message, index): ChatMessageModel | null => {
-      const text = textFromUnknown(message.text ?? message.content).trim();
-      const id = message.id || `${message.role || 'message'}-${index}`;
+  const rendered: ChatMessageModel[] = [];
+  let toolGroup: Array<{ id: string; info: ToolDisplayInfo; name?: string }> = [];
 
-      if (!text) {
-        return null;
-      }
+  const flushTools = () => {
+    const message = toolGroupMessage(toolGroup, sessionId);
+    if (message) {
+      rendered.push(message);
+    }
+    toolGroup = [];
+  };
 
-      if (message.role === 'user') {
-        return { id: `stored-user-${id}`, kind: 'user', sessionId, text };
-      }
+  messages.forEach((message, index) => {
+    const text = cleanDisplayText(textFromUnknown(message.text ?? message.content)).trim();
+    const id = message.id || `${message.role || 'message'}-${index}`;
 
-      if (message.role === 'tool') {
-        return {
-          id: `stored-tool-${id}`,
-          kind: 'tool',
-          sessionId,
-          status: 'done',
-          text,
-          title: '历史工具输出',
-          toolName: message.tool_name,
-        };
-      }
+    if (message.role === 'tool') {
+      toolGroup.push({
+        id,
+        info: toolDisplayFromContent(message.text ?? message.content, message.tool_name || '历史工具输出'),
+        name: message.tool_name,
+      });
+      return;
+    }
 
-      return {
-        id: `stored-assistant-${id}`,
-        kind: message.role === 'system' ? 'status' : 'assistant',
-        sessionId,
-        status: 'done',
-        text,
-      };
-    })
-    .filter((message): message is ChatMessageModel => Boolean(message));
+    if (!text) {
+      return;
+    }
+
+    flushTools();
+
+    if (message.role === 'user') {
+      rendered.push({ id: `stored-user-${id}`, kind: 'user', sessionId, text });
+      return;
+    }
+
+    rendered.push({
+      id: `stored-assistant-${id}`,
+      kind: message.role === 'system' ? 'status' : 'assistant',
+      sessionId,
+      status: 'done',
+      text,
+      title: message.role === 'assistant' ? '最终结果' : undefined,
+    });
+  });
+
+  flushTools();
+  return rendered;
 }
 
 function useHermesRuntime(): HermesRuntime {
@@ -528,6 +688,7 @@ function useHermesRuntime(): HermesRuntime {
   const assistantMessageIdRef = useRef<null | string>(null);
   const reasoningMessageIdRef = useRef<null | string>(null);
   const statusMessageIdRef = useRef<null | string>(null);
+  const toolDigestMessageIdRef = useRef<null | string>(null);
   const pendingApprovalRef = useRef<PendingApproval | null>(null);
   const pendingClarifyRef = useRef<PendingClarify | null>(null);
 
@@ -652,6 +813,44 @@ function useHermesRuntime(): HermesRuntime {
     [upsertMessage],
   );
 
+  const appendToolDigest = useCallback(
+    (info: ToolDisplayInfo, sessionId?: null | string, toolName?: string) => {
+      if (!info.summary) {
+        return;
+      }
+
+      const id = toolDigestMessageIdRef.current || makeId('tool-digest');
+      toolDigestMessageIdRef.current = id;
+
+      setMessages((current) => {
+        const index = current.findIndex((item) => item.id === id);
+        const existing = index >= 0 ? current[index] : null;
+        const currentLines = existing?.text ? existing.text.split('\n').filter(Boolean) : [];
+        const nextLine = `• ${info.summary}`;
+        const text = currentLines.includes(nextLine) ? currentLines.join('\n') : [...currentLines, nextLine].slice(-6).join('\n');
+        const details = [existing?.details, info.details || info.summary].filter(Boolean).join('\n\n---\n\n');
+        const message: ChatMessageModel = {
+          ...(existing ?? {}),
+          details,
+          id,
+          kind: 'tool',
+          meta: '已折叠',
+          sessionId,
+          status: 'done',
+          text,
+          title: '工具调用',
+          toolName,
+        };
+        const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
+        const beforeId = assistantMessageIdRef.current;
+        const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+        next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
+        return next;
+      });
+    },
+    [],
+  );
+
   const handleGatewayEvent = useCallback(
     (event: GatewayEvent) => {
       const payload = payloadRecord(event);
@@ -686,6 +885,7 @@ function useHermesRuntime(): HermesRuntime {
           assistantMessageIdRef.current = id;
           reasoningMessageIdRef.current = null;
           statusMessageIdRef.current = null;
+          toolDigestMessageIdRef.current = null;
           setStatusText('Agent 正在生成回复');
           upsertMessage({
             id,
@@ -755,8 +955,10 @@ function useHermesRuntime(): HermesRuntime {
         }
         case 'thinking.delta':
         case 'status.update': {
-          const text = coerceGatewayText(payload) || textFromUnknown(payload.kind);
-          updateStatusMessage(text, 'running');
+          const text = normalizeStatusText(coerceGatewayText(payload) || textFromUnknown(payload.kind));
+          if (text) {
+            setStatusText(text);
+          }
           break;
         }
         case 'reasoning.delta':
@@ -815,20 +1017,18 @@ function useHermesRuntime(): HermesRuntime {
         case 'tool.start':
         case 'tool.progress':
         case 'tool.complete': {
-          const toolId = String(payload.tool_id || payload.name || makeId('tool'));
           const name = String(payload.name || payload.tool_name || '工具调用');
           const isComplete = event.type === 'tool.complete';
-          const text =
-            coerceGatewayText(payload) ||
-            textFromUnknown(payload.args_text ?? payload.preview ?? payload.context ?? payload.args).slice(0, 1000) ||
-            (isComplete ? '工具调用已完成' : '工具正在执行');
+          const display = toolDisplayFromPayload(payload, name);
+          const text = display.summary || (isComplete ? '工具调用已完成' : '工具正在执行');
+          const toolId = toolEventKey(payload, name, display);
 
           setTools((current) => {
-            const index = current.findIndex((item) => item.id === toolId);
+            const index = current.findIndex((item) => item.id === toolId || item.detail === text);
             const item: GatewayToolItem = {
               detail: text,
               id: toolId,
-              label: name,
+              label: display.label,
               state: isComplete ? 'done' : 'running',
               value: isComplete
                 ? typeof payload.duration_s === 'number'
@@ -846,15 +1046,9 @@ function useHermesRuntime(): HermesRuntime {
             return next;
           });
 
-          upsertMessage({
-            id: `tool-${toolId}`,
-            kind: 'tool',
-            sessionId,
-            status: isComplete ? 'done' : 'running',
-            text,
-            title: name,
-            toolName: name,
-          }, { beforeId: assistantMessageIdRef.current });
+          if (isComplete) {
+            appendToolDigest(display, sessionId, name);
+          }
 
           if (typeof payload.inline_diff === 'string' && payload.inline_diff.trim()) {
             setFiles((current) => [
@@ -925,7 +1119,7 @@ function useHermesRuntime(): HermesRuntime {
           break;
       }
     },
-    [appendToMessage, patchRuntimeInfo, updateStatusMessage, upsertMessage],
+    [appendToMessage, appendToolDigest, patchRuntimeInfo, upsertMessage],
   );
 
   const connectGateway = useCallback(async () => {
@@ -1018,6 +1212,7 @@ function useHermesRuntime(): HermesRuntime {
       assistantMessageIdRef.current = null;
       reasoningMessageIdRef.current = null;
       statusMessageIdRef.current = null;
+      toolDigestMessageIdRef.current = null;
       setStatusText('正在加载会话');
 
       if (!window.hermesDesktop) {
@@ -1690,9 +1885,18 @@ function ChatSurface({
       return;
     }
 
-    window.requestAnimationFrame(() => {
-      stack.scrollTo({ top: stack.scrollHeight, behavior: 'smooth' });
-    });
+    const scrollToBottom = () => {
+      stack.scrollTop = stack.scrollHeight;
+    };
+
+    scrollToBottom();
+    const frame = window.requestAnimationFrame(scrollToBottom);
+    const timer = window.setTimeout(scrollToBottom, 80);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
   }, [runtime.messages, runtime.statusText]);
 
   return (
@@ -1852,6 +2056,7 @@ function MessageEventCard({
   const [clarifyDraft, setClarifyDraft] = useState('');
   const isApproval = message.kind === 'approval';
   const isClarify = message.kind === 'clarify';
+  const isTool = message.kind === 'tool';
 
   return (
     <div className={`messageCard ${message.kind}`}>
@@ -1866,9 +2071,15 @@ function MessageEventCard({
           )}
         </div>
       </div>
-      {message.kind !== 'reasoning' && <p>{message.text}</p>}
-      {message.command && (
+      {message.kind !== 'reasoning' && <p className={isTool ? 'toolSummaryText' : undefined}>{message.text}</p>}
+      {message.command && !isTool && (
         <pre className="inlineCommand"><code>{message.command}</code></pre>
+      )}
+      {isTool && (message.details || message.command) && (
+        <details className="toolDetails">
+          <summary>查看工具详情</summary>
+          <pre><code>{message.details || message.command}</code></pre>
+        </details>
       )}
       {message.kind === 'reasoning' && (
         <details className="reasoningDetails">
@@ -2126,7 +2337,7 @@ function WorkbenchActivity({
       <section className="workbenchList">
         <h3>工具调用</h3>
         {runtime.tools.map((item) => (
-          <WorkbenchItem key={item.id} state={item.state} label={item.label} value={item.value} />
+          <WorkbenchItem key={item.id} detail={item.detail} state={item.state} label={item.label} value={item.value} />
         ))}
       </section>
       {runtime.pendingApproval ? (
@@ -2230,11 +2441,24 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
   );
 }
 
-function WorkbenchItem({ state, label, value }: { state: 'done' | 'running' | 'pending'; label: string; value: string }) {
+function WorkbenchItem({
+  detail,
+  state,
+  label,
+  value,
+}: {
+  detail?: string;
+  state: 'done' | 'running' | 'pending';
+  label: string;
+  value: string;
+}) {
   return (
     <div className="workbenchItem">
       <span className={`${state}Mark`} />
-      <strong>{label}</strong>
+      <div className="workbenchItemText">
+        <strong>{label}</strong>
+        {detail && <small>{detail}</small>}
+      </div>
       <em>{value}</em>
     </div>
   );

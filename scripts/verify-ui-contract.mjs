@@ -31,6 +31,8 @@ const requiredText = [
   'session.resume',
   'messageStackRef',
   'finalAnswerCard',
+  'toolDisplayFromContent',
+  'appendToolDigest',
 ];
 
 const requiredStyles = [
@@ -44,6 +46,8 @@ const requiredStyles = [
   '.sessionMain',
   '.finalAnswerCard',
   '.finalAnswerBody',
+  '.toolDetails',
+  '.toolSummaryText',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));

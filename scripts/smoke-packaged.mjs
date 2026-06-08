@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,8 @@ const appDir = path.join(
   'app',
 );
 const distIndex = path.join(appDir, 'dist', 'index.html');
+const capturePath = path.join(os.tmpdir(), 'beauty-hermes-packaged-smoke.png');
+rmSync(capturePath, { force: true });
 
 if (!existsSync(executable)) {
   console.error(`Packaged executable not found: ${executable}`);
@@ -54,6 +56,7 @@ if (missingAssets.length > 0) {
 const child = spawn(executable, [], {
   env: {
     ...process.env,
+    BEAUTY_HERMES_CAPTURE_PATH: capturePath,
     BEAUTY_HERMES_SKIP_GATEWAY: '1',
     ELECTRON_ENABLE_LOGGING: '1',
   },
@@ -80,6 +83,22 @@ await wait(5000);
 if (exited) {
   console.error('Packaged app exited before smoke window was stable.');
   console.error(output.slice(0, 4000));
+  process.exit(1);
+}
+
+if (!output.includes('[beauty-hermes] window-ready')) {
+  console.error('Packaged app smoke did not observe a ready BrowserWindow.');
+  console.error(output.slice(0, 4000));
+  child.kill('SIGTERM');
+  await wait(1000);
+  process.exit(1);
+}
+
+if (!output.includes('[beauty-hermes] capture-ready') || !existsSync(capturePath) || statSync(capturePath).size < 10000) {
+  console.error('Packaged app smoke did not capture a rendered window.');
+  console.error(output.slice(0, 4000));
+  child.kill('SIGTERM');
+  await wait(1000);
   process.exit(1);
 }
 
