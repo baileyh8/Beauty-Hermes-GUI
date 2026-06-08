@@ -1,7 +1,9 @@
 const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('node:path');
+const { createGatewayManager } = require('./gateway-manager.cjs');
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+const gatewayManager = createGatewayManager();
 
 app.setName('Beauty Hermes GUI');
 
@@ -92,9 +94,14 @@ app.whenReady().then(() => {
   ipcMain.handle('hermes:snapshot', () => ({
     sessions: 7,
     projects: 3,
-    pendingApprovals: 2,
-    gateway: 'connected',
+    pendingApprovals: 0,
+    gateway: gatewayManager.getConnection()?.status ?? 'idle',
   }));
+
+  ipcMain.handle('hermes:get-connection', () => gatewayManager.getConnection());
+  ipcMain.handle('hermes:start', (_event, options) => gatewayManager.start(options));
+  ipcMain.handle('hermes:get-gateway-ws-url', () => gatewayManager.getGatewayWsUrl());
+  ipcMain.handle('hermes:api', (_event, request) => gatewayManager.api(request));
 
   createWindow();
 
@@ -109,4 +116,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  gatewayManager.dispose();
 });

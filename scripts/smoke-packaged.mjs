@@ -27,6 +27,7 @@ if (!existsSync(executable)) {
 const child = spawn(executable, [], {
   env: {
     ...process.env,
+    BEAUTY_HERMES_SKIP_GATEWAY: '1',
     ELECTRON_ENABLE_LOGGING: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

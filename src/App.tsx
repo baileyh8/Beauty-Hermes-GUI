@@ -59,7 +59,8 @@ import Wrench from 'lucide-react/dist/esm/icons/wrench.js';
 import X from 'lucide-react/dist/esm/icons/x.js';
 import XCircle from 'lucide-react/dist/esm/icons/x-circle.js';
 import Zap from 'lucide-react/dist/esm/icons/zap.js';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { JsonRpcGatewayClient, type GatewayConnectionState, type GatewayEvent } from './gateway';
 
 type Surface =
   | 'chat'
@@ -75,6 +76,137 @@ type Surface =
 type WorkbenchTab = 'activity' | 'files' | 'terminal' | 'preview';
 type ApprovalVariant = 'risk' | 'timeout' | 'permission';
 type SettingsSection = 'general' | 'models' | 'permissions' | 'integrations' | 'appearance' | 'advanced';
+type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error';
+type ChatMessageKind =
+  | 'assistant'
+  | 'user'
+  | 'status'
+  | 'reasoning'
+  | 'tool'
+  | 'approval'
+  | 'clarify'
+  | 'error';
+
+interface SidebarItem {
+  active?: boolean;
+  color?: string;
+  meta: string;
+  title: string;
+}
+
+interface ChatArtifactModel {
+  kind: 'file' | 'terminal' | 'preview';
+  meta: string;
+  tab: WorkbenchTab;
+  title: string;
+}
+
+interface ChatCheckItem {
+  done?: boolean;
+  label: string;
+}
+
+interface ChatMessageModel {
+  artifacts?: ChatArtifactModel[];
+  checks?: ChatCheckItem[];
+  choices?: string[];
+  command?: string;
+  id: string;
+  kind: ChatMessageKind;
+  meta?: string;
+  sessionId?: null | string;
+  status?: 'pending' | 'running' | 'done' | 'denied' | 'error';
+  text: string;
+  title?: string;
+  toolName?: string;
+}
+
+interface GatewayToolItem {
+  detail: string;
+  id: string;
+  label: string;
+  state: 'done' | 'running' | 'pending';
+  value: string;
+}
+
+interface GatewayFileItem {
+  change: 'add' | 'mod';
+  label: string;
+  meta: string;
+}
+
+interface PendingApproval {
+  command: string;
+  description: string;
+  messageId: string;
+  sessionId: null | string;
+}
+
+interface PendingClarify {
+  choices: string[];
+  messageId: string;
+  question: string;
+  requestId: string;
+  sessionId: null | string;
+}
+
+interface HermesRuntime {
+  activeSessionId: null | string;
+  connection: HermesGatewayConnection | null;
+  connectionLabel: string;
+  contextPercent: number;
+  cwd: string;
+  files: GatewayFileItem[];
+  gatewayStatus: GatewayStatus;
+  logs: string[];
+  messages: ChatMessageModel[];
+  model: string;
+  pendingApproval: null | PendingApproval;
+  pendingClarify: null | PendingClarify;
+  recentSessions: SidebarItem[];
+  socketState: GatewayConnectionState;
+  statusText: string;
+  submitPrompt: (text: string) => Promise<void>;
+  respondApproval: (choice: 'once' | 'session' | 'always' | 'deny') => Promise<void>;
+  respondClarify: (answer: string) => Promise<void>;
+  tools: GatewayToolItem[];
+}
+
+interface SessionCreateResponse {
+  info?: SessionRuntimeInfo;
+  messages?: SessionMessageResponse[];
+  session_id: string;
+  stored_session_id?: string;
+}
+
+interface SessionInfoResponse {
+  cwd?: null | string;
+  id: string;
+  last_active?: number;
+  message_count?: number;
+  model?: null | string;
+  preview?: null | string;
+  title?: null | string;
+}
+
+interface SessionListResponse {
+  sessions?: SessionInfoResponse[];
+}
+
+interface SessionMessageResponse {
+  content?: unknown;
+  role?: 'assistant' | 'system' | 'tool' | 'user';
+  text?: unknown;
+}
+
+interface SessionRuntimeInfo {
+  context_percent?: number;
+  cwd?: string;
+  model?: string;
+  provider?: string;
+  running?: boolean;
+  usage?: { context_percent?: number };
+}
 
 const pinnedSessions = [
   { title: '修复桌面端审批流', meta: '正在等待确认 · 12m', color: 'blue' },
@@ -118,7 +250,765 @@ const surfaceMeta: Record<Surface, { title: string; subtitle: string }> = {
   onboarding: { title: '首次启动', subtitle: '选择 Hermes 的本地或远程工作方式。' },
 };
 
+const demoMessages: ChatMessageModel[] = [
+  {
+    id: 'demo-user-1',
+    kind: 'user',
+    text: '这个 GUI 在 Mac 下不太理想，先看看哪些方向值得优化。',
+  },
+  {
+    checks: [
+      { done: true, label: '检查本地 app 打包结构' },
+      { done: true, label: '对比官方桌面端与 Tauri 参考项目' },
+      { label: '整理 Codex-like 设计规格' },
+    ],
+    id: 'demo-assistant-1',
+    kind: 'assistant',
+    status: 'done',
+    text: '我会先把体验问题分为两层：一层是日常可用性，例如审批、输入、滚动；另一层是工作台设计，例如命令中心、右侧预览和状态可见性。',
+  },
+  {
+    command: 'npm run test:desktop -- --approval-ui',
+    id: 'demo-approval-1',
+    kind: 'approval',
+    status: 'pending',
+    text: '默认暂停，确认后继续执行。',
+    title: '等待审批',
+  },
+  {
+    artifacts: [
+      { kind: 'file', meta: 'src/App.tsx', tab: 'files', title: '变更文件' },
+      { kind: 'terminal', meta: 'typecheck · build', tab: 'terminal', title: '终端输出' },
+      { kind: 'preview', meta: 'exports/contact-sheet.png', tab: 'preview', title: '预览产物' },
+    ],
+    id: 'demo-assistant-2',
+    kind: 'assistant',
+    status: 'done',
+    text: '建议把 Hermes Desktop 从“聊天壳”升级为 Agent workbench：左侧管理会话和 profiles，中间是任务线程，右侧稳定承载文件、终端、预览和工具输出。',
+  },
+];
+
+const fallbackTools: GatewayToolItem[] = [
+  { detail: 'page-map.md', id: 'demo-tool-1', label: '读取 page-map.md', state: 'done', value: '0.2s' },
+  { detail: 'design/index.html', id: 'demo-tool-2', label: '生成界面骨架', state: 'done', value: '完成' },
+  { detail: 'smoke', id: 'demo-tool-3', label: '等待 Gateway 事件', state: 'pending', value: '待连接' },
+];
+
+const fallbackFiles: GatewayFileItem[] = [
+  { change: 'add', label: 'src/App.tsx', meta: 'UI' },
+  { change: 'mod', label: 'src/styles.css', meta: 'CSS' },
+  { change: 'mod', label: 'electron/main.cjs', meta: 'Gateway' },
+];
+
+function makeId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function textFromUnknown(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(textFromUnknown).filter(Boolean).join('\n');
+  }
+
+  if (value && typeof value === 'object') {
+    const row = value as Record<string, unknown>;
+    if (typeof row.text === 'string') {
+      return row.text;
+    }
+    if (typeof row.content === 'string') {
+      return row.content;
+    }
+
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return '';
+    }
+  }
+
+  return value == null ? '' : String(value);
+}
+
+function payloadRecord(event: GatewayEvent): Record<string, unknown> {
+  return event.payload && typeof event.payload === 'object'
+    ? (event.payload as Record<string, unknown>)
+    : {};
+}
+
+function coerceGatewayText(payload: Record<string, unknown>) {
+  return textFromUnknown(payload.text ?? payload.rendered ?? payload.result_text ?? payload.summary).trim();
+}
+
+function eventSessionId(event: GatewayEvent, fallback: null | string) {
+  return typeof event.session_id === 'string' && event.session_id ? event.session_id : fallback;
+}
+
+function normalizeModel(info?: SessionRuntimeInfo) {
+  if (!info) {
+    return null;
+  }
+
+  if (info.provider && info.model) {
+    return `${info.provider}/${info.model}`;
+  }
+
+  return info.model || null;
+}
+
+function contextPercentFromInfo(info?: SessionRuntimeInfo) {
+  const value = info?.usage?.context_percent ?? info?.context_percent;
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null;
+}
+
+function compactCwd(cwd?: null | string) {
+  if (!cwd) {
+    return 'Hermes Desktop优化';
+  }
+
+  const parts = cwd.split('/').filter(Boolean);
+  return parts.slice(-2).join('/') || cwd;
+}
+
+function formatSessionTime(value?: number) {
+  if (!value) {
+    return '最近';
+  }
+
+  const ms = value > 10_000_000_000 ? Date.now() - value : Date.now() - value * 1000;
+  const minutes = Math.max(1, Math.round(ms / 60000));
+
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+
+  return `${Math.round(hours / 24)} 天`;
+}
+
+function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
+  const sessions = response.sessions ?? [];
+
+  return sessions.slice(0, 5).map((session, index) => ({
+    active: index === 0,
+    color: index === 0 ? 'blue' : 'gray',
+    meta: `${session.message_count ?? 0} 条消息 · ${formatSessionTime(session.last_active)}`,
+    title: session.title || session.preview || '未命名会话',
+  }));
+}
+
+function messagesFromStoredTranscript(messages: SessionMessageResponse[]): ChatMessageModel[] {
+  return messages
+    .map((message, index): ChatMessageModel | null => {
+      const text = textFromUnknown(message.text ?? message.content).trim();
+
+      if (!text) {
+        return null;
+      }
+
+      if (message.role === 'user') {
+        return { id: `stored-user-${index}`, kind: 'user', text };
+      }
+
+      if (message.role === 'tool') {
+        return {
+          id: `stored-tool-${index}`,
+          kind: 'tool',
+          status: 'done',
+          text,
+          title: '历史工具输出',
+        };
+      }
+
+      return {
+        id: `stored-assistant-${index}`,
+        kind: message.role === 'system' ? 'status' : 'assistant',
+        status: 'done',
+        text,
+      };
+    })
+    .filter((message): message is ChatMessageModel => Boolean(message));
+}
+
+function useHermesRuntime(): HermesRuntime {
+  const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('browser');
+  const [connection, setConnection] = useState<HermesGatewayConnection | null>(null);
+  const [socketState, setSocketState] = useState<GatewayConnectionState>('idle');
+  const [messages, setMessages] = useState<ChatMessageModel[]>(demoMessages);
+  const [activeSessionId, setActiveSessionId] = useState<null | string>(null);
+  const [model, setModel] = useState('deepseek-v4-flash');
+  const [cwd, setCwd] = useState('Hermes Desktop优化');
+  const [contextPercent, setContextPercent] = useState(42);
+  const [statusText, setStatusText] = useState('正在连接 Hermes Gateway');
+  const [logs, setLogs] = useState<string[]>([]);
+  const [recentSessionItems, setRecentSessionItems] = useState<SidebarItem[]>(recentSessions);
+  const [tools, setTools] = useState<GatewayToolItem[]>(fallbackTools);
+  const [files, setFiles] = useState<GatewayFileItem[]>(fallbackFiles);
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  const [pendingClarify, setPendingClarify] = useState<PendingClarify | null>(null);
+
+  const clientRef = useRef<JsonRpcGatewayClient | null>(null);
+  const activeSessionIdRef = useRef<null | string>(null);
+  const assistantMessageIdRef = useRef<null | string>(null);
+  const reasoningMessageIdRef = useRef<null | string>(null);
+  const statusMessageIdRef = useRef<null | string>(null);
+  const pendingApprovalRef = useRef<PendingApproval | null>(null);
+  const pendingClarifyRef = useRef<PendingClarify | null>(null);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    pendingApprovalRef.current = pendingApproval;
+  }, [pendingApproval]);
+
+  useEffect(() => {
+    pendingClarifyRef.current = pendingClarify;
+  }, [pendingClarify]);
+
+  const patchRuntimeInfo = useCallback((info?: SessionRuntimeInfo) => {
+    const nextModel = normalizeModel(info);
+    const nextPercent = contextPercentFromInfo(info);
+
+    if (nextModel) {
+      setModel(nextModel);
+    }
+
+    if (info?.cwd) {
+      setCwd(compactCwd(info.cwd));
+    }
+
+    if (nextPercent !== null) {
+      setContextPercent(nextPercent);
+    }
+  }, []);
+
+  const upsertMessage = useCallback((message: ChatMessageModel) => {
+    setMessages((current) => {
+      const index = current.findIndex((item) => item.id === message.id);
+
+      if (index === -1) {
+        return [...current, message];
+      }
+
+      const next = [...current];
+      next[index] = { ...next[index], ...message };
+      return next;
+    });
+  }, []);
+
+  const appendToMessage = useCallback((id: string, delta: string, fallback: ChatMessageModel) => {
+    setMessages((current) => {
+      const index = current.findIndex((item) => item.id === id);
+
+      if (index === -1) {
+        return [...current, { ...fallback, text: delta }];
+      }
+
+      const next = [...current];
+      next[index] = {
+        ...next[index],
+        text: `${next[index].text}${delta}`,
+      };
+      return next;
+    });
+  }, []);
+
+  const updateStatusMessage = useCallback(
+    (text: string, status: ChatMessageModel['status'] = 'running') => {
+      if (!text.trim()) {
+        return;
+      }
+
+      const id = statusMessageIdRef.current || makeId('status');
+      statusMessageIdRef.current = id;
+      setStatusText(text);
+      upsertMessage({
+        id,
+        kind: 'status',
+        status,
+        text,
+        title: '状态更新',
+      });
+    },
+    [upsertMessage],
+  );
+
+  const handleGatewayEvent = useCallback(
+    (event: GatewayEvent) => {
+      const payload = payloadRecord(event);
+      const sessionId = eventSessionId(event, activeSessionIdRef.current);
+
+      if (sessionId && !activeSessionIdRef.current) {
+        setActiveSessionId(sessionId);
+      }
+
+      switch (event.type) {
+        case 'gateway.ready':
+          setStatusText('Hermes Gateway 已就绪');
+          break;
+        case 'session.info': {
+          const info = (payload.info && typeof payload.info === 'object' ? payload.info : payload) as SessionRuntimeInfo;
+          patchRuntimeInfo(info);
+
+          if (payload.running === false || info.running === false) {
+            setStatusText('就绪');
+            setTools((current) =>
+              current.map((item) => (item.state === 'running' ? { ...item, state: 'done', value: '完成' } : item)),
+            );
+          }
+          break;
+        }
+        case 'message.start': {
+          const id = makeId('assistant');
+          assistantMessageIdRef.current = id;
+          reasoningMessageIdRef.current = null;
+          setStatusText('Agent 正在生成回复');
+          upsertMessage({
+            id,
+            kind: 'assistant',
+            sessionId,
+            status: 'running',
+            text: '',
+          });
+          break;
+        }
+        case 'message.delta': {
+          const delta = coerceGatewayText(payload);
+          if (!delta) {
+            break;
+          }
+
+          const id = assistantMessageIdRef.current || makeId('assistant');
+          assistantMessageIdRef.current = id;
+          appendToMessage(id, delta, {
+            id,
+            kind: 'assistant',
+            sessionId,
+            status: 'running',
+            text: '',
+          });
+          break;
+        }
+        case 'message.complete': {
+          const finalText = coerceGatewayText(payload);
+          const id = assistantMessageIdRef.current || makeId('assistant');
+
+          setMessages((current) => {
+            const index = current.findIndex((item) => item.id === id);
+            if (index === -1) {
+              return finalText
+                ? [
+                    ...current,
+                    {
+                      id,
+                      kind: 'assistant',
+                      sessionId,
+                      status: payload.status === 'error' ? 'error' : 'done',
+                      text: finalText,
+                    },
+                  ]
+                : current;
+            }
+
+            const next = [...current];
+            next[index] = {
+              ...next[index],
+              status: payload.status === 'error' ? 'error' : 'done',
+              text: finalText || next[index].text,
+            };
+            return next;
+          });
+
+          assistantMessageIdRef.current = null;
+          setStatusText(payload.status === 'error' ? '回复中断' : '就绪');
+          break;
+        }
+        case 'thinking.delta':
+        case 'status.update': {
+          const text = coerceGatewayText(payload) || textFromUnknown(payload.kind);
+          updateStatusMessage(text, 'running');
+          break;
+        }
+        case 'reasoning.delta':
+        case 'reasoning.available': {
+          const delta = coerceGatewayText(payload);
+          if (!delta) {
+            break;
+          }
+
+          const id = reasoningMessageIdRef.current || makeId('reasoning');
+          reasoningMessageIdRef.current = id;
+          appendToMessage(id, delta, {
+            id,
+            kind: 'reasoning',
+            sessionId,
+            status: event.type === 'reasoning.available' ? 'done' : 'running',
+            text: '',
+            title: '推理过程',
+          });
+          break;
+        }
+        case 'tool.generating':
+        case 'tool.start':
+        case 'tool.progress':
+        case 'tool.complete': {
+          const toolId = String(payload.tool_id || payload.name || makeId('tool'));
+          const name = String(payload.name || payload.tool_name || '工具调用');
+          const isComplete = event.type === 'tool.complete';
+          const text =
+            coerceGatewayText(payload) ||
+            textFromUnknown(payload.args_text ?? payload.preview ?? payload.context ?? payload.args).slice(0, 1000) ||
+            (isComplete ? '工具调用已完成' : '工具正在执行');
+
+          setTools((current) => {
+            const index = current.findIndex((item) => item.id === toolId);
+            const item: GatewayToolItem = {
+              detail: text,
+              id: toolId,
+              label: name,
+              state: isComplete ? 'done' : 'running',
+              value: isComplete
+                ? typeof payload.duration_s === 'number'
+                  ? `${payload.duration_s.toFixed(1)}s`
+                  : '完成'
+                : '运行中',
+            };
+
+            if (index === -1) {
+              return [item, ...current.filter((row) => !row.id.startsWith('demo-tool'))].slice(0, 8);
+            }
+
+            const next = [...current];
+            next[index] = item;
+            return next;
+          });
+
+          upsertMessage({
+            id: `tool-${toolId}`,
+            kind: 'tool',
+            sessionId,
+            status: isComplete ? 'done' : 'running',
+            text,
+            title: name,
+            toolName: name,
+          });
+
+          if (typeof payload.inline_diff === 'string' && payload.inline_diff.trim()) {
+            setFiles((current) => [
+              { change: 'mod', label: `${name} diff`, meta: 'inline' },
+              ...current.filter((item) => item.label !== `${name} diff`),
+            ]);
+          }
+          break;
+        }
+        case 'approval.request': {
+          const command = textFromUnknown(payload.command).trim();
+          const description = textFromUnknown(payload.description).trim() || 'Hermes 需要确认这个操作后才能继续。';
+          const id = makeId('approval');
+          const request = { command, description, messageId: id, sessionId };
+
+          setPendingApproval(request);
+          setStatusText('等待审批');
+          upsertMessage({
+            command,
+            id,
+            kind: 'approval',
+            sessionId,
+            status: 'pending',
+            text: description,
+            title: '需要手动确认',
+          });
+          break;
+        }
+        case 'clarify.request': {
+          const question = textFromUnknown(payload.question).trim();
+          const requestId = textFromUnknown(payload.request_id).trim();
+          const choices = Array.isArray(payload.choices)
+            ? payload.choices.filter((choice): choice is string => typeof choice === 'string')
+            : [];
+          const id = makeId('clarify');
+          const request = { choices, messageId: id, question, requestId, sessionId };
+
+          setPendingClarify(request);
+          setStatusText('等待补充信息');
+          upsertMessage({
+            choices,
+            id,
+            kind: 'clarify',
+            sessionId,
+            status: 'pending',
+            text: question || 'Hermes 需要你补充信息。',
+            title: '需要澄清',
+          });
+          break;
+        }
+        case 'error': {
+          const text = coerceGatewayText(payload) || textFromUnknown(payload.message ?? payload.error) || 'Gateway 事件出错';
+          upsertMessage({
+            id: makeId('error'),
+            kind: 'error',
+            sessionId,
+            status: 'error',
+            text,
+            title: 'Hermes 错误',
+          });
+          setStatusText('出现错误');
+          break;
+        }
+        case 'background.complete':
+          updateStatusMessage(coerceGatewayText(payload) || '后台任务已完成', 'done');
+          break;
+        default:
+          break;
+      }
+    },
+    [appendToMessage, patchRuntimeInfo, updateStatusMessage, upsertMessage],
+  );
+
+  const connectGateway = useCallback(async () => {
+    if (!window.hermesDesktop) {
+      setGatewayStatus('browser');
+      setSocketState('closed');
+      setStatusText('浏览器预览模式');
+      setLogs(['Desktop IPC bridge is unavailable in a regular browser preview.']);
+      return;
+    }
+
+    setGatewayStatus('starting');
+    setStatusText('正在启动 Hermes Gateway');
+
+    try {
+      const nextConnection = await window.hermesDesktop.startHermes();
+      setConnection(nextConnection);
+      setLogs(nextConnection.logs ?? []);
+      setGatewayStatus(nextConnection.status === 'skipped' ? 'skipped' : 'connected');
+      setStatusText(nextConnection.status === 'skipped' ? 'Gateway smoke 模式' : '正在连接 WebSocket');
+
+      const [sessionsResponse, statusResponse] = await Promise.allSettled([
+        window.hermesDesktop.api<SessionListResponse>({
+          path: '/api/sessions?limit=20&offset=0&min_messages=1&archived=exclude&order=recent',
+          timeoutMs: 60000,
+        }),
+        window.hermesDesktop.api<Record<string, unknown>>({ path: '/api/status' }),
+      ]);
+
+      if (sessionsResponse.status === 'fulfilled') {
+        const nextItems = sessionsToSidebarItems(sessionsResponse.value);
+        if (nextItems.length > 0) {
+          setRecentSessionItems(nextItems);
+        }
+      }
+
+      if (statusResponse.status === 'fulfilled') {
+        const version = typeof statusResponse.value.version === 'string' ? statusResponse.value.version : '';
+        setLogs((current) => [`Hermes status OK${version ? ` · ${version}` : ''}`, ...current].slice(0, 120));
+      }
+
+      if (nextConnection.status === 'skipped') {
+        return;
+      }
+
+      const wsUrl = await window.hermesDesktop.getGatewayWsUrl();
+      const client = new JsonRpcGatewayClient();
+      clientRef.current?.close();
+      clientRef.current = client;
+      client.onAny(handleGatewayEvent);
+      client.onState(setSocketState);
+      await client.connect(wsUrl);
+      setStatusText('就绪');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setGatewayStatus('error');
+      setSocketState('error');
+      setStatusText('Gateway 连接失败');
+      setLogs((current) => [`Gateway error: ${message}`, ...current].slice(0, 120));
+      upsertMessage({
+        id: makeId('gateway-error'),
+        kind: 'error',
+        status: 'error',
+        text: message,
+        title: '无法连接 Hermes Gateway',
+      });
+    }
+  }, [handleGatewayEvent, upsertMessage]);
+
+  useEffect(() => {
+    void connectGateway();
+
+    return () => {
+      clientRef.current?.close();
+      clientRef.current = null;
+    };
+  }, [connectGateway]);
+
+  const submitPrompt = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      upsertMessage({
+        id: makeId('user'),
+        kind: 'user',
+        text: trimmed,
+      });
+
+      const client = clientRef.current;
+      if (!client || client.connectionState !== 'open') {
+        upsertMessage({
+          id: makeId('not-connected'),
+          kind: 'error',
+          status: 'error',
+          text: 'Hermes Gateway 还没有连接完成，请稍后再试。',
+          title: '暂时无法发送',
+        });
+        return;
+      }
+
+      let sessionId = activeSessionIdRef.current;
+      setStatusText('正在提交消息');
+
+      try {
+        if (!sessionId) {
+          const created = await client.request<SessionCreateResponse>('session.create', { cols: 96 }, 60000);
+          sessionId = created.session_id;
+          setActiveSessionId(sessionId);
+          patchRuntimeInfo(created.info);
+
+          if (created.messages?.length) {
+            const transcript = messagesFromStoredTranscript(created.messages);
+            if (transcript.length) {
+              setMessages(transcript);
+            }
+          }
+        }
+
+        await client.request('prompt.submit', { session_id: sessionId, text: trimmed }, 30000);
+        setStatusText('等待 Hermes 回复');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatusText('发送失败');
+        upsertMessage({
+          id: makeId('submit-error'),
+          kind: 'error',
+          sessionId,
+          status: 'error',
+          text: message,
+          title: '发送失败',
+        });
+      }
+    },
+    [patchRuntimeInfo, upsertMessage],
+  );
+
+  const respondApproval = useCallback(
+    async (choice: 'once' | 'session' | 'always' | 'deny') => {
+      const request = pendingApprovalRef.current;
+      const sessionId = request?.sessionId || activeSessionIdRef.current;
+      const client = clientRef.current;
+
+      if (!request || !sessionId || !client) {
+        return;
+      }
+
+      await client.request('approval.respond', { choice, session_id: sessionId }, 30000);
+      setPendingApproval(null);
+      upsertMessage({
+        id: request.messageId,
+        kind: 'approval',
+        sessionId,
+        status: choice === 'deny' ? 'denied' : 'done',
+        text: choice === 'deny' ? '已拒绝，Hermes 会停止或改用其他路径。' : '已确认，Hermes 会继续执行。',
+        title: choice === 'deny' ? '审批已拒绝' : '审批已通过',
+      });
+      setStatusText(choice === 'deny' ? '审批已拒绝' : '继续执行');
+    },
+    [upsertMessage],
+  );
+
+  const respondClarify = useCallback(
+    async (answer: string) => {
+      const request = pendingClarifyRef.current;
+      const client = clientRef.current;
+
+      if (!request || !request.requestId || !client) {
+        return;
+      }
+
+      await client.request('clarify.respond', { answer, request_id: request.requestId }, 30000);
+      setPendingClarify(null);
+      upsertMessage({
+        choices: request.choices,
+        id: request.messageId,
+        kind: 'clarify',
+        sessionId: request.sessionId,
+        status: 'done',
+        text: `已回复：${answer}`,
+        title: '澄清已提交',
+      });
+      setStatusText('继续执行');
+    },
+    [upsertMessage],
+  );
+
+  const connectionLabel = useMemo(() => {
+    if (gatewayStatus === 'browser') {
+      return '浏览器预览';
+    }
+
+    if (gatewayStatus === 'starting') {
+      return '启动中';
+    }
+
+    if (gatewayStatus === 'error') {
+      return '连接失败';
+    }
+
+    if (gatewayStatus === 'skipped') {
+      return 'Smoke 模式';
+    }
+
+    if (connection?.source === 'existing') {
+      return '已连接 · 复用 gateway';
+    }
+
+    return '已连接 · 本机 gateway';
+  }, [connection?.source, gatewayStatus]);
+
+  return {
+    activeSessionId,
+    connection,
+    connectionLabel,
+    contextPercent,
+    cwd,
+    files,
+    gatewayStatus,
+    logs,
+    messages,
+    model,
+    pendingApproval,
+    pendingClarify,
+    recentSessions: recentSessionItems,
+    respondApproval,
+    respondClarify,
+    socketState,
+    statusText,
+    submitPrompt,
+    tools,
+  };
+}
+
 function App() {
+  const runtime = useHermesRuntime();
   const [surface, setSurface] = useState<Surface>('chat');
   const [rightOpen, setRightOpen] = useState(true);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('activity');
@@ -128,11 +1018,6 @@ function App() {
   const [approvalVariant, setApprovalVariant] = useState<ApprovalVariant | null>(null);
   const [deniedRecovery, setDeniedRecovery] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
-  const [bridgeState, setBridgeState] = useState('浏览器预览');
-
-  useEffect(() => {
-    window.hermesDesktop?.getDesktopInfo().then((info) => setBridgeState(info.bridge));
-  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -158,8 +1043,12 @@ function App() {
     <div className="appShell" data-testid="app-shell">
       <Sidebar
         activeSurface={surface}
+        gatewayStatus={runtime.gatewayStatus}
+        model={runtime.model}
         onSurfaceChange={setSurface}
         onOpenCommand={() => setCommandOpen(true)}
+        recentItems={runtime.recentSessions}
+        statusText={runtime.connectionLabel}
       />
 
       <main className={rightOpen && showWorkbench ? 'content withWorkbench' : 'content'}>
@@ -201,8 +1090,8 @@ function App() {
           <ChatSurface
             attachmentOpen={attachmentOpen}
             deniedRecovery={deniedRecovery}
+            runtime={runtime}
             setAttachmentOpen={setAttachmentOpen}
-            bridgeState={bridgeState}
             onOpenApproval={() => setApprovalVariant('risk')}
             onOpenWorkbenchTab={(tab) => {
               setRightOpen(true);
@@ -230,6 +1119,7 @@ function App() {
             onTabChange={setWorkbenchTab}
             onCollapse={() => setRightOpen(false)}
             onOpenApproval={setApprovalVariant}
+            runtime={runtime}
           />
         ) : (
           <button
@@ -279,12 +1169,20 @@ function App() {
 
 function Sidebar({
   activeSurface,
+  gatewayStatus,
+  model,
   onSurfaceChange,
   onOpenCommand,
+  recentItems,
+  statusText,
 }: {
   activeSurface: Surface;
+  gatewayStatus: GatewayStatus;
+  model: string;
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
+  recentItems: SidebarItem[];
+  statusText: string;
 }) {
   const utilityItems: Array<{ id: Surface; label: string; meta: string; icon: React.ReactNode }> = [
     { id: 'agents', label: 'Agents', meta: '并行任务 · 3', icon: <Bot size={15} /> },
@@ -308,7 +1206,7 @@ function Sidebar({
         <div className="avatar">H</div>
         <div>
           <strong>Hermes</strong>
-          <span>本地运行 · DeepSeek V4</span>
+          <span>本地运行 · {model}</span>
         </div>
       </button>
 
@@ -326,7 +1224,7 @@ function Sidebar({
       <nav className="sidebarScroll" aria-label="会话导航">
         <SidebarSection title="置顶" items={pinnedSessions} />
         <ProjectSection items={projects} onOpenProjects={() => onSurfaceChange('projects')} />
-        <SidebarSection title="最近" items={recentSessions} muted />
+        <SidebarSection title="最近" items={recentItems.length > 0 ? recentItems : recentSessions} muted />
 
         <section className="navSection">
           <h2>工作台</h2>
@@ -349,10 +1247,10 @@ function Sidebar({
       </nav>
 
       <div className="gatewayStrip">
-        <span className="statusDot green" />
+        <span className={`statusDot ${gatewayStatus === 'error' ? 'red' : gatewayStatus === 'starting' ? 'amber' : 'green'}`} />
         <div>
           <strong>Gateway</strong>
-          <small>已连接 · IPC mock</small>
+          <small>{statusText}</small>
         </div>
       </div>
 
@@ -453,92 +1351,231 @@ function SessionRow({
 function ChatSurface({
   attachmentOpen,
   deniedRecovery,
+  runtime,
   setAttachmentOpen,
-  bridgeState,
   onOpenApproval,
   onOpenWorkbenchTab,
 }: {
   attachmentOpen: boolean;
   deniedRecovery: boolean;
+  runtime: HermesRuntime;
   setAttachmentOpen: (open: boolean) => void;
-  bridgeState: string;
   onOpenApproval: () => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
 }) {
   return (
     <section className="chatSurface" aria-label="会话">
       <div className="messageStack">
-        <article className="message human">
-          <div className="bubble">这个 GUI 在 Mac 下不太理想，先看看哪些方向值得优化。</div>
-          <div className="miniAvatar user">
-            <UserRound size={15} />
-          </div>
-        </article>
-
-        <article className="message agent">
-          <div className="miniAvatar agentMark">H</div>
-          <div className="agentContent">
-            <p>
-              我会先把体验问题分为两层：一层是日常可用性，例如审批、输入、滚动；另一层是工作台设计，例如命令中心、右侧预览和状态可见性。
-            </p>
-            <div className="checkCard">
-              <div>
-                <CheckCircle2 size={15} />
-                检查本地 app 打包结构
-              </div>
-              <div>
-                <CheckCircle2 size={15} />
-                对比官方桌面端与 Tauri 参考项目
-              </div>
-              <div className="current">
-                <CircleDot size={15} />
-                整理 Codex-like 设计规格
-              </div>
-            </div>
-          </div>
-        </article>
-
-        <div className="toolStrip approval">
-          <div>
-            <Shield size={16} />
-            等待审批 <code>npm run test:desktop -- --approval-ui</code>
-          </div>
-          <button type="button" onClick={onOpenApproval}>查看审批</button>
-        </div>
+        {runtime.messages.map((message) => (
+          <ChatMessage
+            key={message.id}
+            message={message}
+            onOpenApproval={onOpenApproval}
+            onOpenWorkbenchTab={onOpenWorkbenchTab}
+            onRespondApproval={runtime.respondApproval}
+            onRespondClarify={runtime.respondClarify}
+          />
+        ))}
 
         {deniedRecovery && (
-          <article className="message agent">
-            <div className="miniAvatar agentMark">H</div>
-            <div className="agentContent">
-              <div className="recoveryBlock">
-                <strong>已拒绝高风险命令</strong>
-                <p>我会改用只读检查：读取当前 UI 文件、运行类型检查，并把需要人工确认的命令保留在审批记录里。</p>
-                <button type="button" onClick={() => onOpenWorkbenchTab('activity')}>
-                  查看恢复路径
-                </button>
-              </div>
-            </div>
-          </article>
+          <ChatMessage
+            message={{
+              id: 'denied-recovery',
+              kind: 'status',
+              status: 'denied',
+              text: '我会改用只读检查：读取当前 UI 文件、运行类型检查，并把需要人工确认的命令保留在审批记录里。',
+              title: '已拒绝高风险命令',
+            }}
+            onOpenApproval={onOpenApproval}
+            onOpenWorkbenchTab={onOpenWorkbenchTab}
+            onRespondApproval={runtime.respondApproval}
+            onRespondClarify={runtime.respondClarify}
+          />
         )}
-
-        <article className="message agent">
-          <div className="miniAvatar agentMark">H</div>
-          <div className="agentContent">
-            <p>
-              建议把 Hermes Desktop 从“聊天壳”升级为 Agent workbench：左侧管理会话和 profiles，中间是任务线程，右侧稳定承载文件、终端、预览和工具输出。
-            </p>
-            <div className="artifactGrid">
-              <Artifact icon={<File size={19} />} title="变更文件" meta="src/App.tsx" onClick={() => onOpenWorkbenchTab('files')} />
-              <Artifact icon={<TerminalSquare size={19} />} title="终端输出" meta="typecheck · build" onClick={() => onOpenWorkbenchTab('terminal')} />
-              <Artifact icon={<Eye size={19} />} title="预览产物" meta="exports/contact-sheet.png" onClick={() => onOpenWorkbenchTab('preview')} />
-            </div>
-          </div>
-        </article>
       </div>
 
-      <Composer attachmentOpen={attachmentOpen} setAttachmentOpen={setAttachmentOpen} bridgeState={bridgeState} />
+      <Composer attachmentOpen={attachmentOpen} setAttachmentOpen={setAttachmentOpen} runtime={runtime} />
     </section>
   );
+}
+
+function ChatMessage({
+  message,
+  onOpenApproval,
+  onOpenWorkbenchTab,
+  onRespondApproval,
+  onRespondClarify,
+}: {
+  message: ChatMessageModel;
+  onOpenApproval: () => void;
+  onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
+  onRespondApproval: HermesRuntime['respondApproval'];
+  onRespondClarify: HermesRuntime['respondClarify'];
+}) {
+  if (message.kind === 'user') {
+    return (
+      <article className="message human">
+        <div className="bubble">{message.text}</div>
+        <div className="miniAvatar user">
+          <UserRound size={15} />
+        </div>
+      </article>
+    );
+  }
+
+  const icon = {
+    approval: <Shield size={16} />,
+    assistant: null,
+    clarify: <MessageSquare size={16} />,
+    error: <AlertTriangle size={16} />,
+    reasoning: <Sparkles size={16} />,
+    status: <CircleDot size={16} />,
+    tool: <TerminalSquare size={16} />,
+    user: null,
+  }[message.kind];
+
+  return (
+    <article className={`message agent typed ${message.kind} ${message.status ?? ''}`}>
+      <div className="miniAvatar agentMark">H</div>
+      <div className="agentContent">
+        {message.kind === 'assistant' ? (
+          <>
+            <p>{message.text || '正在生成...'}</p>
+            {message.checks && <CheckListCard items={message.checks} />}
+            {message.artifacts && (
+              <div className="artifactGrid">
+                {message.artifacts.map((artifact) => (
+                  <Artifact
+                    icon={artifact.kind === 'file' ? <File size={19} /> : artifact.kind === 'terminal' ? <TerminalSquare size={19} /> : <Eye size={19} />}
+                    key={`${artifact.title}-${artifact.meta}`}
+                    meta={artifact.meta}
+                    onClick={() => onOpenWorkbenchTab(artifact.tab)}
+                    title={artifact.title}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <MessageEventCard
+            icon={icon}
+            message={message}
+            onOpenApproval={onOpenApproval}
+            onRespondApproval={onRespondApproval}
+            onRespondClarify={onRespondClarify}
+          />
+        )}
+      </div>
+    </article>
+  );
+}
+
+function CheckListCard({ items }: { items: ChatCheckItem[] }) {
+  return (
+    <div className="checkCard">
+      {items.map((item) => (
+        <div className={item.done ? undefined : 'current'} key={item.label}>
+          {item.done ? <CheckCircle2 size={15} /> : <CircleDot size={15} />}
+          {item.label}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MessageEventCard({
+  icon,
+  message,
+  onOpenApproval,
+  onRespondApproval,
+  onRespondClarify,
+}: {
+  icon: React.ReactNode;
+  message: ChatMessageModel;
+  onOpenApproval: () => void;
+  onRespondApproval: HermesRuntime['respondApproval'];
+  onRespondClarify: HermesRuntime['respondClarify'];
+}) {
+  const [clarifyDraft, setClarifyDraft] = useState('');
+  const isApproval = message.kind === 'approval';
+  const isClarify = message.kind === 'clarify';
+
+  return (
+    <div className={`messageCard ${message.kind}`}>
+      <div className="messageCardHead">
+        <span>{icon}</span>
+        <div>
+          <strong>{message.title || cardTitle(message)}</strong>
+          {message.meta && <small>{message.meta}</small>}
+        </div>
+      </div>
+      <p>{message.text}</p>
+      {message.command && (
+        <pre className="inlineCommand"><code>{message.command}</code></pre>
+      )}
+      {message.kind === 'reasoning' && (
+        <details className="reasoningDetails" open={message.status === 'running'}>
+          <summary>查看推理文本</summary>
+          <p>{message.text}</p>
+        </details>
+      )}
+      {isApproval && message.status === 'pending' && (
+        <div className="approvalInlineActions">
+          <button type="button" onClick={() => void onRespondApproval('once')}>本次允许</button>
+          <button type="button" onClick={() => void onRespondApproval('session')}>当前会话</button>
+          <button type="button" onClick={() => void onRespondApproval('always')}>始终允许</button>
+          <button className="danger" type="button" onClick={() => void onRespondApproval('deny')}>拒绝</button>
+          <button className="ghost" type="button" onClick={onOpenApproval}>详情</button>
+        </div>
+      )}
+      {isClarify && message.status === 'pending' && (
+        <div className="clarifyInlineActions">
+          {message.choices?.map((choice) => (
+            <button key={choice} type="button" onClick={() => void onRespondClarify(choice)}>
+              {choice}
+            </button>
+          ))}
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (clarifyDraft.trim()) {
+                void onRespondClarify(clarifyDraft.trim());
+                setClarifyDraft('');
+              }
+            }}
+          >
+            <input
+              aria-label="澄清回复"
+              onChange={(event) => setClarifyDraft(event.target.value)}
+              placeholder="输入补充信息"
+              value={clarifyDraft}
+            />
+            <button type="submit">发送</button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function cardTitle(message: ChatMessageModel) {
+  if (message.kind === 'tool') {
+    return message.toolName || '工具调用';
+  }
+
+  if (message.kind === 'reasoning') {
+    return '推理过程';
+  }
+
+  if (message.kind === 'clarify') {
+    return '需要补充信息';
+  }
+
+  if (message.kind === 'error') {
+    return 'Hermes 错误';
+  }
+
+  return '状态更新';
 }
 
 function Artifact({
@@ -564,12 +1601,25 @@ function Artifact({
 function Composer({
   attachmentOpen,
   setAttachmentOpen,
-  bridgeState,
+  runtime,
 }: {
   attachmentOpen: boolean;
   setAttachmentOpen: (open: boolean) => void;
-  bridgeState: string;
+  runtime: HermesRuntime;
 }) {
+  const [draft, setDraft] = useState('');
+  const canSend = runtime.gatewayStatus === 'connected' && runtime.socketState === 'open';
+
+  const submit = () => {
+    const text = draft.trim();
+    if (!text) {
+      return;
+    }
+
+    setDraft('');
+    void runtime.submitPrompt(text);
+  };
+
   return (
     <div className="composerWrap" data-testid="composer">
       <div className="composerMeta" aria-label="任务上下文">
@@ -580,14 +1630,14 @@ function Composer({
         </button>
         <button className="modelName" type="button">
           <Zap size={16} />
-          deepseek-v4-flash
+          {runtime.model}
         </button>
         <button className="workdir" type="button">
           <Folder size={16} />
-          工作目录：Hermes Desktop优化
+          工作目录：{runtime.cwd}
         </button>
-        <button className="contextMeter" type="button">上下文 42%</button>
-        <button className="statusIcon" type="button" aria-label="停止当前任务" title={`Bridge: ${bridgeState}`}>
+        <button className="contextMeter" type="button">上下文 {runtime.contextPercent}%</button>
+        <button className="statusIcon" type="button" aria-label={runtime.statusText} title={runtime.statusText}>
           <Square size={14} />
         </button>
       </div>
@@ -601,11 +1651,23 @@ function Composer({
         >
           <Plus size={22} />
         </button>
-        <textarea aria-label="消息" placeholder="继续描述你的目标，或输入 / 选择技能..." rows={1} />
+        <textarea
+          aria-label="消息"
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+          placeholder="继续描述你的目标，或输入 / 选择技能..."
+          rows={1}
+          value={draft}
+        />
         <button className="ghostIcon" type="button" aria-label="语音输入">
           <Mic size={19} />
         </button>
-        <button className="sendButton" type="button" aria-label="发送">
+        <button className="sendButton" type="button" aria-label="发送" disabled={!draft.trim() || !canSend} onClick={submit}>
           <SendHorizontal size={20} />
         </button>
 
@@ -644,11 +1706,13 @@ function Workbench({
   onTabChange,
   onCollapse,
   onOpenApproval,
+  runtime,
 }: {
   activeTab: WorkbenchTab;
   onTabChange: (tab: WorkbenchTab) => void;
   onCollapse: () => void;
   onOpenApproval: (variant: ApprovalVariant) => void;
+  runtime: HermesRuntime;
 }) {
   const tabs: Array<{ id: WorkbenchTab; label: string }> = [
     { id: 'activity', label: '活动' },
@@ -677,39 +1741,55 @@ function Workbench({
         </button>
       </div>
 
-      {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} />}
-      {activeTab === 'files' && <WorkbenchFiles />}
-      {activeTab === 'terminal' && <WorkbenchTerminal />}
-      {activeTab === 'preview' && <WorkbenchPreview />}
+      {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} runtime={runtime} />}
+      {activeTab === 'files' && <WorkbenchFiles files={runtime.files} />}
+      {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} />}
+      {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} />}
     </aside>
   );
 }
 
-function WorkbenchActivity({ onOpenApproval }: { onOpenApproval: (variant: ApprovalVariant) => void }) {
+function WorkbenchActivity({
+  onOpenApproval,
+  runtime,
+}: {
+  onOpenApproval: (variant: ApprovalVariant) => void;
+  runtime: HermesRuntime;
+}) {
   return (
     <>
       <section className="taskCard">
         <span>当前任务</span>
-        <strong>Hermes Desktop 设计方向</strong>
-        <p>正在生成中文优先的 Codex-like 高保真界面稿。</p>
+        <strong>{runtime.activeSessionId ? 'Hermes Agent 会话' : 'Hermes Desktop 设计方向'}</strong>
+        <p>{runtime.statusText}</p>
         <div className="progressBar">
-          <span />
+          <span style={{ width: `${Math.max(8, runtime.contextPercent)}%` }} />
         </div>
       </section>
       <section className="workbenchList">
         <h3>工具调用</h3>
-        <WorkbenchItem state="done" label="读取 page-map.md" value="0.2s" />
-        <WorkbenchItem state="done" label="生成界面骨架" value="完成" />
-        <WorkbenchItem state="running" label="运行 UI smoke" value="进行中" />
+        {runtime.tools.map((item) => (
+          <WorkbenchItem key={item.id} state={item.state} label={item.label} value={item.value} />
+        ))}
       </section>
-      <section className="approvalCard">
-        <Shield size={17} />
-        <div>
-          <strong>需要手动确认高风险命令</strong>
-          <span>默认暂停，确认后继续执行。</span>
-        </div>
-        <button type="button" onClick={() => onOpenApproval('risk')}>查看</button>
-      </section>
+      {runtime.pendingApproval ? (
+        <section className="approvalCard">
+          <Shield size={17} />
+          <div>
+            <strong>需要手动确认</strong>
+            <span>{runtime.pendingApproval.description}</span>
+          </div>
+          <button type="button" onClick={() => onOpenApproval('risk')}>查看</button>
+        </section>
+      ) : (
+        <section className="approvalCard idle">
+          <Shield size={17} />
+          <div>
+            <strong>暂无待审批命令</strong>
+            <span>出现高风险操作时会固定在这里。</span>
+          </div>
+        </section>
+      )}
       <button className="subtleAction" type="button" onClick={() => onOpenApproval('timeout')}>
         <Clock size={15} />
         查看审批超时态
@@ -718,33 +1798,22 @@ function WorkbenchActivity({ onOpenApproval }: { onOpenApproval: (variant: Appro
   );
 }
 
-function WorkbenchFiles() {
+function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
   return (
     <>
       <section className="railSection">
         <h3>变更文件</h3>
-        <button className="fileChangeRow selected" type="button">
-          <span className="changeTag add">新</span>
-          <span>src/App.tsx</span>
-          <small>UI</small>
-        </button>
-        <button className="fileChangeRow" type="button">
-          <span className="changeTag mod">改</span>
-          <span>src/styles.css</span>
-          <small>CSS</small>
-        </button>
-        <button className="fileChangeRow" type="button">
-          <span className="changeTag mod">改</span>
-          <span>package.json</span>
-          <small>发布</small>
-        </button>
+        {files.map((file, index) => (
+          <button className={index === 0 ? 'fileChangeRow selected' : 'fileChangeRow'} key={`${file.label}-${file.meta}`} type="button">
+            <span className={file.change === 'add' ? 'changeTag add' : 'changeTag mod'}>{file.change === 'add' ? '新' : '改'}</span>
+            <span>{file.label}</span>
+            <small>{file.meta}</small>
+          </button>
+        ))}
       </section>
       <section className="railSection">
         <h3>Diff 摘要</h3>
-        <pre className="miniCode"><code>+ Command Center states
-+ Approval recovery flow
-+ Right Workbench tabs
-+ Release scripts</code></pre>
+        <pre className="miniCode"><code>{files.map((file) => `${file.change === 'add' ? '+' : '~'} ${file.label} · ${file.meta}`).join('\n')}</code></pre>
         <div className="workbenchActions">
           <button type="button">打开文件</button>
           <button type="button">复制路径</button>
@@ -754,34 +1823,33 @@ function WorkbenchFiles() {
   );
 }
 
-function WorkbenchTerminal() {
+function WorkbenchTerminal({ logs }: { logs: string[] }) {
+  const renderedLogs = logs.length > 0 ? logs.slice(-12).join('\n') : 'Gateway 日志会在这里显示。';
+
   return (
     <>
       <section className="railSection terminalSection">
         <div className="terminalHeader">
-          <strong>node design/export-screenshots.mjs</strong>
+          <strong>Hermes Gateway</strong>
           <button type="button">
             <PauseCircle size={15} />
             停止
           </button>
         </div>
-        <pre className="terminalBlock"><code>✓ saved exports/01-chat-workbench.png
-✓ saved exports/06a-right-workbench-activity.png
-✓ saved exports/07-settings.png
-running visual smoke...</code></pre>
+        <pre className="terminalBlock"><code>{renderedLogs}</code></pre>
       </section>
       <section className="railSection">
         <h3>退出状态</h3>
         <div className="statusLine good">
           <CheckCircle2 size={15} />
-          最近一次构建通过 · 0.8s
+          日志流已连接
         </div>
       </section>
     </>
   );
 }
 
-function WorkbenchPreview() {
+function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
   return (
     <>
       <section className="previewPanel">
@@ -795,7 +1863,7 @@ function WorkbenchPreview() {
       </section>
       <section className="railSection">
         <h3>预览产物</h3>
-        <p>当前产物来自设计截图导出，可打开、刷新或复制路径。</p>
+        <p>{runtime.connection?.baseUrl ? `Gateway: ${runtime.connection.baseUrl}` : '当前处于浏览器预览或等待连接。'}</p>
         <div className="workbenchActions">
           <button type="button">刷新</button>
           <button type="button">打开文件</button>

@@ -5,6 +5,7 @@ const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['electron
   cwd: new URL('..', import.meta.url),
   env: {
     ...process.env,
+    BEAUTY_HERMES_SKIP_GATEWAY: '1',
     ELECTRON_ENABLE_LOGGING: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -46,4 +47,3 @@ if (/Security Warning|failed to install correctly|ERR_FILE_NOT_FOUND/i.test(outp
 }
 
 console.log('Electron smoke passed.');
-
