@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+const viteConfig = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');
 
 const requiredText = [
   '置顶',
@@ -40,13 +41,15 @@ const requiredStyles = [
 
 const missingText = requiredText.filter((token) => !app.includes(token));
 const missingStyles = requiredStyles.filter((token) => !styles.includes(token));
+const requiredConfig = ["base: './'"];
+const missingConfig = requiredConfig.filter((token) => !viteConfig.includes(token));
 
-if (missingText.length || missingStyles.length) {
+if (missingText.length || missingStyles.length || missingConfig.length) {
   console.error('UI contract check failed.');
   if (missingText.length) console.error('Missing App tokens:', missingText.join(', '));
   if (missingStyles.length) console.error('Missing CSS tokens:', missingStyles.join(', '));
+  if (missingConfig.length) console.error('Missing Vite config tokens:', missingConfig.join(', '));
   process.exit(1);
 }
 
 console.log('UI contract check passed.');
-
