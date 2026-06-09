@@ -5582,6 +5582,37 @@ textarea {
   cursor: pointer;
 }
 
+.spinIcon {
+  animation: spinIcon 0.9s linear infinite;
+}
+
+@keyframes spinIcon {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.lightButton:disabled,
+.selectButton:disabled,
+.profileRow:disabled,
+.inlineCreateForm button:disabled,
+.cronCreateForm button:disabled,
+.detailActions button:disabled,
+.cardActions button:disabled,
+.skillCard button:disabled,
+.automationRow button:disabled,
+.settingInlineActions button:disabled,
+.menuUrlForm button:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.inlineCreateForm input:disabled,
+.cronCreateForm input:disabled {
+  color: #939aa4;
+  background: #f4f6f8;
+}
+
 @media (max-width: 920px) {
   .cronCreateForm {
     grid-template-columns: 1fr;

@@ -16,6 +16,7 @@
     "smoke:gateway": "node scripts/smoke-gateway.mjs",
     "smoke:prompt": "node scripts/smoke-real-prompt.mjs",
     "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
+    "smoke:interactions": "npm run build && node scripts/smoke-interactions.mjs",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
     "pack": "npm run build && node scripts/package-mac.mjs --app-only",
     "dist:mac": "npm run build && node scripts/package-mac.mjs"

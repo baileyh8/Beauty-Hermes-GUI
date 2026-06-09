@@ -149,6 +149,28 @@ interface SlashCommandOption {
   title: string;
 }
 
+interface LocalSlashContext {
+  connection: HermesGatewayConnection | null;
+  contextPercent: number;
+  cwd: string;
+  files: GatewayFileItem[];
+  gatewayStatus: GatewayStatus;
+  inventory: HermesLocalInventory | null;
+  inventoryError: string;
+  messages: ChatMessageModel[];
+  model: string;
+  pendingApproval: PendingApproval | null;
+  recentSessions: SidebarItem[];
+  socketState: GatewayConnectionState;
+  statusText: string;
+  tools: GatewayToolItem[];
+}
+
+interface LocalSlashResponse {
+  text: string;
+  title: string;
+}
+
 type AttachmentMenuKind = HermesAttachmentKind | 'snippet' | 'url';
 
 interface PendingApproval {
@@ -499,6 +521,193 @@ function slashOutputText(result: unknown) {
   }
 
   return cleanDisplayText(textFromUnknown(result)).trim();
+}
+
+const localSlashCommandNames = new Set([
+  '/approval',
+  '/diagnose',
+  '/gateway',
+  '/help',
+  '/models',
+  '/profiles',
+  '/sessions',
+  '/skill',
+  '/skills',
+  '/summary',
+]);
+
+function slashCommandName(text: string) {
+  return text.trim().split(/\s+/)[0].toLowerCase();
+}
+
+function isKnownLocalSlashInput(text: string) {
+  return localSlashCommandNames.has(slashCommandName(text));
+}
+
+function bulletRows(rows: string[], fallback: string) {
+  return rows.length > 0 ? rows.map((row) => `- ${row}`).join('\n') : `- ${fallback}`;
+}
+
+function buildLocalSlashResponse(command: string, context: LocalSlashContext): LocalSlashResponse | null {
+  const name = slashCommandName(command);
+  const query = command.trim().slice(name.length).trim().toLowerCase();
+  const inventory = context.inventory;
+
+  if (name === '/help') {
+    return {
+      title: '内置指令',
+      text: [
+        '这些指令由 Beauty Hermes GUI 本地处理，未知 `/` 指令会继续透传给 Hermes Gateway。',
+        '',
+        '- `/help` 查看可用指令',
+        '- `/skills [关键词]` 搜索本机 skills',
+        '- `/skill <名称>` 查看单个 skill',
+        '- `/diagnose` 检查 Gateway、配置和进程状态',
+        '- `/approval` 查看当前待审批命令',
+        '- `/summary` 总结当前会话状态',
+        '- `/sessions` 查看最近真实会话',
+        '- `/models` 查看本机模型配置',
+        '- `/profiles` 查看当前 profile 线索',
+        '- `/gateway` 查看连接信息',
+      ].join('\n'),
+    };
+  }
+
+  if (name === '/skills') {
+    const skills = inventory?.skills ?? [];
+    const matched = skills
+      .filter((skill) => {
+        const haystack = `${skill.name} ${skill.description} ${skill.path} ${skill.source}`.toLowerCase();
+        return !query || haystack.includes(query);
+      })
+      .slice(0, 18)
+      .map((skill) => `\`${skill.name}\` · ${skill.source || 'local'} · ${compactLine(skill.description || skill.path, 92)}`);
+
+    return {
+      title: 'Skills',
+      text: [
+        `共读取到 **${skills.length}** 个 skills${query ? `，匹配 **${matched.length}** 个。` : '。'}`,
+        '',
+        bulletRows(matched, inventory ? '没有匹配的 skill。' : context.inventoryError || '本机 inventory 暂不可用。'),
+      ].join('\n'),
+    };
+  }
+
+  if (name === '/skill') {
+    const skills = inventory?.skills ?? [];
+    const skill = query
+      ? skills.find((item) => item.name.toLowerCase() === query)
+        ?? skills.find((item) => item.name.toLowerCase().includes(query))
+      : undefined;
+
+    return {
+      title: 'Skill 详情',
+      text: skill ? [
+        `**${skill.name}**`,
+        '',
+        `- 来源：${skill.source || 'local'}`,
+        `- 路径：\`${skill.path}\``,
+        `- 描述：${skill.description || '暂无描述'}`,
+        '',
+        `可在输入框继续发送 \`/skill ${skill.name}\` 或直接描述要调用它完成的任务。`,
+      ].join('\n') : [
+        query ? `没有找到匹配 \`${query}\` 的 skill。` : '请输入 skill 名称，例如 `/skill lark-approval`。',
+        '',
+        '可先运行 `/skills` 查看可用列表。',
+      ].join('\n'),
+    };
+  }
+
+  if (name === '/diagnose' || name === '/gateway') {
+    const diagnostics = inventory?.diagnostics;
+    const lines = [
+      `Gateway：${context.connection?.baseUrl || context.statusText || context.gatewayStatus}`,
+      `WebSocket：${context.socketState}`,
+      `模型：${context.model}`,
+      `工作目录：${context.cwd || '未设置'}`,
+      `Hermes Home：${diagnostics?.hermesHome || '未读取'}`,
+      `Hermes 版本：${diagnostics?.hermesVersion || '未读取'}`,
+      `配置文件：${diagnostics?.configExists ? '存在' : '未确认'}`,
+      `进程数：${diagnostics?.processCount ?? 0}`,
+      `最近错误：${context.inventoryError || '无'}`,
+    ];
+
+    return {
+      title: name === '/gateway' ? 'Gateway 状态' : '诊断结果',
+      text: bulletRows(lines, '暂无诊断信息。'),
+    };
+  }
+
+  if (name === '/approval') {
+    return {
+      title: '审批队列',
+      text: context.pendingApproval ? [
+        '当前有 1 条命令等待确认：',
+        '',
+        `- 描述：${context.pendingApproval.description}`,
+        `- 命令：\`${compactLine(context.pendingApproval.command, 140)}\``,
+        '',
+        '可以在右侧工作区或弹出的审批面板中选择允许/拒绝。',
+      ].join('\n') : '当前没有待审批命令。高风险操作出现时会固定到审批区域。',
+    };
+  }
+
+  if (name === '/summary') {
+    const userCount = context.messages.filter((message) => message.kind === 'user').length;
+    const assistantCount = context.messages.filter((message) => message.kind === 'assistant').length;
+    const runningTools = context.tools.filter((tool) => tool.state === 'running').length;
+    const changedFiles = context.files.length;
+
+    return {
+      title: '会话摘要',
+      text: [
+        `当前模型：**${context.model}**`,
+        `工作目录：${context.cwd || '未设置'}`,
+        `上下文：${context.contextPercent}% · 1M`,
+        `消息：${userCount} 条用户消息，${assistantCount} 条最终结果`,
+        `工具：${runningTools} 个运行中，${context.tools.length} 个已记录`,
+        `文件：${changedFiles} 个变更条目`,
+        `会话：${context.recentSessions.length} 个最近真实会话`,
+      ].join('\n'),
+    };
+  }
+
+  if (name === '/sessions') {
+    return {
+      title: '最近会话',
+      text: bulletRows(
+        context.recentSessions.slice(0, 12).map((session) => `${session.title} · ${session.meta}`),
+        inventory ? '暂无真实会话。' : context.inventoryError || '还没有读取到会话列表。',
+      ),
+    };
+  }
+
+  if (name === '/models') {
+    return {
+      title: '模型配置',
+      text: bulletRows(
+        (inventory?.models ?? []).slice(0, 16).map((model) => `${model.name || model.model} · ${model.provider || 'provider 未设置'} · \`${model.model}\``),
+        inventory ? `当前模型：${context.model}` : context.inventoryError || `当前模型：${context.model}`,
+      ),
+    };
+  }
+
+  if (name === '/profiles') {
+    const config = inventory?.config;
+    return {
+      title: 'Profile 线索',
+      text: [
+        `默认模型：${config?.defaultModel || context.model}`,
+        `Provider：${config?.provider || '未设置'}`,
+        `Toolsets：${config?.toolsets?.join(', ') || '未设置'}`,
+        `Hermes Home：${inventory?.diagnostics.hermesHome || '未读取'}`,
+        '',
+        '完整 profile 创建、切换和 setup 命令请打开左侧工作台里的 Profiles 页面。',
+      ].join('\n'),
+    };
+  }
+
+  return null;
 }
 
 function maybeJsonRecord(value: unknown): Record<string, unknown> | null {
@@ -1589,6 +1798,37 @@ function useHermesRuntime(): HermesRuntime {
         text: trimmed,
       });
 
+      if (trimmed.startsWith('/')) {
+        const localResponse = buildLocalSlashResponse(trimmed, {
+          connection,
+          contextPercent,
+          cwd,
+          files,
+          gatewayStatus,
+          inventory,
+          inventoryError,
+          messages,
+          model,
+          pendingApproval,
+          recentSessions: recentSessionItems,
+          socketState,
+          statusText,
+          tools,
+        });
+
+        if (localResponse) {
+          upsertMessage({
+            id: makeId('slash-local'),
+            kind: 'assistant',
+            status: 'done',
+            text: localResponse.text,
+            title: localResponse.title,
+          });
+          setStatusText('就绪');
+          return;
+        }
+      }
+
       const client = clientRef.current;
       if (!client || client.connectionState !== 'open') {
         upsertMessage({
@@ -1612,7 +1852,7 @@ function useHermesRuntime(): HermesRuntime {
           const output = slashOutputText(result) || '指令已完成。';
           upsertMessage({
             id: makeId('slash-output'),
-            kind: 'status',
+            kind: 'assistant',
             sessionId,
             status: 'done',
             text: output,
@@ -1638,7 +1878,7 @@ function useHermesRuntime(): HermesRuntime {
         });
       }
     },
-    [ensureRuntimeSession, upsertMessage],
+    [connection, contextPercent, cwd, ensureRuntimeSession, files, gatewayStatus, inventory, inventoryError, messages, model, pendingApproval, recentSessionItems, socketState, statusText, tools, upsertMessage],
   );
 
   const respondApproval = useCallback(
@@ -2918,6 +3158,9 @@ function Composer({
   const [slashIndex, setSlashIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canSend = runtime.gatewayStatus === 'connected' && runtime.socketState === 'open';
+  const trimmedDraft = draft.trim();
+  const canRunLocalSlash = trimmedDraft.startsWith('/') && isKnownLocalSlashInput(trimmedDraft);
+  const canSubmit = Boolean(trimmedDraft) && (canSend || canRunLocalSlash);
   const slashQuery = draft.trimStart().startsWith('/') ? draft.trimStart().slice(1).toLowerCase() : '';
   const slashOptions = useMemo<SlashCommandOption[]>(() => {
     const base: SlashCommandOption[] = [
@@ -2926,6 +3169,10 @@ function Composer({
       { desc: '列出可用 skills', icon: <Puzzle size={16} />, insert: '/skills', title: '/skills' },
       { desc: '检查当前审批队列', icon: <Shield size={16} />, insert: '/approval', title: '/approval' },
       { desc: '总结当前会话上下文', icon: <MessageSquare size={16} />, insert: '/summary', title: '/summary' },
+      { desc: '查看最近真实会话', icon: <MessageSquare size={16} />, insert: '/sessions', title: '/sessions' },
+      { desc: '查看本机模型配置', icon: <Zap size={16} />, insert: '/models', title: '/models' },
+      { desc: '查看 Gateway 连接信息', icon: <Network size={16} />, insert: '/gateway', title: '/gateway' },
+      { desc: '查看 profile 配置线索', icon: <UsersRound size={16} />, insert: '/profiles', title: '/profiles' },
     ];
     const skills = runtime.inventory?.skills.slice(0, 12).map((skill) => ({
       desc: skill.description || skill.path,
@@ -2986,7 +3233,7 @@ function Composer({
       return;
     }
 
-    if (!canSend) {
+    if (!canSend && !canRunLocalSlash) {
       setComposerNotice('Hermes Gateway 还没有连接完成。');
       return;
     }
@@ -3080,6 +3327,11 @@ function Composer({
               selectSlashOption(visibleSlashOptions[slashIndex]);
               return;
             }
+            if (event.key === 'Escape' && (slashOpen || attachmentOpen)) {
+              event.preventDefault();
+              setAttachmentOpen(false);
+              return;
+            }
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               submit();
@@ -3092,7 +3344,7 @@ function Composer({
         <button className="ghostIcon" type="button" aria-label="语音输入">
           <Mic size={19} />
         </button>
-        <button className="sendButton" type="button" aria-label="发送" disabled={!draft.trim() || !canSend} onClick={submit}>
+        <button className="sendButton" type="button" aria-label="发送" disabled={!canSubmit} onClick={submit}>
           <SendHorizontal size={20} />
         </button>
 
@@ -4027,12 +4279,14 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
   const [selectedProfile, setSelectedProfile] = useState('default');
   const [newProfileName, setNewProfileName] = useState('');
   const [profileStatus, setProfileStatus] = useState('');
+  const [profileBusy, setProfileBusy] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const visibleProfiles = profiles.length > 0 ? profiles : fallbackProfiles;
   const activeProfile = visibleProfiles.find((profile) => profile.name === selectedProfile) || visibleProfiles[0];
   const loadProfiles = useCallback(async () => {
     try {
+      setProfileBusy('load');
       const [list, active] = await Promise.all([
         apiRequest<{ profiles?: HermesProfileInfo[] }>({ path: '/api/profiles', timeoutMs: 12000 }),
         apiRequest<{ active?: string; current?: string }>({ path: '/api/profiles/active', timeoutMs: 12000 }),
@@ -4045,6 +4299,8 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setProfileStatus(`读取 profiles 失败：${message}`);
+    } finally {
+      setProfileBusy('');
     }
   }, [apiRequest]);
   const createProfile = useCallback(async () => {
@@ -4055,6 +4311,7 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
     }
 
     try {
+      setProfileBusy('create');
       await apiRequest({
         body: { clone_from_default: true, name },
         method: 'POST',
@@ -4068,10 +4325,13 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setProfileStatus(`创建失败：${message}`);
+    } finally {
+      setProfileBusy('');
     }
   }, [apiRequest, loadProfiles, newProfileName, refreshInventory]);
   const activateProfile = useCallback(async (name: string) => {
     try {
+      setProfileBusy(`activate:${name}`);
       await apiRequest({
         body: { name },
         method: 'POST',
@@ -4083,10 +4343,13 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setProfileStatus(`切换失败：${message}`);
+    } finally {
+      setProfileBusy('');
     }
   }, [apiRequest]);
   const copySetupCommand = useCallback(async (name: string) => {
     try {
+      setProfileBusy(`copy:${name}`);
       const result = await apiRequest<{ command?: string }>({
         path: `/api/profiles/${encodeURIComponent(name)}/setup-command`,
         timeoutMs: 12000,
@@ -4098,6 +4361,8 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setProfileStatus(`复制失败：${message}`);
+    } finally {
+      setProfileBusy('');
     }
   }, [apiRequest]);
 
@@ -4110,8 +4375,8 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
       <div className="listPanel">
         <div className="panelTitle">
           <h2>工作身份</h2>
-          <button type="button" onClick={() => void loadProfiles()} aria-label="刷新 profiles">
-            <RefreshCw size={15} />
+          <button type="button" onClick={() => void loadProfiles()} aria-label="刷新 profiles" disabled={Boolean(profileBusy)}>
+            <RefreshCw className={profileBusy === 'load' ? 'spinIcon' : undefined} size={15} />
           </button>
         </div>
         <form
@@ -4123,11 +4388,14 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
         >
           <input
             aria-label="新 profile 名称"
+            disabled={Boolean(profileBusy)}
             onChange={(event) => setNewProfileName(event.target.value)}
             placeholder="新 profile"
             value={newProfileName}
           />
-          <button type="submit">创建</button>
+          <button type="submit" disabled={Boolean(profileBusy)}>
+            {profileBusy === 'create' ? '创建中' : '创建'}
+          </button>
         </form>
         {visibleProfiles.map((profile) => (
           <button
@@ -4135,6 +4403,7 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
             type="button"
             key={profile.name}
             onClick={() => setSelectedProfile(profile.name)}
+            disabled={Boolean(profileBusy)}
           >
             <div className="profileAvatar">{profile.name[0]}</div>
             <div>
@@ -4161,14 +4430,14 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
           <PolicyCard icon={<Database />} title="运行策略" desc={`max turns ${config?.maxTurns ?? '未设置'} · timeout ${config?.gatewayTimeout ?? '未设置'}s`} />
         </div>
         <div className="detailActions">
-          <button type="button" onClick={() => void activateProfile(activeProfile.name)}>
-            设为默认
+          <button type="button" onClick={() => void activateProfile(activeProfile.name)} disabled={Boolean(profileBusy) || activeProfile.name === activeName}>
+            {profileBusy === `activate:${activeProfile.name}` ? '切换中' : activeProfile.name === activeName ? '当前默认' : '设为默认'}
           </button>
-          <button type="button" onClick={() => void copySetupCommand(activeProfile.name)}>
-            复制 setup 命令
+          <button type="button" onClick={() => void copySetupCommand(activeProfile.name)} disabled={Boolean(profileBusy)}>
+            {profileBusy === `copy:${activeProfile.name}` ? '复制中' : '复制 setup 命令'}
           </button>
-          <button type="button" onClick={() => void loadProfiles()}>
-            刷新
+          <button type="button" onClick={() => void loadProfiles()} disabled={Boolean(profileBusy)}>
+            {profileBusy === 'load' ? '刷新中' : '刷新'}
           </button>
         </div>
       </div>
@@ -4190,21 +4459,26 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
   const [query, setQuery] = useState('');
   const [skillRows, setSkillRows] = useState<HermesSkillInfo[]>([]);
   const [skillStatus, setSkillStatus] = useState('');
+  const [skillBusy, setSkillBusy] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const loadSkills = useCallback(async () => {
     try {
+      setSkillBusy('load');
       const rows = await apiRequest<HermesSkillInfo[]>({ path: '/api/skills', timeoutMs: 12000 });
       setSkillRows(Array.isArray(rows) ? rows : []);
       setSkillStatus(Array.isArray(rows) ? `已同步 ${rows.length} 个 skills` : 'skills 返回为空');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSkillStatus(`读取 skills 失败：${message}`);
+    } finally {
+      setSkillBusy('');
     }
   }, [apiRequest]);
   const toggleSkill = useCallback(async (skill: HermesSkillInfo) => {
     const nextEnabled = !(skill.enabled ?? true);
     try {
+      setSkillBusy(`toggle:${skill.name}`);
       await apiRequest({
         body: { enabled: nextEnabled, name: skill.name },
         method: 'PUT',
@@ -4217,6 +4491,8 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSkillStatus(`更新失败：${message}`);
+    } finally {
+      setSkillBusy('');
     }
   }, [apiRequest, refreshInventory]);
   useEffect(() => {
@@ -4255,11 +4531,11 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
         </div>
         <label className="inlineSearch">
           <Search size={15} />
-          <input placeholder="搜索 skill" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input aria-label="搜索 skill" placeholder="搜索 skill" value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <button className="lightButton" type="button" onClick={() => void loadSkills()}>
-          <RefreshCw size={16} />
-          刷新
+        <button className="lightButton" type="button" onClick={() => void loadSkills()} disabled={Boolean(skillBusy)}>
+          <RefreshCw className={skillBusy === 'load' ? 'spinIcon' : undefined} size={16} />
+          {skillBusy === 'load' ? '刷新中' : '刷新'}
         </button>
       </div>
       {skillStatus && <p className="surfaceStatus">{skillStatus}</p>}
@@ -4273,10 +4549,10 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
             <p>{skill.description || skill.path || '暂无描述'}</p>
             <div>
               <span className={(skill.enabled ?? true) ? 'pill green' : 'pill amber'}>{skill.source || ((skill.enabled ?? true) ? 'enabled' : 'disabled')}</span>
-              <button type="button" onClick={() => void toggleSkill(skill)}>
-                {(skill.enabled ?? true) ? '停用' : '启用'}
+              <button type="button" onClick={() => void toggleSkill(skill)} disabled={Boolean(skillBusy)}>
+                {skillBusy === `toggle:${skill.name}` ? '更新中' : (skill.enabled ?? true) ? '停用' : '启用'}
               </button>
-              <button type="button" onClick={() => void navigator.clipboard?.writeText(skill.path || skill.description || skill.name)}>复制</button>
+              <button type="button" onClick={() => void navigator.clipboard?.writeText(skill.path || skill.description || skill.name)} disabled={Boolean(skillBusy)}>复制</button>
             </div>
           </article>
         )) : (
@@ -4301,16 +4577,20 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
   const [newJobName, setNewJobName] = useState('');
   const [newJobSchedule, setNewJobSchedule] = useState('daily@09:00');
   const [newJobPrompt, setNewJobPrompt] = useState('');
+  const [cronBusy, setCronBusy] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const loadCronJobs = useCallback(async () => {
     try {
+      setCronBusy('load');
       const rows = await apiRequest<HermesCronJobInfo[]>({ path: '/api/cron/jobs', timeoutMs: 20000 });
       setCronJobs(Array.isArray(rows) ? rows : []);
       setCronStatus(Array.isArray(rows) ? `已同步 ${rows.length} 个自动化任务` : 'Cron 返回为空');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setCronStatus(`读取 cron 失败：${message}`);
+    } finally {
+      setCronBusy('');
     }
   }, [apiRequest]);
   const cronJobPath = (job: HermesCronJobInfo, action?: string) => {
@@ -4330,6 +4610,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     }
 
     try {
+      setCronBusy(`${action}:${id}`);
       await apiRequest({
         method: action === 'delete' ? 'DELETE' : 'POST',
         path: cronJobPath(job, action === 'delete' ? undefined : action),
@@ -4341,6 +4622,8 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setCronStatus(`操作失败：${message}`);
+    } finally {
+      setCronBusy('');
     }
   }, [apiRequest, loadCronJobs, refreshInventory]);
   const createCronJob = useCallback(async () => {
@@ -4351,6 +4634,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     }
 
     try {
+      setCronBusy('create');
       await apiRequest({
         body: {
           deliver: 'local',
@@ -4370,6 +4654,8 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setCronStatus(`创建失败：${message}`);
+    } finally {
+      setCronBusy('');
     }
   }, [apiRequest, loadCronJobs, newJobName, newJobPrompt, newJobSchedule, refreshInventory]);
   useEffect(() => {
@@ -4388,9 +4674,9 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
           <h2>自动化</h2>
           <p>展示 Hermes 本机后台调度、超时策略和会话来源。</p>
         </div>
-        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
-          <RefreshCw size={16} />
-          刷新状态
+        <button className="lightButton" type="button" onClick={() => void loadCronJobs()} disabled={Boolean(cronBusy)}>
+          <RefreshCw className={cronBusy === 'load' ? 'spinIcon' : undefined} size={16} />
+          {cronBusy === 'load' ? '刷新中' : '刷新状态'}
         </button>
       </div>
       <form
@@ -4400,10 +4686,10 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
           void createCronJob();
         }}
       >
-        <input aria-label="任务名称" placeholder="任务名称" value={newJobName} onChange={(event) => setNewJobName(event.target.value)} />
-        <input aria-label="计划表达式" placeholder="daily@09:00" value={newJobSchedule} onChange={(event) => setNewJobSchedule(event.target.value)} />
-        <input aria-label="自动化 prompt" placeholder="让 Hermes 做什么..." value={newJobPrompt} onChange={(event) => setNewJobPrompt(event.target.value)} />
-        <button type="submit">新建</button>
+        <input aria-label="任务名称" disabled={Boolean(cronBusy)} placeholder="任务名称" value={newJobName} onChange={(event) => setNewJobName(event.target.value)} />
+        <input aria-label="计划表达式" disabled={Boolean(cronBusy)} placeholder="daily@09:00" value={newJobSchedule} onChange={(event) => setNewJobSchedule(event.target.value)} />
+        <input aria-label="自动化 prompt" disabled={Boolean(cronBusy)} placeholder="让 Hermes 做什么..." value={newJobPrompt} onChange={(event) => setNewJobPrompt(event.target.value)} />
+        <button type="submit" disabled={Boolean(cronBusy)}>{cronBusy === 'create' ? '创建中' : '新建'}</button>
       </form>
       {cronStatus && <p className="surfaceStatus">{cronStatus}</p>}
       <div className="automationList">
@@ -4418,13 +4704,28 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
                 <span>{job.schedule || '未设置 schedule'} · {compactLine(job.prompt || '', 64) || '无 prompt 预览'}</span>
               </div>
               <span className={paused ? 'pill amber' : 'pill green'}>{paused ? '已暂停' : '启用'}</span>
-              <button type="button" onClick={() => void runCronAction(job, paused ? 'resume' : 'pause')}>
+              <button
+                type="button"
+                aria-label={paused ? '恢复自动化任务' : '暂停自动化任务'}
+                onClick={() => void runCronAction(job, paused ? 'resume' : 'pause')}
+                disabled={Boolean(cronBusy)}
+              >
                 {paused ? <Play size={16} /> : <PauseCircle size={16} />}
               </button>
-              <button type="button" onClick={() => void runCronAction(job, 'trigger')}>
+              <button
+                type="button"
+                aria-label="立即触发自动化任务"
+                onClick={() => void runCronAction(job, 'trigger')}
+                disabled={Boolean(cronBusy)}
+              >
                 <Zap size={16} />
               </button>
-              <button type="button" onClick={() => void runCronAction(job, 'delete')}>
+              <button
+                type="button"
+                aria-label="删除自动化任务"
+                onClick={() => void runCronAction(job, 'delete')}
+                disabled={Boolean(cronBusy)}
+              >
                 <Trash2 size={16} />
               </button>
             </article>
@@ -4438,7 +4739,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
               <span>{meta}</span>
             </div>
             <span className={status === '启用' || status === '运行中' ? 'pill green' : status === '空闲' ? 'pill' : 'pill amber'}>{status}</span>
-            <button type="button" onClick={() => void runtime.refreshInventory()}>
+            <button type="button" aria-label="刷新自动化状态" onClick={() => void runtime.refreshInventory()}>
               <MoreHorizontal size={16} />
             </button>
           </article>
@@ -4451,7 +4752,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
               <span>{count} 个历史会话</span>
             </div>
             <span className="pill">{count}</span>
-            <button type="button" onClick={() => void runtime.refreshInventory()}>
+            <button type="button" aria-label="刷新会话来源" onClick={() => void runtime.refreshInventory()}>
               <MoreHorizontal size={16} />
             </button>
           </article>
@@ -4465,10 +4766,12 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
   const messaging = runtime.inventory?.messaging;
   const [platformsState, setPlatformsState] = useState<HermesMessagingPlatformInfo[]>([]);
   const [messagingStatus, setMessagingStatus] = useState('');
+  const [messagingBusy, setMessagingBusy] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const loadPlatforms = useCallback(async () => {
     try {
+      setMessagingBusy('load');
       const response = await apiRequest<{ platforms?: HermesMessagingPlatformInfo[] }>({ path: '/api/messaging/platforms', timeoutMs: 12000 });
       const rows = Array.isArray(response.platforms) ? response.platforms : [];
       setPlatformsState(rows);
@@ -4476,11 +4779,14 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMessagingStatus(`读取平台失败：${message}`);
+    } finally {
+      setMessagingBusy('');
     }
   }, [apiRequest]);
   const togglePlatform = useCallback(async (platform: HermesMessagingPlatformInfo) => {
     try {
       const nextEnabled = !platform.enabled;
+      setMessagingBusy(`toggle:${platform.id}`);
       await apiRequest({
         body: { enabled: nextEnabled },
         method: 'PUT',
@@ -4493,10 +4799,13 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMessagingStatus(`更新失败：${message}`);
+    } finally {
+      setMessagingBusy('');
     }
   }, [apiRequest, loadPlatforms, refreshInventory]);
   const testPlatform = useCallback(async (platform: HermesMessagingPlatformInfo) => {
     try {
+      setMessagingBusy(`test:${platform.id}`);
       const result = await apiRequest<{ message?: string; ok?: boolean; state?: string }>({
         method: 'POST',
         path: `/api/messaging/platforms/${encodeURIComponent(platform.id)}/test`,
@@ -4506,6 +4815,8 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMessagingStatus(`测试失败：${message}`);
+    } finally {
+      setMessagingBusy('');
     }
   }, [apiRequest]);
   useEffect(() => {
@@ -4533,9 +4844,9 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
           <h2>Messaging Gateway</h2>
           <p>读取 Hermes Gateway 平台状态、频道目录和用户配对。</p>
         </div>
-        <button className="lightButton" type="button" onClick={() => void loadPlatforms()}>
-          <Network size={16} />
-          刷新平台
+        <button className="lightButton" type="button" onClick={() => void loadPlatforms()} disabled={Boolean(messagingBusy)}>
+          <RefreshCw className={messagingBusy === 'load' ? 'spinIcon' : undefined} size={16} />
+          {messagingBusy === 'load' ? '刷新中' : '刷新平台'}
         </button>
       </div>
       {messagingStatus && <p className="surfaceStatus">{messagingStatus}</p>}
@@ -4549,9 +4860,13 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
             <strong>{platform.name}</strong>
             <p>{platform.description || `${messaging?.channelCounts[platform.id] ?? 0} 个频道 · ${platform.updated_at || '未记录更新时间'}`}</p>
             <div className="cardActions">
-              <button type="button" onClick={() => void togglePlatform(platform)}>{platform.enabled ? '停用' : '启用'}</button>
-              <button type="button" onClick={() => void testPlatform(platform)}>测试</button>
-              {platform.docs_url && <button type="button" onClick={() => window.open(platform.docs_url, '_blank', 'noopener,noreferrer')}>文档</button>}
+              <button type="button" onClick={() => void togglePlatform(platform)} disabled={Boolean(messagingBusy)}>
+                {messagingBusy === `toggle:${platform.id}` ? '更新中' : platform.enabled ? '停用' : '启用'}
+              </button>
+              <button type="button" onClick={() => void testPlatform(platform)} disabled={Boolean(messagingBusy)}>
+                {messagingBusy === `test:${platform.id}` ? '测试中' : '测试'}
+              </button>
+              {platform.docs_url && <button type="button" onClick={() => window.open(platform.docs_url, '_blank', 'noopener,noreferrer')} disabled={Boolean(messagingBusy)}>文档</button>}
             </div>
           </article>
         )) : (
