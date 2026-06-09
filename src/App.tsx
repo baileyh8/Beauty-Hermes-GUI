@@ -75,7 +75,7 @@ type Surface =
 type WorkbenchTab = 'activity' | 'files' | 'terminal' | 'preview';
 type ApprovalVariant = 'risk' | 'timeout' | 'permission';
 type SettingsSection = 'general' | 'models' | 'permissions' | 'integrations' | 'appearance' | 'advanced';
-type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error';
+type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error' | 'stopped';
 type ChatMessageKind =
   | 'assistant'
   | 'user'
@@ -142,6 +142,15 @@ interface GatewayFileItem {
   meta: string;
 }
 
+interface SlashCommandOption {
+  desc: string;
+  icon: React.ReactNode;
+  insert: string;
+  title: string;
+}
+
+type AttachmentMenuKind = HermesAttachmentKind | 'snippet' | 'url';
+
 interface PendingApproval {
   command: string;
   description: string;
@@ -165,16 +174,20 @@ interface HermesRuntime {
   cwd: string;
   files: GatewayFileItem[];
   gatewayStatus: GatewayStatus;
+  inventory: HermesLocalInventory | null;
+  inventoryError: string;
   logs: string[];
   messages: ChatMessageModel[];
   model: string;
   pendingApproval: null | PendingApproval;
   pendingClarify: null | PendingClarify;
   recentSessions: SidebarItem[];
+  refreshInventory: () => Promise<void>;
   selectedStoredSessionId: null | string;
   socketState: GatewayConnectionState;
   statusText: string;
   selectSession: (sessionId: string) => Promise<void>;
+  stopGateway: () => Promise<void>;
   submitPrompt: (text: string) => Promise<void>;
   respondApproval: (choice: 'once' | 'session' | 'always' | 'deny') => Promise<void>;
   respondClarify: (answer: string) => Promise<void>;
@@ -703,6 +716,8 @@ function useHermesRuntime(): HermesRuntime {
   const [cwd, setCwd] = useState('');
   const [contextPercent, setContextPercent] = useState(0);
   const [statusText, setStatusText] = useState('正在连接 Hermes Gateway');
+  const [inventory, setInventory] = useState<HermesLocalInventory | null>(null);
+  const [inventoryError, setInventoryError] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [recentSessionItems, setRecentSessionItems] = useState<SidebarItem[]>(recentSessions);
   const [tools, setTools] = useState<GatewayToolItem[]>(fallbackTools);
@@ -750,6 +765,21 @@ function useHermesRuntime(): HermesRuntime {
 
     if (nextPercent !== null) {
       setContextPercent(nextPercent);
+    }
+  }, []);
+
+  const refreshInventory = useCallback(async () => {
+    if (!window.hermesDesktop?.getLocalInventory) {
+      return;
+    }
+
+    try {
+      const nextInventory = await window.hermesDesktop.getLocalInventory();
+      setInventory(nextInventory);
+      setInventoryError('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setInventoryError(message);
     }
   }, []);
 
@@ -1186,6 +1216,7 @@ function useHermesRuntime(): HermesRuntime {
       return;
     }
 
+    void refreshInventory();
     setGatewayStatus('starting');
     setStatusText('正在启动 Hermes Gateway');
     const desktop = window.hermesDesktop;
@@ -1245,6 +1276,8 @@ function useHermesRuntime(): HermesRuntime {
         } else {
           setLogs((current) => [`Hermes status error: ${statusResponse.reason}`, ...current].slice(0, 120));
         }
+
+        void refreshInventory();
       })();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1260,7 +1293,7 @@ function useHermesRuntime(): HermesRuntime {
         title: '无法连接 Hermes Gateway',
       });
     }
-  }, [handleGatewayEvent, resumeRuntimeSession, upsertMessage]);
+  }, [handleGatewayEvent, refreshInventory, resumeRuntimeSession, upsertMessage]);
 
   useEffect(() => {
     void connectGateway();
@@ -1490,6 +1523,24 @@ function useHermesRuntime(): HermesRuntime {
     [upsertMessage],
   );
 
+  const stopGateway = useCallback(async () => {
+    clientRef.current?.close();
+    clientRef.current = null;
+    setSocketState('closed');
+
+    if (!window.hermesDesktop?.stopHermes) {
+      setStatusText('浏览器预览模式');
+      return;
+    }
+
+    const nextConnection = await window.hermesDesktop.stopHermes();
+    setConnection(nextConnection);
+    setLogs(nextConnection?.logs ?? []);
+    setGatewayStatus(nextConnection?.status === 'exited' ? 'stopped' : 'skipped');
+    setStatusText(nextConnection?.status === 'exited' ? 'Gateway 已停止' : '没有可停止的本机进程');
+    void refreshInventory();
+  }, [refreshInventory]);
+
   const connectionLabel = useMemo(() => {
     if (gatewayStatus === 'browser') {
       return '浏览器预览';
@@ -1501,6 +1552,10 @@ function useHermesRuntime(): HermesRuntime {
 
     if (gatewayStatus === 'error') {
       return '连接失败';
+    }
+
+    if (gatewayStatus === 'stopped') {
+      return '已停止';
     }
 
     if (gatewayStatus === 'skipped') {
@@ -1522,14 +1577,18 @@ function useHermesRuntime(): HermesRuntime {
     cwd,
     files,
     gatewayStatus,
+    inventory,
+    inventoryError,
     logs,
     messages,
     model,
     pendingApproval,
     pendingClarify,
     recentSessions: recentSessionItems,
+    refreshInventory,
     selectedStoredSessionId,
     selectSession,
+    stopGateway,
     respondApproval,
     respondClarify,
     socketState,
@@ -1569,6 +1628,8 @@ function App() {
   const [approvalVariant, setApprovalVariant] = useState<ApprovalVariant | null>(null);
   const [deniedRecovery, setDeniedRecovery] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
+  const [hiddenSidebarKeys, setHiddenSidebarKeys] = useState<string[]>([]);
+  const [notice, setNotice] = useState('');
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1587,6 +1648,19 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
+  useEffect(() => {
+    if (!notice) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => setNotice(''), 2200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const showNotice = useCallback((message: string) => {
+    setNotice(message);
+  }, []);
+
   const chatTitle = useMemo(() => {
     if (!runtime.selectedStoredSessionId) {
       return surfaceMeta.chat.title;
@@ -1596,7 +1670,20 @@ function App() {
   }, [runtime.recentSessions, runtime.selectedStoredSessionId]);
   const currentMeta = surface === 'chat' ? { ...surfaceMeta.chat, title: chatTitle } : surfaceMeta[surface];
   const projectItems = useMemo(() => projectSidebarItems(runtime), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions]);
+  const visibleRecentItems = useMemo(
+    () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(item.id || item.title)),
+    [hiddenSidebarKeys, runtime.recentSessions],
+  );
+  const visibleProjectItems = useMemo(
+    () => projectItems.filter((item) => !hiddenSidebarKeys.includes(item.id || item.title)),
+    [hiddenSidebarKeys, projectItems],
+  );
   const showWorkbench = surface === 'chat';
+  const hideSidebarItem = useCallback((item: SidebarItem, action: '归档' | '删除') => {
+    const key = item.id || item.title;
+    setHiddenSidebarKeys((current) => current.includes(key) ? current : [...current, key]);
+    showNotice(`${item.title} 已${action}`);
+  }, [showNotice]);
 
   return (
     <div className={rightOpen && showWorkbench ? 'appShell workbenchOpen' : 'appShell'} data-testid="app-shell">
@@ -1611,8 +1698,14 @@ function App() {
           setSurface('chat');
           void runtime.selectSession(sessionId);
         }}
-        recentItems={runtime.recentSessions}
-        projectItems={projectItems}
+        onArchiveItem={(item) => hideSidebarItem(item, '归档')}
+        onDeleteItem={(item) => hideSidebarItem(item, '删除')}
+        onMoreItem={(item) => {
+          setCommandQuery(item.title);
+          setCommandOpen(true);
+        }}
+        recentItems={visibleRecentItems}
+        projectItems={visibleProjectItems}
         selectedStoredSessionId={runtime.selectedStoredSessionId}
         statusText={runtime.connectionLabel}
       />
@@ -1622,7 +1715,15 @@ function App() {
           <div className="topBarTitle">
             <h1 data-testid="surface-title">{currentMeta.title}</h1>
             {surface === 'chat' && (
-              <button className="titleMoreButton" type="button" aria-label="会话更多操作">
+              <button
+                className="titleMoreButton"
+                type="button"
+                aria-label="会话更多操作"
+                onClick={() => {
+                  setCommandQuery(chatTitle);
+                  setCommandOpen(true);
+                }}
+              >
                 <MoreHorizontal size={17} />
               </button>
             )}
@@ -1654,6 +1755,11 @@ function App() {
             runtime={runtime}
             setAttachmentOpen={setAttachmentOpen}
             onOpenApproval={() => setApprovalVariant('risk')}
+            onOpenProjects={() => setSurface('projects')}
+            onOpenSettingsSection={(section) => {
+              setSettingsSection(section);
+              setSurface('settings');
+            }}
             onOpenWorkbenchTab={(tab) => {
               setRightOpen(true);
               setWorkbenchTab(tab);
@@ -1668,15 +1774,15 @@ function App() {
             onOpenSettings={() => setSurface('settings')}
           />
         )}
-        {surface === 'agents' && <AgentsSurface onOpenApproval={() => setApprovalVariant('risk')} />}
-        {surface === 'profiles' && <ProfilesSurface />}
-        {surface === 'skills' && <SkillsSurface />}
-        {surface === 'cron' && <CronSurface />}
-        {surface === 'messaging' && <MessagingSurface />}
+        {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} />}
+        {surface === 'profiles' && <ProfilesSurface runtime={runtime} />}
+        {surface === 'skills' && <SkillsSurface runtime={runtime} />}
+        {surface === 'cron' && <CronSurface runtime={runtime} />}
+        {surface === 'messaging' && <MessagingSurface runtime={runtime} />}
         {surface === 'settings' && (
-          <SettingsSurface selected={settingsSection} onSelect={setSettingsSection} />
+          <SettingsSurface runtime={runtime} selected={settingsSection} onSelect={setSettingsSection} />
         )}
-        {surface === 'diagnostics' && <DiagnosticsSurface onOpenPermission={() => setApprovalVariant('permission')} />}
+        {surface === 'diagnostics' && <DiagnosticsSurface runtime={runtime} onOpenPermission={() => setApprovalVariant('permission')} />}
         {surface === 'onboarding' && <OnboardingSurface onFinish={() => setSurface('chat')} />}
       </main>
 
@@ -1719,6 +1825,11 @@ function App() {
             setCommandOpen(false);
             setApprovalVariant('risk');
           }}
+          onOpenSettingsSection={(section) => {
+            setSettingsSection(section);
+            setSurface('settings');
+            setCommandOpen(false);
+          }}
           runtime={runtime}
         />
       )}
@@ -1736,6 +1847,7 @@ function App() {
           }}
         />
       )}
+      {notice && <div className="toastNotice" role="status">{notice}</div>}
     </div>
   );
 }
@@ -1747,6 +1859,9 @@ function Sidebar({
   model,
   onSurfaceChange,
   onOpenCommand,
+  onArchiveItem,
+  onDeleteItem,
+  onMoreItem,
   onSelectSession,
   projectItems,
   recentItems,
@@ -1759,6 +1874,9 @@ function Sidebar({
   model: string;
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
+  onArchiveItem: (item: SidebarItem) => void;
+  onDeleteItem: (item: SidebarItem) => void;
+  onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
   projectItems: SidebarItem[];
   recentItems: SidebarItem[];
@@ -1804,16 +1922,28 @@ function Sidebar({
           items={pinnedSessions}
           onOpenChat={() => onSurfaceChange('chat')}
           onSelectSession={onSelectSession}
+          onArchiveItem={onArchiveItem}
+          onDeleteItem={onDeleteItem}
+          onMoreItem={onMoreItem}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
         />
-        <ProjectSection items={projectItems} onOpenProjects={() => onSurfaceChange('projects')} />
+        <ProjectSection
+          items={projectItems}
+          onOpenProjects={() => onSurfaceChange('projects')}
+          onArchiveItem={onArchiveItem}
+          onDeleteItem={onDeleteItem}
+          onMoreItem={onMoreItem}
+        />
         <SidebarSection
           title="最近"
           emptyText="暂无真实会话"
-          items={recentItems.length > 0 ? recentItems : recentSessions}
+          items={recentItems}
           muted
           onOpenChat={() => onSurfaceChange('chat')}
           onSelectSession={onSelectSession}
+          onArchiveItem={onArchiveItem}
+          onDeleteItem={onDeleteItem}
+          onMoreItem={onMoreItem}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
         />
 
@@ -1838,7 +1968,7 @@ function Sidebar({
       </nav>
 
       <div className="gatewayStrip">
-        <span className={`statusDot ${gatewayStatus === 'error' ? 'red' : gatewayStatus === 'starting' ? 'amber' : 'green'}`} />
+        <span className={`statusDot ${gatewayStatus === 'error' ? 'red' : gatewayStatus === 'starting' || gatewayStatus === 'stopped' ? 'amber' : 'green'}`} />
         <div>
           <strong>Gateway</strong>
           <small>{statusText}</small>
@@ -1872,7 +2002,10 @@ function SidebarSection({
   items,
   muted,
   emptyText,
+  onArchiveItem,
+  onDeleteItem,
   onOpenChat,
+  onMoreItem,
   onSelectSession,
   selectedSessionId,
 }: {
@@ -1880,7 +2013,10 @@ function SidebarSection({
   muted?: boolean;
   emptyText?: string;
   items: SidebarItem[];
+  onArchiveItem: (item: SidebarItem) => void;
+  onDeleteItem: (item: SidebarItem) => void;
   onOpenChat: () => void;
+  onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
   selectedSessionId: null | string;
 }) {
@@ -1913,6 +2049,9 @@ function SidebarSection({
               onSelectSession(item.id);
             }
           }}
+          onArchive={() => onArchiveItem(item)}
+          onDelete={() => onDeleteItem(item)}
+          onMore={() => onMoreItem(item)}
         />
       ))}
     </section>
@@ -1921,9 +2060,15 @@ function SidebarSection({
 
 function ProjectSection({
   items,
+  onArchiveItem,
+  onDeleteItem,
+  onMoreItem,
   onOpenProjects,
 }: {
   items: SidebarItem[];
+  onArchiveItem: (item: SidebarItem) => void;
+  onDeleteItem: (item: SidebarItem) => void;
+  onMoreItem: (item: SidebarItem) => void;
   onOpenProjects: () => void;
 }) {
   return (
@@ -1940,6 +2085,9 @@ function ProjectSection({
           item={{ ...item, color: item.active ? 'indigo' : 'gray' }}
           active={item.active}
           onSelect={onOpenProjects}
+          onArchive={() => onArchiveItem(item)}
+          onDelete={() => onDeleteItem(item)}
+          onMore={() => onMoreItem(item)}
         />
       ))}
     </section>
@@ -1950,11 +2098,17 @@ function SessionRow({
   item,
   active,
   muted,
+  onArchive,
+  onDelete,
+  onMore,
   onSelect,
 }: {
   item: SidebarItem;
   active?: boolean;
   muted?: boolean;
+  onArchive?: () => void;
+  onDelete?: () => void;
+  onMore?: () => void;
   onSelect: () => void;
 }) {
   return (
@@ -1967,13 +2121,37 @@ function SessionRow({
         </span>
       </button>
       <div className="rowActions" aria-label="会话操作">
-        <button type="button" aria-label="归档" title="归档">
+        <button
+          type="button"
+          aria-label="归档"
+          title="归档"
+          onClick={(event) => {
+            event.stopPropagation();
+            onArchive?.();
+          }}
+        >
           <Archive size={14} />
         </button>
-        <button type="button" aria-label="删除" title="删除">
+        <button
+          type="button"
+          aria-label="删除"
+          title="删除"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete?.();
+          }}
+        >
           <Trash2 size={14} />
         </button>
-        <button type="button" aria-label="更多" title="更多">
+        <button
+          type="button"
+          aria-label="更多"
+          title="更多"
+          onClick={(event) => {
+            event.stopPropagation();
+            onMore?.();
+          }}
+        >
           <MoreHorizontal size={14} />
         </button>
       </div>
@@ -1987,6 +2165,8 @@ function ChatSurface({
   runtime,
   setAttachmentOpen,
   onOpenApproval,
+  onOpenProjects,
+  onOpenSettingsSection,
   onOpenWorkbenchTab,
 }: {
   attachmentOpen: boolean;
@@ -1994,6 +2174,8 @@ function ChatSurface({
   runtime: HermesRuntime;
   setAttachmentOpen: (open: boolean) => void;
   onOpenApproval: () => void;
+  onOpenProjects: () => void;
+  onOpenSettingsSection: (section: SettingsSection) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
 }) {
   const messageStackRef = useRef<HTMLDivElement | null>(null);
@@ -2057,7 +2239,14 @@ function ChatSurface({
         )}
       </div>
 
-      <Composer attachmentOpen={attachmentOpen} setAttachmentOpen={setAttachmentOpen} runtime={runtime} />
+      <Composer
+        attachmentOpen={attachmentOpen}
+        setAttachmentOpen={setAttachmentOpen}
+        runtime={runtime}
+        onOpenProjects={onOpenProjects}
+        onOpenSettingsSection={onOpenSettingsSection}
+        onOpenWorkbenchTab={onOpenWorkbenchTab}
+      />
     </section>
   );
 }
@@ -2501,15 +2690,85 @@ function Artifact({
 
 function Composer({
   attachmentOpen,
+  onOpenProjects,
+  onOpenSettingsSection,
+  onOpenWorkbenchTab,
   setAttachmentOpen,
   runtime,
 }: {
   attachmentOpen: boolean;
+  onOpenProjects: () => void;
+  onOpenSettingsSection: (section: SettingsSection) => void;
+  onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
   setAttachmentOpen: (open: boolean) => void;
   runtime: HermesRuntime;
 }) {
   const [draft, setDraft] = useState('');
+  const [composerNotice, setComposerNotice] = useState('');
+  const [slashIndex, setSlashIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canSend = runtime.gatewayStatus === 'connected' && runtime.socketState === 'open';
+  const slashQuery = draft.trimStart().startsWith('/') ? draft.trimStart().slice(1).toLowerCase() : '';
+  const slashOptions = useMemo<SlashCommandOption[]>(() => {
+    const base: SlashCommandOption[] = [
+      { desc: '查看可用指令和技能', icon: <Command size={16} />, insert: '/help', title: '/help' },
+      { desc: '运行本机状态诊断', icon: <Wrench size={16} />, insert: '/diagnose', title: '/diagnose' },
+      { desc: '列出可用 skills', icon: <Puzzle size={16} />, insert: '/skills', title: '/skills' },
+      { desc: '检查当前审批队列', icon: <Shield size={16} />, insert: '/approval', title: '/approval' },
+      { desc: '总结当前会话上下文', icon: <MessageSquare size={16} />, insert: '/summary', title: '/summary' },
+    ];
+    const skills = runtime.inventory?.skills.slice(0, 12).map((skill) => ({
+      desc: skill.description || skill.path,
+      icon: <Puzzle size={16} />,
+      insert: `/skill ${skill.name}`,
+      title: `/skill ${skill.name}`,
+    })) ?? [];
+
+    return [...base, ...skills];
+  }, [runtime.inventory?.skills]);
+  const visibleSlashOptions = useMemo(() => {
+    if (!draft.trimStart().startsWith('/')) {
+      return [];
+    }
+
+    return slashOptions
+      .filter((option) => {
+        const haystack = `${option.title} ${option.desc}`.toLowerCase();
+        return !slashQuery || haystack.includes(slashQuery);
+      })
+      .slice(0, 8);
+  }, [draft, slashOptions, slashQuery]);
+  const slashOpen = visibleSlashOptions.length > 0;
+
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [slashQuery]);
+
+  useEffect(() => {
+    if (!composerNotice) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => setComposerNotice(''), 2600);
+    return () => window.clearTimeout(timer);
+  }, [composerNotice]);
+
+  const insertDraftText = useCallback((text: string) => {
+    setDraft((current) => {
+      const separator = current && !/\s$/.test(current) ? ' ' : '';
+      return `${current}${separator}${text}`;
+    });
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
+
+  const selectSlashOption = useCallback((option?: SlashCommandOption) => {
+    if (!option) {
+      return;
+    }
+
+    setDraft(`${option.insert} `);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
 
   const submit = () => {
     const text = draft.trim();
@@ -2517,27 +2776,70 @@ function Composer({
       return;
     }
 
+    if (!canSend) {
+      setComposerNotice('Hermes Gateway 还没有连接完成。');
+      return;
+    }
+
     setDraft('');
     void runtime.submitPrompt(text);
+  };
+
+  const handleAttachmentPick = async (kind: AttachmentMenuKind) => {
+    setAttachmentOpen(false);
+
+    if (kind === 'url') {
+      const value = window.prompt('输入 URL');
+      if (value?.trim()) {
+        insertDraftText(value.trim());
+      }
+      return;
+    }
+
+    if (kind === 'snippet') {
+      insertDraftText('/prompt ');
+      return;
+    }
+
+    if (!window.hermesDesktop?.pickAttachment) {
+      setComposerNotice('附件选择需要在桌面端使用。');
+      return;
+    }
+
+    try {
+      const picks = await window.hermesDesktop.pickAttachment(kind);
+      if (picks.length === 0) {
+        return;
+      }
+
+      const inserted = picks
+        .map((pick) => pick.path ? `@${pick.path}` : pick.text || pick.label)
+        .filter(Boolean)
+        .join(' ');
+      insertDraftText(inserted);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setComposerNotice(`附件选择失败：${message}`);
+    }
   };
 
   return (
     <div className="composerWrap" data-testid="composer">
       <div className="composerMeta" aria-label="任务状态">
-        <button className="permission" type="button" title="完全访问">
+        <button className="permission" type="button" title="权限设置" onClick={() => onOpenSettingsSection('permissions')}>
           <Shield size={17} />
           完全访问
           <ChevronDown size={15} />
         </button>
-        <button className="modelName" type="button" title={runtime.model}>
+        <button className="modelName" type="button" title={runtime.model} onClick={() => onOpenSettingsSection('models')}>
           <Zap size={16} />
           {runtime.model}
         </button>
-        <button className="workdir" type="button" title={runtime.cwd}>
+        <button className="workdir" type="button" title={runtime.cwd} onClick={onOpenProjects}>
           <span className="workdirLabel">工作目录</span>
           <span className="workdirPath">{shortenPath(runtime.cwd)}</span>
         </button>
-        <button className="contextMeter" type="button" title={`${runtime.contextPercent}% · 1M`}>
+        <button className="contextMeter" type="button" title={`${runtime.contextPercent}% · 1M`} onClick={() => onOpenWorkbenchTab('activity')}>
           <span className="contextTrack"><span style={{ width: `${Math.max(5, runtime.contextPercent)}%` }} /></span>
           {runtime.contextPercent}% · 1M
         </button>
@@ -2553,9 +2855,25 @@ function Composer({
           <Plus size={22} />
         </button>
         <textarea
+          ref={textareaRef}
           aria-label="消息"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (slashOpen && event.key === 'ArrowDown') {
+              event.preventDefault();
+              setSlashIndex((index) => Math.min(index + 1, visibleSlashOptions.length - 1));
+              return;
+            }
+            if (slashOpen && event.key === 'ArrowUp') {
+              event.preventDefault();
+              setSlashIndex((index) => Math.max(0, index - 1));
+              return;
+            }
+            if (slashOpen && (event.key === 'Tab' || event.key === 'Enter')) {
+              event.preventDefault();
+              selectSlashOption(visibleSlashOptions[slashIndex]);
+              return;
+            }
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               submit();
@@ -2572,32 +2890,69 @@ function Composer({
           <SendHorizontal size={20} />
         </button>
 
-        {attachmentOpen && <AttachmentMenu />}
+        {attachmentOpen && <AttachmentMenu onPick={(kind) => void handleAttachmentPick(kind)} />}
+        {slashOpen && (
+          <SlashMenu
+            options={visibleSlashOptions}
+            selectedIndex={slashIndex}
+            onPick={selectSlashOption}
+          />
+        )}
       </div>
+      {composerNotice && <div className="composerNotice" role="status">{composerNotice}</div>}
     </div>
   );
 }
 
-function AttachmentMenu() {
-  const items = [
-    { icon: <File size={18} />, label: '文件...' },
-    { icon: <Folder size={18} />, label: '文件夹...' },
-    { icon: <Image size={18} />, label: '图片...' },
-    { icon: <Clipboard size={18} />, label: '粘贴图片' },
-    { icon: <Link size={18} />, label: 'URL...' },
-    { icon: <MessageSquare size={18} />, label: '提示片段...' },
+function AttachmentMenu({ onPick }: { onPick: (kind: AttachmentMenuKind) => void }) {
+  const items: Array<{ icon: React.ReactNode; kind: AttachmentMenuKind; label: string }> = [
+    { icon: <File size={18} />, kind: 'file', label: '文件...' },
+    { icon: <Folder size={18} />, kind: 'folder', label: '文件夹...' },
+    { icon: <Image size={18} />, kind: 'image', label: '图片...' },
+    { icon: <Clipboard size={18} />, kind: 'clipboard-image', label: '粘贴图片' },
+    { icon: <Link size={18} />, kind: 'url', label: 'URL...' },
+    { icon: <MessageSquare size={18} />, kind: 'snippet', label: '提示片段...' },
   ];
 
   return (
     <div className="attachmentMenu" role="menu">
       <span className="menuTitle">添加</span>
       {items.map((item, index) => (
-        <button className={index === 5 ? 'menuItem divided' : 'menuItem'} type="button" key={item.label}>
+        <button className={index === 5 ? 'menuItem divided' : 'menuItem'} type="button" key={item.label} onClick={() => onPick(item.kind)}>
           {item.icon}
           {item.label}
         </button>
       ))}
       <div className="menuHint">提示：输入 @ 可在正文中引用文件。</div>
+    </div>
+  );
+}
+
+function SlashMenu({
+  options,
+  selectedIndex,
+  onPick,
+}: {
+  options: SlashCommandOption[];
+  selectedIndex: number;
+  onPick: (option: SlashCommandOption) => void;
+}) {
+  return (
+    <div className="slashMenu" role="listbox" aria-label="斜杠指令">
+      {options.map((option, index) => (
+        <button
+          className={index === selectedIndex ? 'slashItem selected' : 'slashItem'}
+          key={option.title}
+          type="button"
+          onClick={() => onPick(option)}
+        >
+          <span>{option.icon}</span>
+          <div>
+            <strong>{option.title}</strong>
+            <small>{option.desc}</small>
+          </div>
+        </button>
+      ))}
     </div>
   );
 }
@@ -2644,7 +2999,7 @@ function Workbench({
 
       {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} runtime={runtime} />}
       {activeTab === 'files' && <WorkbenchFiles files={runtime.files} />}
-      {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} />}
+      {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} onStop={() => void runtime.stopGateway()} />}
       {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} />}
     </aside>
   );
@@ -2704,13 +3059,31 @@ function WorkbenchActivity({
 }
 
 function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
+  const [copied, setCopied] = useState(false);
+  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  const selectedFile = files[selectedFileIndex] || files[0];
+  const diffSummary = selectedFile
+    ? `${selectedFile.change === 'add' ? '+' : '~'} ${selectedFile.label} · ${selectedFile.meta}`
+    : '等待 Hermes 返回文件变更。';
+
+  const copySummary = () => {
+    void navigator.clipboard?.writeText(diffSummary);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
   return (
     <>
       <section className="railSection">
         <h3>变更文件</h3>
         {files.length > 0 ? (
           files.map((file, index) => (
-            <button className={index === 0 ? 'fileChangeRow selected' : 'fileChangeRow'} key={`${file.label}-${file.meta}`} type="button">
+            <button
+              className={index === selectedFileIndex ? 'fileChangeRow selected' : 'fileChangeRow'}
+              key={`${file.label}-${file.meta}`}
+              type="button"
+              onClick={() => setSelectedFileIndex(index)}
+            >
               <span className={file.change === 'add' ? 'changeTag add' : 'changeTag mod'}>{file.change === 'add' ? '新' : '改'}</span>
               <span>{file.label}</span>
               <small>{file.meta}</small>
@@ -2722,17 +3095,17 @@ function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
       </section>
       <section className="railSection">
         <h3>Diff 摘要</h3>
-        <pre className="miniCode"><code>{files.length > 0 ? files.map((file) => `${file.change === 'add' ? '+' : '~'} ${file.label} · ${file.meta}`).join('\n') : '等待 Hermes 返回文件变更。'}</code></pre>
+        <pre className="miniCode"><code>{diffSummary}</code></pre>
         <div className="workbenchActions">
-          <button type="button">打开文件</button>
-          <button type="button">复制路径</button>
+          <button type="button" onClick={copySummary}>{copied ? '已复制' : '复制摘要'}</button>
+          <button type="button" onClick={copySummary}>复制路径</button>
         </div>
       </section>
     </>
   );
 }
 
-function WorkbenchTerminal({ logs }: { logs: string[] }) {
+function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => void }) {
   const renderedLogs = logs.length > 0 ? logs.slice(-12).join('\n') : 'Gateway 日志会在这里显示。';
 
   return (
@@ -2740,7 +3113,7 @@ function WorkbenchTerminal({ logs }: { logs: string[] }) {
       <section className="railSection terminalSection">
         <div className="terminalHeader">
           <strong>Hermes Gateway</strong>
-          <button type="button">
+          <button type="button" onClick={onStop}>
             <PauseCircle size={15} />
             停止
           </button>
@@ -2776,8 +3149,17 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
         <h3>预览产物</h3>
         <p>{previewText}</p>
         <div className="workbenchActions">
-          <button type="button">刷新</button>
-          <button type="button">打开文件</button>
+          <button type="button" onClick={() => void runtime.refreshInventory()}>刷新</button>
+          <button
+            type="button"
+            onClick={() => {
+              if (runtime.connection?.baseUrl) {
+                window.open(runtime.connection.baseUrl, '_blank', 'noopener,noreferrer');
+              }
+            }}
+          >
+            打开 Gateway
+          </button>
         </div>
       </section>
     </>
@@ -2807,6 +3189,17 @@ function WorkbenchItem({
   );
 }
 
+interface CommandCenterAction {
+  action: string;
+  danger?: boolean;
+  desc: string;
+  group: string;
+  icon: React.ReactNode;
+  keywords: string;
+  run: () => void;
+  title: string;
+}
+
 function CommandCenter({
   query,
   onQueryChange,
@@ -2814,6 +3207,7 @@ function CommandCenter({
   onNavigate,
   onOpenWorkbenchTab,
   onOpenApproval,
+  onOpenSettingsSection,
   runtime,
 }: {
   query: string;
@@ -2822,16 +3216,184 @@ function CommandCenter({
   onNavigate: (surface: Surface) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
   onOpenApproval: () => void;
+  onOpenSettingsSection: (section: SettingsSection) => void;
   runtime: HermesRuntime;
 }) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const normalized = query.trim().toLowerCase();
-  const mode = normalized.includes('restricted') || normalized.includes('权限')
-    ? 'permission'
-    : normalized.length > 0 && !normalized.includes('approval') && !normalized.includes('设置')
-      ? 'empty'
-      : normalized.length > 0
-        ? 'results'
-        : 'default';
+  const actions = useMemo<CommandCenterAction[]>(() => {
+    const list: CommandCenterAction[] = [
+      {
+        action: '执行',
+        desc: '回到聊天区，继续和 Hermes 对话',
+        group: '常用动作',
+        icon: <Plus />,
+        keywords: 'new chat task 新建 任务 对话',
+        run: () => onNavigate('chat'),
+        title: '新建任务',
+      },
+      {
+        action: '打开',
+        desc: '在右侧工作区查看 Gateway 日志',
+        group: '常用动作',
+        icon: <TerminalSquare />,
+        keywords: 'terminal log gateway 终端 日志',
+        run: () => onOpenWorkbenchTab('terminal'),
+        title: '打开终端',
+      },
+      {
+        action: '打开',
+        desc: '查看当前会话文件变更',
+        group: '常用动作',
+        icon: <FileCode2 />,
+        keywords: 'file diff changed 文件 变更',
+        run: () => onOpenWorkbenchTab('files'),
+        title: '查看文件变更',
+      },
+      {
+        action: runtime.pendingApproval ? '跳转' : '设置',
+        danger: Boolean(runtime.pendingApproval),
+        desc: runtime.pendingApproval?.description || '配置命令确认、权限范围和记住方式',
+        group: '常用动作',
+        icon: <Shield />,
+        keywords: 'approval permission 权限 审批 命令',
+        run: runtime.pendingApproval ? onOpenApproval : () => onOpenSettingsSection('permissions'),
+        title: runtime.pendingApproval ? '查看待审批命令' : '审批设置',
+      },
+      {
+        action: '刷新',
+        desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 Gateway 状态',
+        group: '常用动作',
+        icon: <RefreshCw />,
+        keywords: 'refresh reload inventory diagnostic 刷新 诊断 状态',
+        run: () => {
+          void runtime.refreshInventory();
+          onNavigate('diagnostics');
+        },
+        title: '刷新本机状态',
+      },
+      ...([
+        ['agents', 'Agents', '任务队列、审批和并行运行状态', <Bot />],
+        ['projects', '项目', '会话、路径、模型配置和运行状态', <Folder />],
+        ['profiles', 'Profiles', '模型、技能、记忆和权限边界', <UsersRound />],
+        ['skills', '技能库', '本机 skills 与插件', <Puzzle />],
+        ['cron', '自动化', '调度、超时策略和后台进程', <CalendarClock />],
+        ['messaging', '消息网关', '平台状态、频道目录和用户配对', <Network />],
+        ['diagnostics', '诊断与更新', 'Gateway、权限、版本和日志', <Wrench />],
+        ['onboarding', '首次启动', '连接 Hermes 工作方式', <Rocket />],
+        ['settings', '设置', '全局偏好、模型、审批和外观', <Settings />],
+      ] as Array<[Surface, string, string, React.ReactNode]>).map(([surface, title, desc, icon]) => ({
+        action: '跳转',
+        desc,
+        group: '跳转',
+        icon,
+        keywords: `${surface} ${title} ${desc}`,
+        run: () => onNavigate(surface),
+        title,
+      })),
+      ...settingsSections.map((section) => ({
+        action: '设置',
+        desc: section.desc,
+        group: '设置',
+        icon: <Settings />,
+        keywords: `${section.id} ${section.label} ${section.desc}`,
+        run: () => onOpenSettingsSection(section.id),
+        title: section.label,
+      })),
+      ...runtime.recentSessions.slice(0, 8).map((session) => ({
+        action: '打开',
+        desc: session.meta,
+        group: '会话',
+        icon: <MessageSquare />,
+        keywords: `${session.title} ${session.meta}`,
+        run: () => {
+          onNavigate('chat');
+          if (session.id) {
+            void runtime.selectSession(session.id);
+          }
+        },
+        title: session.title,
+      })),
+      ...(runtime.inventory?.skills.slice(0, 12).map((skill) => ({
+        action: '查看',
+        desc: skill.description || skill.path,
+        group: 'Skills',
+        icon: <Puzzle />,
+        keywords: `${skill.name} ${skill.description} ${skill.path} ${skill.source}`,
+        run: () => onNavigate('skills'),
+        title: skill.name,
+      })) ?? []),
+    ];
+
+    if (query.trim()) {
+      list.unshift({
+        action: '发送',
+        desc: `把“${compactLine(query, 48)}”作为新任务发送给 Hermes`,
+        group: '常用动作',
+        icon: <SendHorizontal />,
+        keywords: `${query} prompt send 发送`,
+        run: () => {
+          onClose();
+          void runtime.submitPrompt(query.trim());
+        },
+        title: '用当前输入新建任务',
+      });
+    }
+
+    return list;
+  }, [onClose, onNavigate, onOpenApproval, onOpenSettingsSection, onOpenWorkbenchTab, query, runtime]);
+  const filteredActions = useMemo(() => {
+    if (!normalized) {
+      return actions;
+    }
+
+    return actions.filter((action) => {
+      const haystack = `${action.title} ${action.desc} ${action.keywords}`.toLowerCase();
+      return normalized.split(/\s+/).every((part) => haystack.includes(part));
+    });
+  }, [actions, normalized]);
+
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [normalized]);
+
+  const runAction = useCallback((action?: CommandCenterAction) => {
+    if (!action) {
+      return;
+    }
+
+    action.run();
+  }, []);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setSelectedIndex((index) => Math.min(index + 1, Math.max(0, filteredActions.length - 1)));
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setSelectedIndex((index) => Math.max(0, index - 1));
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      runAction(filteredActions[selectedIndex]);
+    }
+  };
+  const groupedActions = filteredActions.reduce<Record<string, CommandCenterAction[]>>((acc, action) => {
+    acc[action.group] = acc[action.group] || [];
+    acc[action.group].push(action);
+    return acc;
+  }, {});
 
   return (
     <div className="overlayLayer" role="dialog" aria-modal="true" aria-label="命令中心" data-testid="command-center">
@@ -2843,104 +3405,57 @@ function CommandCenter({
             autoFocus
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder="搜索命令、会话、文件、设置或 skill"
           />
           <kbd>⌘K</kbd>
         </div>
 
-        {mode === 'default' && (
+        {filteredActions.length > 0 ? (
           <div className="commandBody">
-            <CommandGroup title="常用动作">
-              <CommandRow icon={<Plus />} title="新建任务" desc="在当前项目中新建 Agent 线程" action="执行" onClick={() => onNavigate('chat')} />
-              <CommandRow icon={<TerminalSquare />} title="打开终端" desc="在右侧工作区查看 Gateway 日志" action="打开" onClick={() => onOpenWorkbenchTab('terminal')} />
-              {runtime.pendingApproval ? (
-                <CommandRow icon={<Shield />} title="查看待审批命令" desc={runtime.pendingApproval.description} action="跳转" onClick={onOpenApproval} />
-              ) : (
-                <CommandRow icon={<Shield />} title="审批设置" desc="配置命令确认、权限范围和记住方式" action="打开" onClick={() => onNavigate('settings')} />
-              )}
-            </CommandGroup>
-            <CommandGroup title="跳转">
-              <CommandRow icon={<Bot />} title="Agents" desc="查看任务、审批和运行状态" action="跳转" onClick={() => onNavigate('agents')} />
-              <CommandRow icon={<Settings />} title="设置" desc="打开偏好设置" action="⌘," onClick={() => onNavigate('settings')} />
-              <CommandRow icon={<Puzzle />} title="技能库" desc="管理 skill 启用和更新" action="跳转" onClick={() => onNavigate('skills')} />
-              <CommandRow icon={<Rocket />} title="连接向导" desc={runtime.connectionLabel} action="打开" onClick={() => onNavigate('onboarding')} />
-            </CommandGroup>
-          </div>
-        )}
-
-        {mode === 'results' && (
-          <div className="commandBody">
-            <CommandGroup title="命令">
-              {runtime.pendingApproval ? (
-                <CommandRow danger icon={<TerminalSquare />} title="确认当前命令" desc={runtime.pendingApproval.command || runtime.pendingApproval.description} action="需审批" onClick={onOpenApproval} />
-              ) : (
-                <CommandRow icon={<TerminalSquare />} title="查看终端输出" desc={runtime.logs.length > 0 ? runtime.logs[0] : '暂无 Gateway 日志'} action="打开" onClick={() => onOpenWorkbenchTab('terminal')} />
-              )}
-              <CommandRow icon={<Settings />} title="审批设置" desc="调整默认确认策略、规则范围和记住方式" action="跳转" onClick={() => onNavigate('settings')} />
-            </CommandGroup>
-            {runtime.recentSessions.length > 0 && (
-              <CommandGroup title="会话">
-                {runtime.recentSessions.slice(0, 3).map((session) => (
-                  <CommandRow
-                    key={session.id || session.title}
-                    icon={<MessageSquare />}
-                    title={session.title}
-                    desc={session.meta}
-                    action="打开"
-                    onClick={() => {
-                      onNavigate('chat');
-                      if (session.id) {
-                        void runtime.selectSession(session.id);
-                      }
-                    }}
-                  />
-                ))}
+            {Object.entries(groupedActions).map(([group, groupActions]) => (
+              <CommandGroup title={group} key={group}>
+                {groupActions.map((action) => {
+                  const flatIndex = filteredActions.indexOf(action);
+                  return (
+                    <CommandRow
+                      action={action.action}
+                      danger={action.danger}
+                      desc={action.desc}
+                      icon={action.icon}
+                      key={`${group}-${action.title}-${action.desc}`}
+                      selected={flatIndex === selectedIndex}
+                      title={action.title}
+                      onClick={() => runAction(action)}
+                    />
+                  );
+                })}
               </CommandGroup>
-            )}
+            ))}
           </div>
-        )}
-
-        {mode === 'empty' && (
+        ) : (
           <div className="commandEmpty">
             <Search size={26} />
             <strong>没有找到匹配结果</strong>
             <p>可以用“{query}”新建任务，或去技能库查找相关能力。</p>
             <div>
-              <button type="button" onClick={() => onNavigate('chat')}>用查询新建任务</button>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  void runtime.submitPrompt(query.trim());
+                }}
+              >
+                用查询新建任务
+              </button>
               <button type="button" onClick={() => onNavigate('skills')}>打开技能库</button>
-            </div>
-          </div>
-        )}
-
-        {mode === 'permission' && (
-          <div className="permissionState">
-            <div className="approvalIcon">
-              <Lock size={22} />
-            </div>
-            <div>
-              <strong>当前 profile 无权访问这个目录</strong>
-              <p>Bailey / Product 只允许读取当前项目。你可以本次审批、切换 profile，或打开权限设置。</p>
-            </div>
-            <div className="commandOptions">
-              <button type="button" onClick={onOpenApproval}>
-                <Shield size={16} />
-                请求一次性审批
-              </button>
-              <button type="button" onClick={() => onNavigate('profiles')}>
-                <UsersRound size={16} />
-                切换 profile
-              </button>
-              <button type="button" onClick={() => onNavigate('settings')}>
-                <Settings size={16} />
-                打开权限设置
-              </button>
             </div>
           </div>
         )}
 
         <div className="commandFooter">
           <span>↑↓ 选择</span>
-          <span>Enter {mode === 'results' ? '查看审批或打开' : '执行'}</span>
+          <span>Enter 执行</span>
           <span>Esc 关闭</span>
         </div>
       </div>
@@ -2963,6 +3478,7 @@ function CommandRow({
   desc,
   action,
   danger,
+  selected,
   onClick,
 }: {
   icon: React.ReactNode;
@@ -2970,10 +3486,11 @@ function CommandRow({
   desc: string;
   action: string;
   danger?: boolean;
+  selected?: boolean;
   onClick?: () => void;
 }) {
   return (
-    <button className={danger ? 'commandRow danger' : 'commandRow'} type="button" onClick={onClick}>
+    <button className={`${danger ? 'commandRow danger' : 'commandRow'}${selected ? ' selected' : ''}`} type="button" onClick={onClick}>
       <span>{icon}</span>
       <div>
         <strong>{title}</strong>
@@ -2999,7 +3516,7 @@ function ApprovalModal({
       title: '确认高风险命令',
       desc: 'Hermes 需要运行桌面端测试来确认 approval UI 的行为是否完整。',
       code: 'npm run test:desktop -- --approval-ui --update-snapshots',
-      details: ['cwd: Beauty-Hermes-GUI', '来源: Bailey / Product', '可能修改: screenshots', '恢复: 可回滚生成物'],
+      details: ['cwd: 当前工作区', '来源: Hermes Agent', '可能修改: 本地文件', '恢复: 可回滚生成物'],
     },
     timeout: {
       icon: <Clock size={24} />,
@@ -3144,30 +3661,52 @@ function ProjectsSurface({
   );
 }
 
-function AgentsSurface({ onOpenApproval }: { onOpenApproval: () => void }) {
+function AgentsSurface({
+  runtime,
+  onOpenApproval,
+}: {
+  runtime: HermesRuntime;
+  onOpenApproval: () => void;
+}) {
+  const runningTools = runtime.tools.filter((tool) => tool.state === 'running');
+  const completedTools = runtime.tools.filter((tool) => tool.state === 'done');
+  const runningCards = runningTools.length > 0
+    ? runningTools.map((tool) => (
+      <AgentCard key={tool.id} title={tool.label} status="运行中" meta={tool.detail || tool.value} />
+    ))
+    : [<AgentCard key="gateway" title="Hermes Gateway" status={runtime.socketState === 'open' ? '已连接' : runtime.connectionLabel} meta={runtime.statusText} muted={runtime.socketState !== 'open'} />];
+
   return (
     <section className="pageSurface">
       <div className="pageIntro">
         <div>
-          <h2>并行任务</h2>
-          <p>运行中、待确认、已完成三列看板，优先暴露审批阻塞。</p>
+          <h2>Agents</h2>
+          <p>运行中工具、待确认命令和最近完成事件集中在这里。</p>
         </div>
-        <button className="lightButton" type="button">
+        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
           <Plus size={16} />
           委派任务
         </button>
       </div>
       <div className="kanbanGrid">
-        <KanbanColumn title="运行中" count="2">
-          <AgentCard title="等待 Gateway 事件" status="运行中" meta="本机 Hermes · WebSocket" />
-          <AgentCard title="同步会话状态" status="运行中" meta="最近会话 · runtime info" />
+        <KanbanColumn title="运行中" count={String(runningTools.length || (runtime.socketState === 'open' ? 1 : 0))}>
+          {runningCards}
         </KanbanColumn>
-        <KanbanColumn title="待确认" count="1">
-          <AgentCard title="高风险命令确认" status="approval" meta="需要用户手动允许" danger onClick={onOpenApproval} />
+        <KanbanColumn title="待确认" count={runtime.pendingApproval ? '1' : '0'}>
+          {runtime.pendingApproval ? (
+            <AgentCard title="高风险命令确认" status="approval" meta={runtime.pendingApproval.description} danger onClick={onOpenApproval} />
+          ) : (
+            <AgentCard title="暂无待审批命令" status="空闲" meta="出现高风险操作时会固定在这里" muted />
+          )}
         </KanbanColumn>
-        <KanbanColumn title="已完成" count="2">
-          <AgentCard title="Gateway 连接检查" status="完成" meta="本机服务可复用" muted />
-          <AgentCard title="会话列表读取" status="完成" meta="按最近活跃排序" muted />
+        <KanbanColumn title="已完成" count={String(completedTools.length)}>
+          {completedTools.length > 0 ? (
+            completedTools.slice(0, 4).map((tool) => (
+              <AgentCard key={tool.id} title={tool.label} status="完成" meta={tool.detail || tool.value} muted />
+            ))
+          ) : (
+            <AgentCard title="等待任务完成" status="空" meta="完成后的工具调用会显示在这里" muted />
+          )}
         </KanbanColumn>
       </div>
     </section>
@@ -3216,24 +3755,39 @@ function AgentCard({
   );
 }
 
-function ProfilesSurface() {
+function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
+  const config = runtime.inventory?.config;
   const profiles = [
-    ['Bailey / Product', '中文优先 · 12 skills', '当前'],
-    ['Engineering', '终端优先 · 完全访问', '可切换'],
-    ['Research', '只读网络 · 文档总结', '可切换'],
+    {
+      meta: `${config?.provider || 'provider 未设置'} · ${config?.toolsets?.join(', ') || '无 toolset'}`,
+      name: '默认 Hermes Profile',
+      status: '当前',
+    },
+    {
+      meta: `${runtime.model} · ${runtime.connectionLabel}`,
+      name: '当前会话',
+      status: runtime.activeSessionId ? '运行中' : '待启动',
+    },
   ];
+  const [selectedProfile, setSelectedProfile] = useState(profiles[0].name);
+  const activeProfile = profiles.find((profile) => profile.name === selectedProfile) || profiles[0];
 
   return (
     <section className="pageSurface twoColumnPage">
       <div className="listPanel">
         <div className="panelTitle">
           <h2>工作身份</h2>
-          <button type="button">
+          <button type="button" onClick={() => void runtime.refreshInventory()}>
             <Plus size={15} />
           </button>
         </div>
-        {profiles.map(([name, meta, status]) => (
-          <button className={status === '当前' ? 'profileRow active' : 'profileRow'} type="button" key={name}>
+        {profiles.map(({ name, meta, status }) => (
+          <button
+            className={name === activeProfile.name ? 'profileRow active' : 'profileRow'}
+            type="button"
+            key={name}
+            onClick={() => setSelectedProfile(name)}
+          >
             <div className="profileAvatar">{name[0]}</div>
             <div>
               <strong>{name}</strong>
@@ -3247,15 +3801,15 @@ function ProfilesSurface() {
         <div className="detailHero">
           <UsersRound size={26} />
           <div>
-            <h2>Bailey / Product</h2>
-            <p>产品与设计工作身份，默认中文优先，保留工程命名。</p>
+            <h2>{activeProfile.name}</h2>
+            <p>{activeProfile.meta}</p>
           </div>
         </div>
         <div className="policyGrid">
-          <PolicyCard icon={<Zap />} title="模型" desc="deepseek-v4-flash · 超高推理" />
-          <PolicyCard icon={<Puzzle />} title="技能" desc="ui-ux-pro-max、browser、github" />
-          <PolicyCard icon={<Shield />} title="权限" desc="高风险命令需手动确认" />
-          <PolicyCard icon={<Database />} title="记忆" desc="项目规则覆盖全局偏好" />
+          <PolicyCard icon={<Zap />} title="模型" desc={`${config?.defaultModel || runtime.model} · ${config?.provider || 'provider 未设置'}`} />
+          <PolicyCard icon={<Puzzle />} title="技能" desc={`${runtime.inventory?.skills.length ?? 0} skills · ${runtime.inventory?.plugins.length ?? 0} plugins`} />
+          <PolicyCard icon={<Shield />} title="权限" desc="高风险命令进入审批队列" />
+          <PolicyCard icon={<Database />} title="运行策略" desc={`max turns ${config?.maxTurns ?? '未设置'} · timeout ${config?.gatewayTimeout ?? '未设置'}s`} />
         </div>
       </div>
     </section>
@@ -3272,30 +3826,43 @@ function PolicyCard({ icon, title, desc }: { icon: React.ReactNode; title: strin
   );
 }
 
-function SkillsSurface() {
-  const skills = [
-    ['ui-ux-pro-max', '界面规范、间距、交互和视觉 QA', '已启用'],
-    ['browser', '本地页面截图、点击和 smoke 检查', '已启用'],
-    ['github', '仓库、PR、CI 和发布协作', '已启用'],
-    ['lark-vc-agent', '会议事件读取和参会助手', '未安装'],
-    ['documents', '文档渲染和视觉验证', '更新可用'],
-    ['hyperframes', 'HTML 视频和动画产物', '未安装'],
+function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
+  const [query, setQuery] = useState('');
+  const skillRows = [
+    ...(runtime.inventory?.skills.map((skill) => ({
+      desc: skill.description || skill.path,
+      name: skill.name,
+      source: skill.source,
+      status: '可用',
+    })) ?? []),
+    ...(runtime.inventory?.plugins.map((plugin) => ({
+      desc: plugin.path,
+      name: plugin.name,
+      source: 'plugin',
+      status: '已安装',
+    })) ?? []),
   ];
+  const filteredSkills = skillRows
+    .filter((skill) => {
+      const haystack = `${skill.name} ${skill.desc} ${skill.source}`.toLowerCase();
+      return !query.trim() || haystack.includes(query.trim().toLowerCase());
+    })
+    .slice(0, 36);
 
   return (
     <section className="pageSurface">
       <div className="pageIntro">
         <div>
           <h2>技能库</h2>
-          <p>管理技能发现、启用、更新和创建。</p>
+          <p>读取本机 Hermes skills 和插件，按真实安装状态管理。</p>
         </div>
         <label className="inlineSearch">
           <Search size={15} />
-          <input placeholder="搜索 skill" />
+          <input placeholder="搜索 skill" value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
       </div>
       <div className="skillGrid">
-        {skills.map(([name, desc, status]) => (
+        {filteredSkills.length > 0 ? filteredSkills.map(({ name, desc, status, source }) => (
           <article className="skillCard" key={name}>
             <div className="skillIcon">
               <Puzzle size={20} />
@@ -3303,33 +3870,43 @@ function SkillsSurface() {
             <strong>{name}</strong>
             <p>{desc}</p>
             <div>
-              <span className={status === '已启用' ? 'pill green' : status === '更新可用' ? 'pill amber' : 'pill'}>{status}</span>
-              <button type="button">{status === '已启用' ? '配置' : '启用'}</button>
+              <span className={status === '可用' ? 'pill green' : 'pill'}>{source}</span>
+              <button type="button" onClick={() => void navigator.clipboard?.writeText(desc)}>{status}</button>
             </div>
           </article>
-        ))}
+        )) : (
+          <article className="skillCard muted">
+            <div className="skillIcon">
+              <Puzzle size={20} />
+            </div>
+            <strong>没有匹配的 skill</strong>
+            <p>{runtime.inventoryError || '本机 inventory 还没有返回 skill 数据。'}</p>
+          </article>
+        )}
       </div>
     </section>
   );
 }
 
-function CronSurface() {
+function CronSurface({ runtime }: { runtime: HermesRuntime }) {
+  const config = runtime.inventory?.config;
+  const sourceRows = Object.entries(runtime.inventory?.sessions.sources ?? {});
   const jobs = [
-    ['每日 GUI smoke', '工作日 17:00 · 截图 + 构建检查', '启用'],
-    ['依赖更新巡检', '每周一 10:00 · npm audit + release notes', '暂停'],
-    ['界面回归检查', '每次发布候选 · Browser screenshot diff', '草稿'],
+    ['Gateway 超时保护', `${config?.gatewayTimeout ?? '未设置'}s · agent.gateway_timeout`, config?.gatewayTimeout ? '启用' : '未设置'],
+    ['最大回合数', `${config?.maxTurns ?? '未设置'} · agent.max_turns`, config?.maxTurns ? '启用' : '未设置'],
+    ['后台进程', `${runtime.inventory?.diagnostics.processCount ?? 0} 个 Hermes process`, runtime.inventory?.diagnostics.processCount ? '运行中' : '空闲'],
   ];
 
   return (
     <section className="pageSurface">
       <div className="pageIntro">
         <div>
-          <h2>Cron Automations</h2>
-          <p>提醒、巡检、汇报和定时任务集中管理。</p>
+          <h2>自动化</h2>
+          <p>展示 Hermes 本机后台调度、超时策略和会话来源。</p>
         </div>
-        <button className="lightButton" type="button">
-          <Plus size={16} />
-          新建自动化
+        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
+          <RefreshCw size={16} />
+          刷新状态
         </button>
       </div>
       <div className="automationList">
@@ -3340,8 +3917,21 @@ function CronSurface() {
               <strong>{title}</strong>
               <span>{meta}</span>
             </div>
-            <span className={status === '启用' ? 'pill green' : status === '暂停' ? 'pill amber' : 'pill'}>{status}</span>
-            <button type="button">
+            <span className={status === '启用' || status === '运行中' ? 'pill green' : status === '空闲' ? 'pill' : 'pill amber'}>{status}</span>
+            <button type="button" onClick={() => void runtime.refreshInventory()}>
+              <MoreHorizontal size={16} />
+            </button>
+          </article>
+        ))}
+        {sourceRows.map(([source, count]) => (
+          <article className="automationRow" key={source}>
+            <MessageSquare size={18} />
+            <div>
+              <strong>{source}</strong>
+              <span>{count} 个历史会话</span>
+            </div>
+            <span className="pill">{count}</span>
+            <button type="button" onClick={() => void runtime.refreshInventory()}>
               <MoreHorizontal size={16} />
             </button>
           </article>
@@ -3351,29 +3941,58 @@ function CronSurface() {
   );
 }
 
-function MessagingSurface() {
+function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
+  const messaging = runtime.inventory?.messaging;
+  const platforms = messaging?.platforms.length ? messaging.platforms : [];
+  const channelRows = Object.entries(messaging?.channelCounts ?? {}).filter(([, count]) => count > 0);
+  const pairingRows = [
+    ['Feishu', messaging?.pairings.feishuApproved ?? 0, messaging?.pairings.feishuPending ?? 0],
+    ['Weixin', messaging?.pairings.weixinApproved ?? 0, messaging?.pairings.weixinPending ?? 0],
+  ] as const;
+
   return (
     <section className="pageSurface">
       <div className="pageIntro">
         <div>
           <h2>Messaging Gateway</h2>
-          <p>连接外部消息平台，控制哪些消息可进入 Hermes。</p>
+          <p>读取 Hermes Gateway 平台状态、频道目录和用户配对。</p>
         </div>
-        <button className="lightButton" type="button">
+        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
           <Network size={16} />
           测试连接
         </button>
       </div>
       <div className="gatewayGrid">
-        <GatewayCard title="Lark" status="已连接" desc="审批、会议、消息事件可用" />
-        <GatewayCard title="Slack" status="未配置" desc="等待 webhook 和 token" />
-        <GatewayCard title="Email" status="需要密钥" desc="仅允许摘要，不允许自动发送" />
+        {platforms.length > 0 ? platforms.map((platform) => (
+          <GatewayCard
+            key={platform.name}
+            title={platform.name}
+            status={platform.state === 'connected' ? '已连接' : platform.state}
+            desc={`${messaging?.channelCounts[platform.name] ?? 0} 个频道 · ${platform.updatedAt || '未记录更新时间'}`}
+          />
+        )) : (
+          <GatewayCard title="Gateway" status={runtime.connectionLabel} desc={runtime.inventoryError || '等待本机 Gateway 状态。'} />
+        )}
       </div>
       <section className="routeTable">
-        <h3>路由规则</h3>
-        <div className="tableRow head"><span>来源</span><span>目标 profile</span><span>权限</span><span>状态</span></div>
-        <div className="tableRow"><span>Lark / Approval</span><span>Bailey / Product</span><span>需确认</span><span>启用</span></div>
-        <div className="tableRow"><span>Slack / dev-alerts</span><span>Engineering</span><span>只读</span><span>草稿</span></div>
+        <h3>配对与频道</h3>
+        <div className="tableRow head"><span>来源</span><span>已批准</span><span>待批准</span><span>频道</span></div>
+        {pairingRows.map(([platform, approved, pending]) => (
+          <div className="tableRow" key={platform}>
+            <span>{platform}</span>
+            <span>{approved}</span>
+            <span>{pending}</span>
+            <span>{messaging?.channelCounts[platform.toLowerCase()] ?? 0}</span>
+          </div>
+        ))}
+        {channelRows.filter(([name]) => !['feishu', 'weixin'].includes(name)).map(([name, count]) => (
+          <div className="tableRow" key={name}>
+            <span>{name}</span>
+            <span>-</span>
+            <span>-</span>
+            <span>{count}</span>
+          </div>
+        ))}
       </section>
     </section>
   );
@@ -3393,9 +4012,11 @@ function GatewayCard({ title, status, desc }: { title: string; status: string; d
 }
 
 function SettingsSurface({
+  runtime,
   selected,
   onSelect,
 }: {
+  runtime: HermesRuntime;
   selected: SettingsSection;
   onSelect: (section: SettingsSection) => void;
 }) {
@@ -3414,18 +4035,63 @@ function SettingsSurface({
           </button>
         ))}
       </aside>
-      <SettingsPanel selected={selected} />
+      <SettingsPanel runtime={runtime} selected={selected} onSelect={onSelect} />
     </section>
   );
 }
 
-function SettingsPanel({ selected }: { selected: SettingsSection }) {
+function SettingsPanel({
+  runtime,
+  selected,
+  onSelect,
+}: {
+  runtime: HermesRuntime;
+  selected: SettingsSection;
+  onSelect: (section: SettingsSection) => void;
+}) {
   const title = settingsSections.find((item) => item.id === selected)!;
+  const config = runtime.inventory?.config;
+  const [density, setDensity] = useState<'舒适' | '紧凑'>('舒适');
+  const [theme, setTheme] = useState<'浅色' | '系统'>('浅色');
+  const copyText = (value: string) => {
+    if (value) {
+      void navigator.clipboard?.writeText(value);
+    }
+  };
+  const rowsBySection: Record<SettingsSection, Array<{ desc: string; icon: React.ReactNode; title: string; control: React.ReactNode }>> = {
+    advanced: [
+      { icon: <HardDrive size={18} />, title: 'Hermes Home', desc: runtime.inventory?.diagnostics.hermesHome || '浏览器预览不可用', control: <button className="selectButton" type="button" onClick={() => copyText(runtime.inventory?.diagnostics.hermesHome || '')}>复制</button> },
+      { icon: <TerminalSquare size={18} />, title: 'Gateway PID', desc: String(runtime.inventory?.diagnostics.gatewayPid ?? '-'), control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>{runtime.gatewayStatus}</button> },
+      { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
+    ],
+    appearance: [
+      { icon: <Sparkles size={18} />, title: '界面密度', desc: 'Codex-like compact density，统一小字号和宽松输入框。', control: <button className="selectButton" type="button" onClick={() => setDensity((value) => value === '舒适' ? '紧凑' : '舒适')}>{density}</button> },
+      { icon: <Monitor size={18} />, title: '主题', desc: '当前使用浅色工作台。', control: <button className="selectButton" type="button" onClick={() => setTheme((value) => value === '浅色' ? '系统' : '浅色')}>{theme}</button> },
+    ],
+    general: [
+      { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <Toggle on={runtime.gatewayStatus === 'connected'} onClick={() => void runtime.refreshInventory()} /> },
+      { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
+    ],
+    integrations: [
+      { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>{runtime.gatewayStatus}</button> },
+      { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
+      { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" onClick={() => onSelect('integrations')}>查看</button> },
+    ],
+    models: [
+      { icon: <Zap size={18} />, title: '默认模型', desc: `${config?.defaultModel || runtime.model} · ${config?.provider || 'provider 未设置'}`, control: <button className="selectButton" type="button" onClick={() => copyText(config?.defaultModel || runtime.model)}>复制</button> },
+      { icon: <Database size={18} />, title: '模型库', desc: `${runtime.inventory?.models.length ?? 0} 个本机模型配置`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
+    ],
+    permissions: [
+      { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" onClick={() => onSelect('permissions')}>手动确认</button> },
+      { icon: <KeyRound size={18} />, title: 'Toolsets', desc: config?.toolsets.join(', ') || '未配置 toolset', control: <button className="selectButton" type="button" onClick={() => copyText(config?.toolsets.join(', ') || '')}>复制</button> },
+    ],
+  };
+  const rows = rowsBySection[selected];
 
   return (
     <div className="settingsPanel">
       <div className="panelHeader">
-        <button className="iconButton compact" type="button" aria-label="返回">
+        <button className="iconButton compact" type="button" aria-label="返回" onClick={() => onSelect('general')}>
           <ChevronLeft size={17} />
         </button>
         <div>
@@ -3435,36 +4101,23 @@ function SettingsPanel({ selected }: { selected: SettingsSection }) {
       </div>
 
       <div className="settingRows">
-        <SettingRow
-          icon={<Command size={18} />}
-          title={selected === 'models' ? '默认模型' : '启动行为'}
-          desc={selected === 'models' ? 'deepseek-v4-flash，保留长模型名空间。' : '打开应用后恢复上次工作区。'}
-          control={<Toggle on />}
-        />
-        <SettingRow
-          icon={<Shield size={18} />}
-          title={selected === 'permissions' ? '命令审批' : '安全边界'}
-          desc={selected === 'permissions' ? '高风险命令进入确认队列。' : '文件、终端和网络访问保持可追踪。'}
-          control={<button className="selectButton" type="button">手动确认</button>}
-        />
-        <SettingRow
-          icon={<Sparkles size={18} />}
-          title={selected === 'appearance' ? '界面密度' : '体验偏好'}
-          desc={selected === 'appearance' ? '舒适间距，大圆角输入框，低噪声状态。' : '中文优先，保留英文技术名称。'}
-          control={<button className="selectButton" type="button">舒适</button>}
-        />
-        <SettingRow
-          icon={<KeyRound size={18} />}
-          title="快捷键"
-          desc="保留系统快捷键，Cmd+K 打开命令中心。"
-          control={<button className="selectButton" type="button">查看</button>}
-        />
+        {rows.map((row) => (
+          <SettingRow key={row.title} icon={row.icon} title={row.title} desc={row.desc} control={row.control} />
+        ))}
       </div>
     </div>
   );
 }
 
-function DiagnosticsSurface({ onOpenPermission }: { onOpenPermission: () => void }) {
+function DiagnosticsSurface({
+  runtime,
+  onOpenPermission,
+}: {
+  runtime: HermesRuntime;
+  onOpenPermission: () => void;
+}) {
+  const diagnostics = runtime.inventory?.diagnostics;
+
   return (
     <section className="pageSurface diagnostics">
       <div className="pageIntro">
@@ -3472,23 +4125,36 @@ function DiagnosticsSurface({ onOpenPermission }: { onOpenPermission: () => void
           <h2>诊断与更新</h2>
           <p>启动、权限、连接、版本和日志问题集中恢复。</p>
         </div>
-        <button className="lightButton" type="button">
+        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
           <RefreshCw size={16} />
           重新诊断
         </button>
       </div>
       <div className="diagnosticGrid">
-        <DiagnosticCard icon={<CheckCircle2 />} title="Desktop shell" desc="Electron runtime 正常" state="正常" />
-        <DiagnosticCard icon={<AlertTriangle />} title="macOS 文件权限" desc="~/Library/Logs/Hermes 需要授权" state="警告" action={onOpenPermission} />
-        <DiagnosticCard icon={<Download />} title="更新" desc="v0.1.0 release candidate" state="可发布" />
-        <DiagnosticCard icon={<HardDrive />} title="打包目录" desc="dist + Electron app 可生成" state="正常" />
+        <DiagnosticCard icon={<CheckCircle2 />} title="Desktop shell" desc="Electron IPC bridge 正常" state="正常" />
+        <DiagnosticCard
+          icon={diagnostics?.configExists ? <CheckCircle2 /> : <AlertTriangle />}
+          title="Hermes 配置"
+          desc={diagnostics?.configExists ? shortenPath(`${diagnostics.hermesHome}/config.yaml`) : '未找到 config.yaml'}
+          state={diagnostics?.configExists ? '正常' : '需要检查'}
+          action={diagnostics?.configExists ? undefined : onOpenPermission}
+        />
+        <DiagnosticCard
+          icon={diagnostics?.agentRepoExists ? <CheckCircle2 /> : <AlertTriangle />}
+          title="Hermes Agent"
+          desc={`agent ${diagnostics?.hermesVersion || 'unknown'} · desktop ${diagnostics?.desktopVersion || 'unknown'}`}
+          state={diagnostics?.agentRepoExists ? '已安装' : '缺失'}
+        />
+        <DiagnosticCard
+          icon={<HardDrive />}
+          title="Gateway"
+          desc={`${runtime.connectionLabel} · ${diagnostics?.gatewayState || runtime.gatewayStatus} · pid ${diagnostics?.gatewayPid ?? '-'}`}
+          state={runtime.gatewayStatus === 'connected' ? '正常' : '检查'}
+        />
       </div>
       <section className="logPanel">
         <h3>最近日志</h3>
-        <pre className="terminalBlock"><code>typecheck passed
-vite build passed
-electron smoke passed
-waiting for signed release credentials...</code></pre>
+        <pre className="terminalBlock"><code>{runtime.logs.length > 0 ? runtime.logs.slice(0, 10).join('\n') : runtime.inventoryError || '暂无 Gateway 日志。'}</code></pre>
       </section>
     </section>
   );
@@ -3518,6 +4184,8 @@ function DiagnosticCard({
 }
 
 function OnboardingSurface({ onFinish }: { onFinish: () => void }) {
+  const [selectedMode, setSelectedMode] = useState<'local' | 'remote' | 'status'>('local');
+
   return (
     <section className="onboardingSurface">
       <div className="onboardingPanel">
@@ -3527,17 +4195,17 @@ function OnboardingSurface({ onFinish }: { onFinish: () => void }) {
         <h2>连接 Hermes 工作方式</h2>
         <p>优先复用本机 Hermes Gateway；连接失败时再进入诊断和权限恢复。</p>
         <div className="choiceGrid">
-          <button type="button">
+          <button className={selectedMode === 'local' ? 'selected' : undefined} type="button" onClick={() => setSelectedMode('local')}>
             <Monitor size={22} />
             <strong>复用本地 Hermes</strong>
             <span>读取本地配置和项目路径</span>
           </button>
-          <button type="button">
+          <button className={selectedMode === 'remote' ? 'selected' : undefined} type="button" onClick={() => setSelectedMode('remote')}>
             <Network size={22} />
             <strong>连接远程 Gateway</strong>
             <span>使用团队共享 Agent 服务</span>
           </button>
-          <button type="button">
+          <button className={selectedMode === 'status' ? 'selected' : undefined} type="button" onClick={() => setSelectedMode('status')}>
             <Eye size={22} />
             <strong>查看连接状态</strong>
             <span>确认 Gateway、会话和审批事件</span>
@@ -3574,9 +4242,9 @@ function SettingRow({
   );
 }
 
-function Toggle({ on }: { on?: boolean }) {
+function Toggle({ on, onClick }: { on?: boolean; onClick?: () => void }) {
   return (
-    <button className={on ? 'toggle on' : 'toggle'} type="button" aria-label={on ? '已开启' : '已关闭'}>
+    <button className={on ? 'toggle on' : 'toggle'} type="button" aria-label={on ? '已开启' : '已关闭'} onClick={onClick}>
       <span />
     </button>
   );

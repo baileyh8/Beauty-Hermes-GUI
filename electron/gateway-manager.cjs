@@ -386,12 +386,32 @@ function createGatewayManager() {
     }
   }
 
+  function stop() {
+    if (child && !child.killed) {
+      appendLog(logs, 'Stopping spawned Hermes gateway');
+      child.kill('SIGTERM');
+      child = null;
+    } else {
+      appendLog(logs, 'No spawned Hermes gateway to stop');
+    }
+
+    if (connection?.source === 'spawned') {
+      connection = {
+        ...connection,
+        status: 'exited',
+      };
+    }
+
+    return getConnection();
+  }
+
   return {
     api,
     dispose,
     getConnection,
     getGatewayWsUrl,
     start,
+    stop,
     getLogs: () => [...logs],
     packageUrl: pathToFileURL(__dirname).toString(),
   };

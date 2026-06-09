@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } = require('electron');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { createGatewayManager } = require('./gateway-manager.cjs');
 
@@ -140,6 +141,273 @@ function createWindow() {
   return win;
 }
 
+async function pickAttachment(event, kind) {
+  const owner = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+
+  if (kind === 'clipboard-image') {
+    const image = clipboard.readImage();
+    if (image.isEmpty()) {
+      return [];
+    }
+
+    return [{
+      kind,
+      label: '剪贴板图片',
+      text: '[clipboard image]',
+    }];
+  }
+
+  const optionByKind = {
+    file: {
+      properties: ['openFile'],
+      title: '选择文件',
+    },
+    folder: {
+      properties: ['openDirectory'],
+      title: '选择文件夹',
+    },
+    image: {
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg'] }],
+      properties: ['openFile'],
+      title: '选择图片',
+    },
+  };
+  const options = optionByKind[kind];
+
+  if (!options) {
+    return [];
+  }
+
+  const result = await dialog.showOpenDialog(owner, {
+    ...options,
+    message: options.title,
+  });
+
+  if (result.canceled) {
+    return [];
+  }
+
+  return result.filePaths.map((filePath) => ({
+    kind,
+    label: path.basename(filePath),
+    path: filePath,
+  }));
+}
+
+function safeReadText(filePath, maxBytes = 120000) {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+      return '';
+    }
+
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(Math.min(maxBytes, stat.size));
+    fs.readSync(fd, buffer, 0, buffer.length, 0);
+    fs.closeSync(fd);
+    return buffer.toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function safeReadJson(filePath) {
+  const text = safeReadText(filePath);
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function walkFiles(root, matcher, limit = 120) {
+  const files = [];
+
+  function walk(dir) {
+    if (files.length >= limit) {
+      return;
+    }
+
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (files.length >= limit) {
+        return;
+      }
+      if (entry.name === 'node_modules' || entry.name === '.git') {
+        continue;
+      }
+
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.isFile() && matcher(entryPath, entry.name)) {
+        files.push(entryPath);
+      }
+    }
+  }
+
+  walk(root);
+  return files;
+}
+
+function yamlValue(text, key) {
+  const match = text.match(new RegExp(`(?:^|\\n)\\s*${key}:\\s*([^\\n]+)`));
+  return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : '';
+}
+
+function yamlNestedValue(text, section, key) {
+  const sectionMatch = text.match(new RegExp(`(?:^|\\n)${section}:\\n([\\s\\S]*?)(?=\\n\\S|$)`));
+  return sectionMatch ? yamlValue(sectionMatch[1], key) : '';
+}
+
+function yamlList(text, key) {
+  const match = text.match(new RegExp(`(?:^|\\n)${key}:\\n((?:\\s*-.*\\n?)+)`));
+  if (!match) {
+    return [];
+  }
+
+  return match[1]
+    .split('\n')
+    .map((line) => line.replace(/^\s*-\s*/, '').trim())
+    .filter(Boolean);
+}
+
+function parseSkillFile(filePath, root) {
+  const text = safeReadText(filePath, 6000);
+  const frontmatter = text.match(/^---\n([\s\S]*?)\n---/);
+  const meta = frontmatter?.[1] || '';
+  const relative = path.relative(root, path.dirname(filePath));
+  const name = yamlValue(meta, 'name') || relative.split(path.sep).filter(Boolean).pop() || 'skill';
+  const description = yamlValue(meta, 'description') || text.split('\n').find((line) => line.trim() && !line.startsWith('#')) || '';
+
+  return {
+    description: String(description).slice(0, 160),
+    name,
+    path: relative,
+    source: path.basename(root),
+  };
+}
+
+function pairingCount(hermesHome, platform, state) {
+  const data = safeReadJson(path.join(hermesHome, 'pairing', `${platform}-${state}.json`));
+  return data && typeof data === 'object' ? Object.keys(data).length : 0;
+}
+
+function readHermesInventory() {
+  const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+  const agentRepo = path.join(hermesHome, 'hermes-agent');
+  const configText = safeReadText(path.join(hermesHome, 'config.yaml'));
+  const models = safeReadJson(path.join(hermesHome, 'models.json'));
+  const gatewayState = safeReadJson(path.join(hermesHome, 'gateway_state.json'));
+  const channelDirectory = safeReadJson(path.join(hermesHome, 'channel_directory.json'));
+  const desktopSessions = safeReadJson(path.join(hermesHome, 'desktop', 'sessions.json'));
+  const processList = safeReadJson(path.join(hermesHome, 'processes.json'));
+  const desktopPackage = safeReadJson(path.join(hermesHome, 'package.json'));
+  const agentRegistry = safeReadJson(path.join(agentRepo, 'acp_registry', 'agent.json'));
+
+  const skillRoots = [
+    path.join(hermesHome, 'skills'),
+    path.join(hermesHome, 'hermes-agent', 'plugins'),
+  ];
+  const skills = skillRoots.flatMap((root) => (
+    walkFiles(root, (_filePath, name) => name === 'SKILL.md', 90).map((filePath) => parseSkillFile(filePath, root))
+  ));
+
+  const pluginFiles = [
+    ...walkFiles(path.join(hermesHome, 'plugins'), (_filePath, name) => name === 'plugin.yaml' || name.endsWith('.plugin.json'), 40),
+    ...walkFiles(path.join(agentRepo, 'plugins'), (_filePath, name) => name === 'plugin.yaml' || name.endsWith('.plugin.json'), 40),
+  ];
+  const plugins = pluginFiles.map((filePath) => {
+    const text = safeReadText(filePath, 4000);
+    const json = filePath.endsWith('.json') ? safeReadJson(filePath) : null;
+    return {
+      name: (json && typeof json === 'object' && typeof json.name === 'string' ? json.name : yamlValue(text, 'name')) || path.basename(path.dirname(filePath)),
+      path: filePath.replace(os.homedir(), '~'),
+      status: 'installed',
+    };
+  });
+
+  const modelList = Array.isArray(models)
+    ? models.map((item) => ({
+      baseUrl: typeof item.baseUrl === 'string' ? item.baseUrl : '',
+      model: typeof item.model === 'string' ? item.model : '',
+      name: typeof item.name === 'string' ? item.name : '',
+      provider: typeof item.provider === 'string' ? item.provider : '',
+    })).filter((item) => item.name || item.model)
+    : [];
+
+  const sessions = Array.isArray(desktopSessions?.sessions) ? desktopSessions.sessions : [];
+  const platforms = gatewayState && typeof gatewayState === 'object' && gatewayState.platforms && typeof gatewayState.platforms === 'object'
+    ? Object.entries(gatewayState.platforms).map(([name, value]) => ({
+      name,
+      state: value && typeof value === 'object' && typeof value.state === 'string' ? value.state : 'unknown',
+      updatedAt: value && typeof value === 'object' && typeof value.updated_at === 'string' ? value.updated_at : '',
+    }))
+    : [];
+  const channelCounts = channelDirectory && typeof channelDirectory === 'object' && channelDirectory.platforms && typeof channelDirectory.platforms === 'object'
+    ? Object.fromEntries(Object.entries(channelDirectory.platforms).map(([name, rows]) => [name, Array.isArray(rows) ? rows.length : 0]))
+    : {};
+
+  return {
+    config: {
+      defaultModel: yamlNestedValue(configText, 'model', 'default'),
+      gatewayTimeout: Number(yamlNestedValue(configText, 'agent', 'gateway_timeout')) || null,
+      maxTurns: Number(yamlNestedValue(configText, 'agent', 'max_turns')) || null,
+      provider: yamlNestedValue(configText, 'model', 'provider'),
+      toolsets: yamlList(configText, 'toolsets'),
+    },
+    diagnostics: {
+      agentRepoExists: fs.existsSync(agentRepo),
+      configExists: Boolean(configText),
+      desktopVersion: typeof desktopPackage?.version === 'string' ? desktopPackage.version : '',
+      gatewayPid: typeof gatewayState?.pid === 'number' ? gatewayState.pid : null,
+      gatewayState: typeof gatewayState?.gateway_state === 'string' ? gatewayState.gateway_state : '',
+      hermesHome,
+      hermesVersion: typeof agentRegistry?.version === 'string' ? agentRegistry.version : '',
+      processCount: Array.isArray(processList) ? processList.length : 0,
+    },
+    messaging: {
+      channelCounts,
+      pairings: {
+        feishuApproved: pairingCount(hermesHome, 'feishu', 'approved'),
+        feishuPending: pairingCount(hermesHome, 'feishu', 'pending'),
+        weixinApproved: pairingCount(hermesHome, 'weixin', 'approved'),
+        weixinPending: pairingCount(hermesHome, 'weixin', 'pending'),
+      },
+      platforms,
+      updatedAt: typeof gatewayState?.updated_at === 'string' ? gatewayState.updated_at : '',
+    },
+    models: modelList,
+    plugins,
+    sessions: {
+      count: sessions.length,
+      recent: sessions.slice(0, 8).map((session) => ({
+        id: String(session.id || ''),
+        messageCount: Number(session.messageCount || 0),
+        model: String(session.model || ''),
+        source: String(session.source || ''),
+        title: String(session.title || '新对话'),
+      })),
+      sources: sessions.reduce((acc, session) => {
+        const source = String(session.source || 'unknown');
+        acc[source] = (acc[source] || 0) + 1;
+        return acc;
+      }, {}),
+    },
+    skills: skills.slice(0, 80),
+  };
+}
+
 app.whenReady().then(() => {
   createApplicationMenu();
 
@@ -157,8 +425,11 @@ app.whenReady().then(() => {
 
   ipcMain.handle('hermes:get-connection', () => gatewayManager.getConnection());
   ipcMain.handle('hermes:start', (_event, options) => gatewayManager.start(options));
+  ipcMain.handle('hermes:stop', () => gatewayManager.stop());
   ipcMain.handle('hermes:get-gateway-ws-url', () => gatewayManager.getGatewayWsUrl());
   ipcMain.handle('hermes:api', (_event, request) => gatewayManager.api(request));
+  ipcMain.handle('hermes:get-local-inventory', () => readHermesInventory());
+  ipcMain.handle('hermes:pick-attachment', (event, kind) => pickAttachment(event, kind));
 
   createWindow();
 

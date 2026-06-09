@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getDesktopInfo: () => ipcRenderer.invoke('hermes:desktop-info'),
   getConnection: () => ipcRenderer.invoke('hermes:get-connection'),
   getGatewayWsUrl: () => ipcRenderer.invoke('hermes:get-gateway-ws-url'),
+  getLocalInventory: () => ipcRenderer.invoke('hermes:get-local-inventory'),
   getSnapshot: () => ipcRenderer.invoke('hermes:snapshot'),
+  pickAttachment: (kind) => ipcRenderer.invoke('hermes:pick-attachment', kind),
   startHermes: (options) => ipcRenderer.invoke('hermes:start', options),
+  stopHermes: () => ipcRenderer.invoke('hermes:stop'),
 });
