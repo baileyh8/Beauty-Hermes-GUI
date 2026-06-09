@@ -3951,6 +3951,41 @@ kbd {
   color: #667085;
 }
 
+.markdownTableWrap {
+  max-width: 100%;
+  margin: 10px 0 14px;
+  overflow-x: auto;
+  border: 1px solid #e1e5eb;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.markdownTableWrap table {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.markdownTableWrap th,
+.markdownTableWrap td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf0f4;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdownTableWrap th {
+  color: #4f5967;
+  background: #f7f8fa;
+  font-weight: 650;
+}
+
+.markdownTableWrap tr:last-child td {
+  border-bottom: 0;
+}
+
 .markdownText a {
   color: #2f67e8;
   text-decoration: none;

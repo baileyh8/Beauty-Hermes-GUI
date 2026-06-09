@@ -781,17 +781,20 @@ function buildLocalSlashResponse(command: string, context: LocalSlashContext): L
     const assistantCount = context.messages.filter((message) => message.kind === 'assistant').length;
     const runningTools = context.tools.filter((tool) => tool.state === 'running').length;
     const changedFiles = context.files.length;
+    const tableValue = (value: string | number) => String(value).replace(/\|/g, '/');
 
     return {
       title: '会话摘要',
       text: [
-        `当前模型：**${context.model}**`,
-        `工作目录：${context.cwd || '未设置'}`,
-        `上下文：${context.contextPercent}% · 1M`,
-        `消息：${userCount} 条用户消息，${assistantCount} 条最终结果`,
-        `工具：${runningTools} 个运行中，${context.tools.length} 个已记录`,
-        `文件：${changedFiles} 个变更条目`,
-        `会话：${context.recentSessions.length} 个最近真实会话`,
+        '| 项目 | 当前值 |',
+        '| --- | --- |',
+        `| 当前模型 | **${tableValue(context.model)}** |`,
+        `| 工作目录 | ${tableValue(context.cwd || '未设置')} |`,
+        `| 上下文 | ${context.contextPercent}% · 1M |`,
+        `| 消息 | ${userCount} 条用户消息，${assistantCount} 条最终结果 |`,
+        `| 工具 | ${runningTools} 个运行中，${context.tools.length} 个已记录 |`,
+        `| 文件 | ${changedFiles} 个变更条目 |`,
+        `| 会话 | ${context.recentSessions.length} 个最近真实会话 |`,
       ].join('\n'),
     };
   }
@@ -3055,17 +3058,36 @@ function renderInlineMarkdown(text: string) {
   return nodes;
 }
 
+function isMarkdownTableDivider(line: string) {
+  const cells = line.trim().split('|').map((cell) => cell.trim()).filter(Boolean);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseMarkdownTableLine(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) {
+    return null;
+  }
+
+  return trimmed
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
 function MarkdownText({ className, text }: { className?: string; text: string }) {
   const value = cleanDisplayText(text).trim();
   if (!value) {
     return null;
   }
 
-  const blocks: Array<{ kind: 'code' | 'heading' | 'list' | 'orderedList' | 'paragraph' | 'quote'; level?: number; lines: string[] }> = [];
+  const blocks: Array<{ kind: 'code' | 'heading' | 'list' | 'orderedList' | 'paragraph' | 'quote' | 'table'; level?: number; lines: string[] }> = [];
   let paragraph: string[] = [];
   let list: string[] = [];
   let listKind: 'list' | 'orderedList' | null = null;
   let code: string[] | null = null;
+  let table: string[] = [];
 
   const flushParagraph = () => {
     if (paragraph.length > 0) {
@@ -3080,8 +3102,15 @@ function MarkdownText({ className, text }: { className?: string; text: string })
       listKind = null;
     }
   };
+  const flushTable = () => {
+    if (table.length > 0) {
+      blocks.push({ kind: 'table', lines: table });
+      table = [];
+    }
+  };
   const pushListItem = (kind: 'list' | 'orderedList', item: string) => {
     flushParagraph();
+    flushTable();
     if (listKind && listKind !== kind) {
       flushList();
     }
@@ -3097,6 +3126,7 @@ function MarkdownText({ className, text }: { className?: string; text: string })
       } else {
         flushParagraph();
         flushList();
+        flushTable();
         code = [];
       }
       return;
@@ -3110,13 +3140,35 @@ function MarkdownText({ className, text }: { className?: string; text: string })
     if (!line.trim()) {
       flushParagraph();
       flushList();
+      flushTable();
       return;
+    }
+
+    const nextTableLine = parseMarkdownTableLine(line);
+    const previousTableLine = table.length > 0 ? parseMarkdownTableLine(table[table.length - 1]) : null;
+    if (
+      nextTableLine
+      && (
+        table.length > 0
+        || (paragraph.length === 1 && isMarkdownTableDivider(line) && parseMarkdownTableLine(paragraph[0])?.length === nextTableLine.length)
+      )
+    ) {
+      if (paragraph.length === 1 && isMarkdownTableDivider(line)) {
+        table = [paragraph[0], line];
+        paragraph = [];
+        return;
+      }
+      if (!isMarkdownTableDivider(line) && (!previousTableLine || previousTableLine.length === nextTableLine.length)) {
+        table.push(line);
+        return;
+      }
     }
 
     const heading = line.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       flushParagraph();
       flushList();
+      flushTable();
       blocks.push({ kind: 'heading', level: heading[1].length, lines: [heading[2]] });
       return;
     }
@@ -3125,6 +3177,7 @@ function MarkdownText({ className, text }: { className?: string; text: string })
     if (quote) {
       flushParagraph();
       flushList();
+      flushTable();
       blocks.push({ kind: 'quote', lines: [quote[1]] });
       return;
     }
@@ -3142,11 +3195,13 @@ function MarkdownText({ className, text }: { className?: string; text: string })
     }
 
     flushList();
+    flushTable();
     paragraph.push(line);
   });
 
   flushParagraph();
   flushList();
+  flushTable();
   if (code) {
     blocks.push({ kind: 'code', lines: code });
   }
@@ -3163,6 +3218,32 @@ function MarkdownText({ className, text }: { className?: string; text: string })
         }
         if (block.kind === 'quote') {
           return <blockquote key={index}>{renderInlineMarkdown(block.lines.join('\n'))}</blockquote>;
+        }
+        if (block.kind === 'table') {
+          const header = parseMarkdownTableLine(block.lines[0]) ?? [];
+          const rows = block.lines.slice(2).map((line) => parseMarkdownTableLine(line) ?? []);
+          return (
+            <div className="markdownTableWrap" key={index}>
+              <table>
+                <thead>
+                  <tr>
+                    {header.map((cell, cellIndex) => (
+                      <th key={`${index}-head-${cellIndex}`}>{renderInlineMarkdown(cell)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, rowIndex) => (
+                    <tr key={`${index}-row-${rowIndex}`}>
+                      {header.map((_, cellIndex) => (
+                        <td key={`${index}-cell-${rowIndex}-${cellIndex}`}>{renderInlineMarkdown(row[cellIndex] ?? '')}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
         }
         if (block.kind === 'list') {
           return (

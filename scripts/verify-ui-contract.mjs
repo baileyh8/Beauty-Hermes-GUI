@@ -37,6 +37,9 @@ const requiredText = [
   "kind === 'heading'",
   "kind === 'orderedList'",
   "kind === 'quote'",
+  "kind === 'table'",
+  'isMarkdownTableDivider',
+  'parseMarkdownTableLine',
   'pendingSidebarDeleteKey',
   'pendingCronDeleteId',
 ];
@@ -57,6 +60,7 @@ const requiredStyles = [
   '.markdownText .markdownHeading',
   '.markdownText blockquote',
   '.markdownText ol',
+  '.markdownTableWrap',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));

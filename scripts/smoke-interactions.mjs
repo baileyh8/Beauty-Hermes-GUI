@@ -164,6 +164,16 @@ try {
     sendButton.click();
     await waitFor(() => document.body.innerText.includes('/skills [关键词]'), 'local slash output');
 
+    textarea = document.querySelector('textarea[aria-label="消息"]');
+    sendButton = document.querySelector('.sendButton');
+    setNativeValue(textarea, '/summary');
+    await sleep(120);
+    sendButton.click();
+    await waitFor(
+      () => document.querySelector('.markdownTableWrap table')?.textContent?.includes('当前模型'),
+      'summary markdown table rendering',
+    );
+
     setNativeValue(textarea, '/agents');
     await sleep(120);
     if (sendButton.disabled) {
@@ -531,7 +541,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
