@@ -586,6 +586,45 @@ try {
       return button;
     };
 
+    await selectSettingsSection('模型', '默认模型');
+    const modelProviderSelect = await waitFor(
+      () => document.querySelector('select[aria-label="模型提供方"]'),
+      'model provider select',
+      15000,
+    );
+    await waitFor(() => modelProviderSelect.options.length > 0, 'model provider options', 15000);
+    const modelNameSelect = await waitFor(
+      () => document.querySelector('select[aria-label="模型名称"]'),
+      'model name select',
+      15000,
+    );
+    await waitFor(() => modelNameSelect.options.length > 0, 'model name options', 15000);
+    if (modelProviderSelect.disabled || modelNameSelect.disabled) {
+      throw new Error('Model settings selects should be editable after local bridge load.');
+    }
+    if (findSettingButton('默认模型', '保存').disabled) {
+      throw new Error('Model save action should be available after model options load.');
+    }
+
+    await selectSettingsSection('权限', 'Toolsets');
+    const toolsetToggle = await waitFor(
+      () => Array.from(document.querySelectorAll('.settingRow .toggle')).find((item) => item.getAttribute('aria-label')?.includes('toolset') || item.getAttribute('aria-label')),
+      'toolset toggle controls',
+      15000,
+    );
+    if (toolsetToggle.disabled) {
+      throw new Error('Toolset toggle should be editable after local bridge load.');
+    }
+
+    await selectSettingsSection('集成', 'MCP Servers');
+    const mcpSyncButton = findSettingButton('MCP Servers', '同步');
+    if (mcpSyncButton.disabled) {
+      throw new Error('MCP sync action should be available.');
+    }
+    if (document.body.innerText.includes('本机只读')) {
+      throw new Error('Settings deep pages must not present local-only configuration as read-only.');
+    }
+
     await selectSettingsSection('外观', '界面密度');
     findSettingButton('界面密度', '舒适').click();
     await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-density') === 'compact', 'compact density applied');
@@ -635,6 +674,7 @@ try {
       pages: pages.map(([label]) => label),
       projectAgents: ['项目', 'Agents'],
       preferences: ['density', 'theme', 'permission-modal'],
+      settingsEditable: ['models', 'toolsets', 'mcp'],
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,

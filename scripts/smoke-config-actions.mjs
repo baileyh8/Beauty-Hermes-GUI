@@ -41,6 +41,7 @@ import os
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.config import load_config, save_config
 from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+from hermes_cli.tools_config import _get_effective_configurable_toolsets, _get_platform_tools, _save_platform_tools
 from cron import jobs as cron_jobs
 
 created = profiles_mod.create_profile(
@@ -73,6 +74,38 @@ platforms = config.setdefault("platforms", {})
 platforms.setdefault("telegram", {})["enabled"] = True
 save_config(config)
 
+config = load_config()
+model_cfg = config.get("model", {})
+if not isinstance(model_cfg, dict):
+    model_cfg = {}
+model_cfg["provider"] = "smoke-provider"
+model_cfg["default"] = "smoke-model-next"
+model_cfg["name"] = "smoke-model-next"
+config["model"] = model_cfg
+save_config(config)
+
+toolset_names = [row[0] for row in _get_effective_configurable_toolsets()]
+if not toolset_names:
+    raise SystemExit("No configurable toolsets found")
+first_toolset = toolset_names[0]
+config = load_config()
+enabled_toolsets = set(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+enabled_toolsets.add(first_toolset)
+_save_platform_tools(config, "cli", enabled_toolsets)
+
+config = load_config()
+servers = config.setdefault("mcp_servers", {})
+servers["smoke-mcp"] = {
+    "command": "python",
+    "args": ["-c", "print('smoke mcp placeholder')"],
+    "enabled": True,
+}
+save_config(config)
+config = load_config()
+config["mcp_servers"]["smoke-mcp"]["enabled"] = False
+save_config(config)
+
+final_config = load_config()
 state = {
     "active": profiles_mod.get_active_profile(),
     "profiles": [p.name for p in profiles_mod.list_profiles()],
@@ -82,7 +115,11 @@ state = {
         "resumed": resumed["state"],
     },
     "disabled_skills": sorted(get_disabled_skills(load_config())),
-    "telegram_enabled": load_config().get("platforms", {}).get("telegram", {}).get("enabled"),
+    "mcp_enabled": final_config.get("mcp_servers", {}).get("smoke-mcp", {}).get("enabled"),
+    "model": final_config.get("model", {}),
+    "telegram_enabled": final_config.get("platforms", {}).get("telegram", {}).get("enabled"),
+    "toolset_enabled": first_toolset in _get_platform_tools(final_config, "cli", include_default_mcp_servers=False),
+    "toolset_name": first_toolset,
 }
 print(json.dumps(state, ensure_ascii=False))
 `;
@@ -111,6 +148,9 @@ if (!state.profiles.includes('ui-smoke')) failures.push('profile create/list fai
 if (!state.cron?.id || state.cron.paused !== 'paused' || state.cron.resumed !== 'scheduled') failures.push('cron lifecycle failed');
 if (!state.disabled_skills.includes('demo-skill')) failures.push('skill toggle persistence failed');
 if (state.telegram_enabled !== true) failures.push('messaging platform toggle failed');
+if (state.model?.provider !== 'smoke-provider' || state.model?.default !== 'smoke-model-next') failures.push('model settings persistence failed');
+if (state.toolset_enabled !== true || !state.toolset_name) failures.push('toolset toggle persistence failed');
+if (state.mcp_enabled !== false) failures.push('mcp server toggle persistence failed');
 
 if (failures.length) {
   console.error('Config action smoke failed.');

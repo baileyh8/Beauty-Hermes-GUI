@@ -346,6 +346,42 @@ interface HermesMessagingPlatformInfo {
   env_vars?: Array<{ is_set?: boolean; key: string; required?: boolean }>;
 }
 
+interface HermesModelProviderInfo {
+  authenticated?: boolean;
+  is_current?: boolean;
+  models?: string[];
+  name?: string;
+  slug: string;
+  warning?: string;
+}
+
+interface HermesModelOptionsInfo {
+  model?: string;
+  provider?: string;
+  providers?: HermesModelProviderInfo[];
+  source?: string;
+}
+
+interface HermesToolsetInfo {
+  available?: boolean;
+  configured?: boolean;
+  description?: string;
+  enabled?: boolean;
+  label?: string;
+  name: string;
+  tools?: string[];
+}
+
+interface HermesMcpServerInfo {
+  args?: string[];
+  command?: string;
+  enabled?: boolean;
+  name: string;
+  tools?: Array<string | { name?: string }>;
+  transport?: string;
+  url?: string;
+}
+
 const pinnedSessions: SidebarItem[] = [];
 
 const recentSessions: SidebarItem[] = [];
@@ -6126,8 +6162,21 @@ function SettingsPanel({
 }) {
   const title = settingsSections.find((item) => item.id === selected)!;
   const config = runtime.inventory?.config;
+  const apiRequest = runtime.apiRequest;
   const [settingsBusy, setSettingsBusy] = useState('');
   const [settingsStatus, setSettingsStatus] = useState('');
+  const [modelOptions, setModelOptions] = useState<HermesModelOptionsInfo | null>(null);
+  const [modelOptionsLoaded, setModelOptionsLoaded] = useState(false);
+  const [selectedModelProvider, setSelectedModelProvider] = useState('');
+  const [selectedModelName, setSelectedModelName] = useState('');
+  const [toolsets, setToolsets] = useState<HermesToolsetInfo[]>([]);
+  const [toolsetsLoaded, setToolsetsLoaded] = useState(false);
+  const [mcpServers, setMcpServers] = useState<HermesMcpServerInfo[]>([]);
+  const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
   const runSettingAction = async (key: string, label: string, action: () => Promise<void>) => {
     try {
       setSettingsBusy(key);
@@ -6171,11 +6220,195 @@ function SettingsPanel({
   const stopGateway = () => {
     void runSettingAction('gateway:stop', 'Gateway 停止', runtime.stopGateway);
   };
+  const inventoryModelOptions = useMemo<HermesModelOptionsInfo | null>(() => {
+    const defaultModel = config?.defaultModel || runtime.model || '';
+    const currentProvider = config?.provider
+      || runtime.inventory?.models.find((item) => item.model === defaultModel || item.name === defaultModel)?.provider
+      || '';
+    if (!currentProvider || !defaultModel) {
+      return null;
+    }
+
+    const modelsByProvider = new Map<string, Set<string>>();
+    const providerNames = new Map<string, string>();
+    const addModel = (provider: string, model: string, name?: string) => {
+      if (!provider || !model) {
+        return;
+      }
+      if (!modelsByProvider.has(provider)) {
+        modelsByProvider.set(provider, new Set());
+      }
+      modelsByProvider.get(provider)?.add(model);
+      providerNames.set(provider, name || providerNames.get(provider) || provider);
+    };
+
+    runtime.inventory?.models.forEach((item) => {
+      addModel(item.provider || currentProvider, item.model || item.name, item.provider || item.name);
+    });
+    addModel(currentProvider, defaultModel, currentProvider);
+
+    return {
+      model: defaultModel,
+      provider: currentProvider,
+      providers: Array.from(modelsByProvider.entries()).map(([slug, models]) => ({
+        authenticated: true,
+        models: Array.from(models),
+        name: providerNames.get(slug) || slug,
+        slug,
+      })),
+      source: 'desktop-inventory',
+    };
+  }, [config?.defaultModel, config?.provider, runtime.inventory?.models, runtime.model]);
+  useEffect(() => {
+    if (!modelOptions && inventoryModelOptions) {
+      setModelOptions(inventoryModelOptions);
+      setSelectedModelProvider(inventoryModelOptions.provider || '');
+      setSelectedModelName(inventoryModelOptions.model || '');
+    }
+  }, [inventoryModelOptions, modelOptions]);
+  const loadModelSettings = useCallback(async () => {
+    try {
+      setSettingsBusy('models:load');
+      const response = await apiRequest<HermesModelOptionsInfo>({ path: '/api/model/options', timeoutMs: 30000 });
+      const providers = Array.isArray(response.providers) ? response.providers : [];
+      const provider = response.provider || config?.provider || providers[0]?.slug || '';
+      const model = response.model || config?.defaultModel || providers.find((item) => item.slug === provider)?.models?.[0] || '';
+      setModelOptions({ ...response, providers });
+      setModelOptionsLoaded(true);
+      setSelectedModelProvider(provider);
+      setSelectedModelName(model);
+      if (selectedRef.current === 'models') {
+        setSettingsStatus(`已同步 ${providers.length} 个模型提供方`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (selectedRef.current === 'models') {
+        setSettingsStatus(`模型配置读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest, config?.defaultModel, config?.provider]);
+  const providerModels = useMemo(() => {
+    const provider = modelOptions?.providers?.find((item) => item.slug === selectedModelProvider);
+    return Array.isArray(provider?.models) ? provider.models : [];
+  }, [modelOptions, selectedModelProvider]);
+  const currentModelProvider = modelOptions?.providers?.find((item) => item.slug === selectedModelProvider);
+  const saveMainModel = useCallback(async () => {
+    if (!selectedModelProvider || !selectedModelName) {
+      setSettingsStatus('请选择 provider 和 model。');
+      return;
+    }
+
+    await runSettingAction('models:save', '默认模型保存', async () => {
+      await apiRequest({
+        body: {
+          model: selectedModelName,
+          provider: selectedModelProvider,
+          scope: 'main',
+        },
+        method: 'POST',
+        path: '/api/model/set',
+        timeoutMs: 30000,
+      });
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, runtime, selectedModelName, selectedModelProvider]);
+  const loadToolsets = useCallback(async () => {
+    try {
+      setSettingsBusy('toolsets:load');
+      const rows = await apiRequest<HermesToolsetInfo[]>({ path: '/api/tools/toolsets', timeoutMs: 30000 });
+      setToolsets(Array.isArray(rows) ? rows : []);
+      setToolsetsLoaded(true);
+      if (selectedRef.current === 'permissions') {
+        setSettingsStatus(`已同步 ${Array.isArray(rows) ? rows.length : 0} 个 toolsets`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (selectedRef.current === 'permissions') {
+        setSettingsStatus(`Toolsets 读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest]);
+  const toggleToolset = useCallback(async (toolset: HermesToolsetInfo) => {
+    const nextEnabled = !toolset.enabled;
+    await runSettingAction(`toolset:${toolset.name}`, `${toolset.label || toolset.name} ${nextEnabled ? '启用' : '停用'}`, async () => {
+      await apiRequest({
+        body: { enabled: nextEnabled },
+        method: 'PUT',
+        path: `/api/tools/toolsets/${encodeURIComponent(toolset.name)}`,
+        timeoutMs: 30000,
+      });
+      setToolsets((current) => current.map((item) => item.name === toolset.name ? { ...item, enabled: nextEnabled, available: nextEnabled } : item));
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, runtime]);
+  const loadMcpServers = useCallback(async () => {
+    try {
+      setSettingsBusy('mcp:load');
+      const response = await apiRequest<{ servers?: HermesMcpServerInfo[] }>({ path: '/api/mcp/servers', timeoutMs: 30000 });
+      const rows = Array.isArray(response.servers) ? response.servers : [];
+      setMcpServers(rows);
+      setMcpServersLoaded(true);
+      if (selectedRef.current === 'integrations') {
+        setSettingsStatus(`已同步 ${rows.length} 个 MCP servers`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (selectedRef.current === 'integrations') {
+        setSettingsStatus(`MCP servers 读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest]);
+  const toggleMcpServer = useCallback(async (server: HermesMcpServerInfo) => {
+    const nextEnabled = !server.enabled;
+    await runSettingAction(`mcp:${server.name}`, `${server.name} ${nextEnabled ? '启用' : '停用'}`, async () => {
+      await apiRequest({
+        body: { enabled: nextEnabled },
+        method: 'PUT',
+        path: `/api/mcp/servers/${encodeURIComponent(server.name)}/enabled`,
+        timeoutMs: 30000,
+      });
+      setMcpServers((current) => current.map((item) => item.name === server.name ? { ...item, enabled: nextEnabled } : item));
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, runtime]);
+  const testMcpServer = useCallback(async (server: HermesMcpServerInfo) => {
+    await runSettingAction(`mcp:test:${server.name}`, `${server.name} 测试`, async () => {
+      const result = await apiRequest<{ error?: string; ok?: boolean; tools?: Array<{ name?: string }> }>({
+        method: 'POST',
+        path: `/api/mcp/servers/${encodeURIComponent(server.name)}/test`,
+        timeoutMs: 60000,
+      });
+      if (!result.ok) {
+        throw new Error(result.error || 'MCP 测试未通过');
+      }
+      setSettingsStatus(`${server.name} 连接正常，发现 ${result.tools?.length ?? 0} 个工具`);
+    });
+  }, [apiRequest]);
+  useEffect(() => {
+    if (selected === 'models' && !modelOptionsLoaded && !settingsBusy) {
+      void loadModelSettings();
+    }
+    if (selected === 'permissions' && !toolsetsLoaded && !settingsBusy) {
+      void loadToolsets();
+    }
+    if (selected === 'integrations' && !mcpServersLoaded && !settingsBusy) {
+      void loadMcpServers();
+    }
+  }, [loadMcpServers, loadModelSettings, loadToolsets, mcpServersLoaded, modelOptionsLoaded, selected, settingsBusy, toolsetsLoaded]);
+  const enabledToolsetCount = toolsets.filter((item) => item.enabled).length;
+  const enabledMcpCount = mcpServers.filter((item) => item.enabled !== false).length;
+  const settingsControlLocked = Boolean(settingsBusy && !settingsBusy.endsWith(':load'));
   const rowsBySection: Record<SettingsSection, Array<{ desc: string; icon: React.ReactNode; title: string; control: React.ReactNode }>> = {
     advanced: [
-      { icon: <HardDrive size={18} />, title: 'Hermes Home', desc: runtime.inventory?.diagnostics.hermesHome || '浏览器预览不可用', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => void copyText(runtime.inventory?.diagnostics.hermesHome || '', 'Hermes Home')}>{settingsBusy === 'copy:Hermes Home' ? '复制中' : '复制'}</button> },
-      { icon: <TerminalSquare size={18} />, title: 'Gateway PID', desc: String(runtime.inventory?.diagnostics.gatewayPid ?? '-'), control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('advanced:pid', 'Gateway 状态')}>{settingsBusy === 'advanced:pid' ? '刷新中' : runtime.gatewayStatus}</button> },
-      { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('advanced:refresh', '本机状态刷新')}>{settingsBusy === 'advanced:refresh' ? '刷新中' : '刷新'}</button> },
+      { icon: <HardDrive size={18} />, title: 'Hermes Home', desc: runtime.inventory?.diagnostics.hermesHome || '浏览器预览不可用', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void copyText(runtime.inventory?.diagnostics.hermesHome || '', 'Hermes Home')}>{settingsBusy === 'copy:Hermes Home' ? '复制中' : '复制'}</button> },
+      { icon: <TerminalSquare size={18} />, title: 'Gateway PID', desc: String(runtime.inventory?.diagnostics.gatewayPid ?? '-'), control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('advanced:pid', 'Gateway 状态')}>{settingsBusy === 'advanced:pid' ? '刷新中' : runtime.gatewayStatus}</button> },
+      { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('advanced:refresh', '本机状态刷新')}>{settingsBusy === 'advanced:refresh' ? '刷新中' : '刷新'}</button> },
     ],
     appearance: [
       {
@@ -6186,7 +6419,7 @@ function SettingsPanel({
           <button
             className="selectButton"
             type="button"
-            disabled={Boolean(settingsBusy)}
+            disabled={settingsControlLocked}
             onClick={() => {
               const nextDensity = density === 'comfortable' ? 'compact' : 'comfortable';
               onDensityChange(nextDensity);
@@ -6205,7 +6438,7 @@ function SettingsPanel({
           <button
             className="selectButton"
             type="button"
-            disabled={Boolean(settingsBusy)}
+            disabled={settingsControlLocked}
             onClick={() => {
               const nextTheme = theme === 'light' ? 'soft' : 'light';
               onThemeChange(nextTheme);
@@ -6218,21 +6451,100 @@ function SettingsPanel({
       },
     ],
     general: [
-      { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => runtime.gatewayStatus === 'connected' ? stopGateway() : restartGateway()}>{settingsBusy === 'gateway:stop' || settingsBusy === 'gateway:restart' ? '处理中' : runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
-      { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('general:sessions', '会话列表刷新')}>{settingsBusy === 'general:sessions' ? '刷新中' : '刷新'}</button> },
+      { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => runtime.gatewayStatus === 'connected' ? stopGateway() : restartGateway()}>{settingsBusy === 'gateway:stop' || settingsBusy === 'gateway:restart' ? '处理中' : runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
+      { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('general:sessions', '会话列表刷新')}>{settingsBusy === 'general:sessions' ? '刷新中' : '刷新'}</button> },
     ],
     integrations: [
-      { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={restartGateway}>{settingsBusy === 'gateway:restart' ? '重启中' : '重启'}</button><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={stopGateway}>{settingsBusy === 'gateway:stop' ? '停止中' : '停止'}</button></div> },
-      { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('integrations:messaging', '消息平台刷新')}>{settingsBusy === 'integrations:messaging' ? '刷新中' : '刷新'}</button><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => onOpenSurface('messaging')}>管理</button></div> },
-      { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => onOpenSurface('skills')}>查看</button> },
+      { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={restartGateway}>{settingsBusy === 'gateway:restart' ? '重启中' : '重启'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={stopGateway}>{settingsBusy === 'gateway:stop' ? '停止中' : '停止'}</button></div> },
+      { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('integrations:messaging', '消息平台刷新')}>{settingsBusy === 'integrations:messaging' ? '刷新中' : '刷新'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('messaging')}>管理</button></div> },
+      { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('skills')}>查看</button> },
+      { icon: <Network size={18} />, title: 'MCP Servers', desc: `${enabledMcpCount}/${mcpServers.length} 已启用，配置写入 Hermes mcp_servers。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadMcpServers()}>{settingsBusy === 'mcp:load' ? '同步中' : '同步'}</button> },
+      ...mcpServers.map((server) => ({
+        icon: <Network size={18} />,
+        title: server.name,
+        desc: `${server.transport || 'unknown'} · ${server.url || server.command || '未配置入口'}`,
+        control: (
+          <div className="settingInlineActions">
+            <button
+              className={server.enabled === false ? 'toggle' : 'toggle on'}
+              type="button"
+              aria-label={`${server.enabled === false ? '启用' : '停用'} ${server.name}`}
+              disabled={settingsControlLocked}
+              onClick={() => void toggleMcpServer(server)}
+            >
+              <span />
+            </button>
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void testMcpServer(server)}>
+              {settingsBusy === `mcp:test:${server.name}` ? '测试中' : '测试'}
+            </button>
+          </div>
+        ),
+      })),
     ],
     models: [
-      { icon: <Zap size={18} />, title: '默认模型', desc: `${config?.defaultModel || runtime.model} · ${config?.provider || 'provider 未设置'}`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => void copyText(config?.defaultModel || runtime.model, '默认模型')}>{settingsBusy === 'copy:默认模型' ? '复制中' : '复制'}</button> },
-      { icon: <Database size={18} />, title: '模型库', desc: `${runtime.inventory?.models.length ?? 0} 个本机模型配置`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('models:refresh', '模型库刷新')}>{settingsBusy === 'models:refresh' ? '刷新中' : '刷新'}</button> },
+      {
+        icon: <Zap size={18} />,
+        title: '默认模型',
+        desc: `${config?.defaultModel || runtime.model} · ${config?.provider || 'provider 未设置'}，保存后影响新会话。`,
+        control: (
+          <div className="settingControlStack wide">
+            <select
+              className="settingSelect"
+              aria-label="模型提供方"
+              value={selectedModelProvider}
+              disabled={settingsControlLocked || !modelOptions?.providers?.length}
+              onChange={(event) => {
+                const provider = event.target.value;
+                const models = modelOptions?.providers?.find((item) => item.slug === provider)?.models || [];
+                setSelectedModelProvider(provider);
+                setSelectedModelName(models[0] || '');
+              }}
+            >
+              {(modelOptions?.providers || []).map((provider) => (
+                <option key={provider.slug} value={provider.slug}>{provider.name || provider.slug}</option>
+              ))}
+            </select>
+            <select
+              className="settingSelect model"
+              aria-label="模型名称"
+              value={selectedModelName}
+              disabled={settingsControlLocked || providerModels.length === 0}
+              onChange={(event) => setSelectedModelName(event.target.value)}
+            >
+              {providerModels.map((model) => <option key={model} value={model}>{model}</option>)}
+            </select>
+            <button className="selectButton" type="button" disabled={settingsControlLocked || !selectedModelProvider || !selectedModelName} onClick={() => void saveMainModel()}>
+              {settingsBusy === 'models:save' ? '保存中' : '保存'}
+            </button>
+          </div>
+        ),
+      },
+      {
+        icon: <Database size={18} />,
+        title: '模型库',
+        desc: `${modelOptions?.providers?.length ?? runtime.inventory?.models.length ?? 0} 个 provider · ${currentModelProvider?.authenticated === false ? '需要配置凭据' : '已可选择'}${currentModelProvider?.warning ? ` · ${currentModelProvider.warning}` : ''}`,
+        control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadModelSettings()}>{settingsBusy === 'models:load' ? '同步中' : '同步'}</button>,
+      },
     ],
     permissions: [
-      { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={onOpenPermission}>手动确认</button> },
-      { icon: <KeyRound size={18} />, title: 'Toolsets', desc: config?.toolsets.join(', ') || '未配置 toolset', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => void copyText(config?.toolsets.join(', ') || '', 'Toolsets')}>{settingsBusy === 'copy:Toolsets' ? '复制中' : '复制'}</button> },
+      { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={onOpenPermission}>手动确认</button> },
+      { icon: <KeyRound size={18} />, title: 'Toolsets', desc: `${enabledToolsetCount}/${toolsets.length || config?.toolsets.length || 0} 已启用，写入 platform_toolsets.cli。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadToolsets()}>{settingsBusy === 'toolsets:load' ? '同步中' : '同步'}</button> },
+      ...toolsets.map((toolset) => ({
+        icon: <Wrench size={18} />,
+        title: toolset.label || toolset.name,
+        desc: `${toolset.name} · ${toolset.description || toolset.tools?.slice(0, 4).join(', ') || 'Hermes toolset'}`,
+        control: (
+          <button
+            className={toolset.enabled ? 'toggle on' : 'toggle'}
+            type="button"
+            aria-label={`${toolset.enabled ? '停用' : '启用'} ${toolset.label || toolset.name}`}
+            disabled={settingsControlLocked}
+            onClick={() => void toggleToolset(toolset)}
+          >
+            <span />
+          </button>
+        ),
+      })),
     ],
   };
   const rows = rowsBySection[selected];

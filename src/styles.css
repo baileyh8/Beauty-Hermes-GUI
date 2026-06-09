@@ -5802,6 +5802,42 @@ textarea {
   align-items: center;
 }
 
+.settingControlStack {
+  min-width: min(520px, 44vw);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.settingControlStack.wide {
+  min-width: min(620px, 52vw);
+}
+
+.settingSelect {
+  min-width: 150px;
+  max-width: 220px;
+  height: 32px;
+  padding: 0 30px 0 10px;
+  border: 1px solid #dfe4ea;
+  border-radius: 11px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.92);
+  color: #20242a;
+  font: inherit;
+  font-size: 12px;
+}
+
+.settingSelect.model {
+  min-width: 220px;
+  max-width: 300px;
+}
+
+.settingSelect:focus {
+  border-color: #b9c8f7;
+  box-shadow: 0 0 0 3px rgba(47, 103, 232, 0.08);
+}
+
 .detailActions {
   margin-top: 16px;
 }

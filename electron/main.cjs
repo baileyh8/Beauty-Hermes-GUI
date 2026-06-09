@@ -641,6 +641,166 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": ok, "state": item.get("state"
   return null;
 }
 
+async function localSettingsApi(method, url, body) {
+  if (method === 'GET' && url.pathname === '/api/model/options') {
+    return runHermesPython(`
+import json
+from hermes_cli.inventory import build_models_payload, load_picker_context
+payload = build_models_payload(
+    load_picker_context(),
+    max_models=50,
+    include_unconfigured=True,
+    picker_hints=True,
+    canonical_order=True,
+    pricing=False,
+    capabilities=False,
+)
+payload["source"] = "desktop-local-bridge"
+print("__BEAUTY_HERMES_JSON__" + json.dumps(payload))
+`, {}, 30000);
+  }
+
+  if (method === 'POST' && url.pathname === '/api/model/set') {
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.config import load_config, save_config
+scope = str(payload.get("scope") or "main").strip().lower()
+provider = str(payload.get("provider") or "").strip()
+model = str(payload.get("model") or "").strip()
+if scope != "main":
+    raise SystemExit("Only main model assignment is supported by the desktop local bridge.")
+if not provider or not model:
+    raise SystemExit("provider and model are required")
+cfg = load_config()
+model_cfg = cfg.get("model", {})
+if not isinstance(model_cfg, dict):
+    model_cfg = {}
+model_cfg["provider"] = provider
+model_cfg["default"] = model
+model_cfg["name"] = model
+cfg["model"] = model_cfg
+save_config(cfg)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "scope": scope, "provider": provider, "model": model, "source": "desktop-local-bridge"}))
+`, body || {}, 20000);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/tools/toolsets') {
+    return runHermesPython(`
+import json
+from hermes_cli.config import load_config
+from hermes_cli.tools_config import _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys, gui_toolset_label
+from toolsets import resolve_toolset
+config = load_config()
+enabled_toolsets = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+rows = []
+for name, label, desc in _get_effective_configurable_toolsets():
+    try:
+        tools = sorted(set(resolve_toolset(name)))
+    except Exception:
+        tools = []
+    is_enabled = name in enabled_toolsets
+    rows.append({
+        "name": name,
+        "label": gui_toolset_label(label),
+        "description": desc,
+        "enabled": is_enabled,
+        "available": is_enabled,
+        "configured": _toolset_has_keys(name, config),
+        "tools": tools,
+    })
+print("__BEAUTY_HERMES_JSON__" + json.dumps(rows))
+`, {}, 20000);
+  }
+
+  const toolsetMatch = url.pathname.match(/^\/api\/tools\/toolsets\/([^/]+)$/);
+  if (method === 'PUT' && toolsetMatch) {
+    const name = decodeURIComponent(toolsetMatch[1]);
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.config import load_config
+from hermes_cli.tools_config import _get_effective_configurable_toolsets, _get_platform_tools, _save_platform_tools
+name = str(payload.get("name") or "").strip()
+enabled_next = bool(payload.get("enabled"))
+valid = {item[0] for item in _get_effective_configurable_toolsets()}
+if name not in valid:
+    raise SystemExit(f"Unknown toolset: {name}")
+config = load_config()
+enabled = set(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+if enabled_next:
+    enabled.add(name)
+else:
+    enabled.discard(name)
+_save_platform_tools(config, "cli", enabled)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "enabled": enabled_next, "source": "desktop-local-bridge"}))
+`, { name, enabled: Boolean(body?.enabled) }, 20000);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/mcp/servers') {
+    return runHermesPython(`
+import json
+from hermes_cli.mcp_config import _get_mcp_servers
+def summary(name, cfg):
+    return {
+        "name": name,
+        "transport": "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown"),
+        "url": cfg.get("url"),
+        "command": cfg.get("command"),
+        "args": list(cfg.get("args") or []),
+        "auth": cfg.get("auth"),
+        "enabled": cfg.get("enabled", True) is not False,
+        "tools": cfg.get("tools"),
+    }
+servers = _get_mcp_servers()
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"servers": [summary(name, cfg) for name, cfg in sorted(servers.items())], "source": "desktop-local-bridge"}))
+`, {}, 20000);
+  }
+
+  const mcpEnabledMatch = url.pathname.match(/^\/api\/mcp\/servers\/([^/]+)\/enabled$/);
+  if (method === 'PUT' && mcpEnabledMatch) {
+    const name = decodeURIComponent(mcpEnabledMatch[1]);
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.config import load_config, save_config
+name = str(payload.get("name") or "").strip()
+enabled = bool(payload.get("enabled"))
+cfg = load_config()
+servers = cfg.get("mcp_servers")
+if not isinstance(servers, dict) or name not in servers:
+    raise SystemExit(f"Server '{name}' not found")
+if not isinstance(servers[name], dict):
+    raise SystemExit("Malformed server config")
+servers[name]["enabled"] = enabled
+save_config(cfg)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "enabled": enabled, "source": "desktop-local-bridge"}))
+`, { name, enabled: Boolean(body?.enabled) }, 20000);
+  }
+
+  const mcpTestMatch = url.pathname.match(/^\/api\/mcp\/servers\/([^/]+)\/test$/);
+  if (method === 'POST' && mcpTestMatch) {
+    const name = decodeURIComponent(mcpTestMatch[1]);
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
+name = str(payload.get("name") or "").strip()
+servers = _get_mcp_servers()
+if name not in servers:
+    raise SystemExit(f"Server '{name}' not found")
+try:
+    tools = _probe_single_server(name, servers[name])
+    result = {"ok": True, "tools": [{"name": t, "description": d} for t, d in tools], "source": "desktop-local-bridge"}
+except Exception as exc:
+    result = {"ok": False, "error": str(exc), "tools": [], "source": "desktop-local-bridge"}
+print("__BEAUTY_HERMES_JSON__" + json.dumps(result))
+`, { name }, 30000);
+  }
+
+  return null;
+}
+
 function walkFiles(root, matcher, limit = 120) {
   const files = [];
 
@@ -841,6 +1001,7 @@ async function localApiFallback(request, error) {
     localSkillsApi,
     localCronApi,
     localMessagingApi,
+    localSettingsApi,
   ];
 
   for (const api of localApis) {
@@ -958,6 +1119,9 @@ async function localApiFallback(request, error) {
     || url.pathname.startsWith('/api/skills')
     || url.pathname.startsWith('/api/cron/jobs')
     || url.pathname.startsWith('/api/messaging/platforms')
+    || url.pathname.startsWith('/api/model')
+    || url.pathname.startsWith('/api/tools/toolsets')
+    || url.pathname.startsWith('/api/mcp/servers')
   )) {
     return {
       handled: false,
