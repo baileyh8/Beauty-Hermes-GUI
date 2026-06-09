@@ -290,11 +290,17 @@ try {
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'project command center auto close');
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page');
     const projectMoreButton = Array.from(document.querySelectorAll('.projectCard .iconButton'))
-      .find((item) => item.getAttribute('aria-label')?.includes('更多操作'));
+      .find((item) => item.getAttribute('aria-label')?.includes('Hermes Gateway 更多操作'));
     projectMoreButton?.click();
     await waitFor(() => document.querySelector('[data-testid="command-center"]'), 'project more command center');
+    await waitFor(
+      () => document.querySelector('[data-testid="command-center"] input')?.value.includes('Hermes Gateway'),
+      'project more contextual query',
+    );
     document.querySelector('.overlayBackdrop')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'project command center close');
+    findButton('项目设置')?.click();
+    await waitFor(() => document.querySelector('.settingsSurface'), 'project settings navigation');
 
     await openCommandCenter('Agents');
     await waitFor(() => findCommandRow('Agents'), 'agents command row');
@@ -399,7 +405,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

@@ -2359,8 +2359,8 @@ function App() {
             runtime={runtime}
             onOpenChat={() => setSurface('chat')}
             onOpenDiagnostics={() => setSurface('diagnostics')}
-            onOpenProjectMenu={() => {
-              setCommandQuery('项目');
+            onOpenProjectMenu={(projectTitle) => {
+              setCommandQuery(projectTitle);
               setCommandOpen(true);
             }}
             onOpenSettings={() => setSurface('settings')}
@@ -4413,32 +4413,60 @@ function ProjectsSurface({
   runtime: HermesRuntime;
   onOpenChat: () => void;
   onOpenDiagnostics: () => void;
-  onOpenProjectMenu: () => void;
+  onOpenProjectMenu: (projectTitle: string) => void;
   onOpenSettings: () => void;
 }) {
+  const [projectBusy, setProjectBusy] = useState<null | string>(null);
+  const [projectStatus, setProjectStatus] = useState('');
   const gatewayReady = runtime.gatewayStatus === 'connected';
+  const runProjectAction = async (
+    key: string,
+    label: string,
+    action: () => Promise<void> | void,
+    doneMessage: string,
+  ) => {
+    setProjectBusy(key);
+    setProjectStatus(`${label}处理中...`);
+    try {
+      await action();
+      setProjectStatus(doneMessage);
+    } catch (error) {
+      setProjectStatus(`${label}失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setProjectBusy(null);
+    }
+  };
+
   const projectCards = [
     {
       action: '打开会话',
       icon: <Folder size={20} />,
+      key: 'workspace',
       meta: runtime.cwd ? shortenPath(runtime.cwd) : '尚未从会话读取工作目录',
-      onClick: onOpenChat,
+      onClick: () => runProjectAction('workspace', '本地工作区', onOpenChat, '本地工作区已打开。'),
       stats: [runtime.model, `${runtime.contextPercent}% · 1M`],
       title: '本地 Hermes 工作区',
     },
     {
       action: gatewayReady ? '查看诊断' : '修复连接',
       icon: <Network size={20} />,
+      key: 'gateway',
       meta: runtime.connection?.baseUrl || runtime.connectionLabel,
-      onClick: onOpenDiagnostics,
+      onClick: () => runProjectAction(
+        'gateway',
+        gatewayReady ? 'Gateway 诊断' : 'Gateway 修复',
+        gatewayReady ? onOpenDiagnostics : runtime.restartGateway,
+        gatewayReady ? 'Gateway 诊断已打开。' : 'Gateway 修复命令已发送。',
+      ),
       stats: [runtime.connectionLabel, runtime.socketState],
       title: 'Hermes Gateway',
     },
     {
       action: runtime.recentSessions.length > 0 ? '查看最近' : '新建任务',
       icon: <MessageSquare size={20} />,
+      key: 'sessions',
       meta: runtime.recentSessions.length > 0 ? `${runtime.recentSessions.length} 个最近会话` : '还没有真实会话记录',
-      onClick: onOpenChat,
+      onClick: () => runProjectAction('sessions', '会话入口', onOpenChat, '会话入口已打开。'),
       stats: runtime.recentSessions.slice(0, 2).map((item) => item.title),
       title: '会话',
     },
@@ -4456,6 +4484,7 @@ function ProjectsSurface({
           项目设置
         </button>
       </div>
+      {projectStatus && <p className="surfaceStatus" role="status">{projectStatus}</p>}
 
       <div className="projectGrid">
         {projectCards.map((project) => (
@@ -4464,7 +4493,15 @@ function ProjectsSurface({
               <div className="projectIcon">
                 {project.icon}
               </div>
-              <button className="iconButton compact" type="button" aria-label={`${project.title} 更多操作`} onClick={onOpenProjectMenu}>
+              <button
+                className="iconButton compact"
+                type="button"
+                aria-label={`${project.title} 更多操作`}
+                onClick={() => {
+                  setProjectStatus(`${project.title} 操作已打开。`);
+                  onOpenProjectMenu(project.title);
+                }}
+              >
                 <MoreHorizontal size={17} />
               </button>
             </div>
@@ -4474,9 +4511,9 @@ function ProjectsSurface({
               {project.stats.length > 0 ? project.stats.map((stat) => <span key={stat}>{stat}</span>) : <span>等待数据</span>}
             </div>
             <div className="projectActions">
-              <button type="button" onClick={project.onClick}>
+              <button type="button" disabled={projectBusy !== null} onClick={project.onClick}>
                 <ChevronRight size={15} />
-                {project.action}
+                {projectBusy === project.key ? '处理中' : project.action}
               </button>
             </div>
           </article>
