@@ -3824,17 +3824,32 @@ function WorkbenchActivity({
 }
 
 function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
-  const [copied, setCopied] = useState(false);
+  const [copyBusy, setCopyBusy] = useState('');
+  const [copyStatus, setCopyStatus] = useState('');
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const selectedFile = files[selectedFileIndex] || files[0];
   const diffSummary = selectedFile
     ? `${selectedFile.change === 'add' ? '+' : '~'} ${selectedFile.label} · ${selectedFile.meta}`
     : '等待 Hermes 返回文件变更。';
 
-  const copySummary = () => {
-    void navigator.clipboard?.writeText(diffSummary);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+  const copySummary = async (kind: 'entry' | 'summary') => {
+    const label = kind === 'entry' ? '条目' : '摘要';
+    if (!navigator.clipboard?.writeText) {
+      setCopyStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    try {
+      setCopyBusy(kind);
+      setCopyStatus('');
+      await navigator.clipboard.writeText(diffSummary);
+      setCopyStatus(`Diff ${label}已复制。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCopyStatus(`复制失败：${message}`);
+    } finally {
+      setCopyBusy('');
+    }
   };
 
   return (
@@ -3862,9 +3877,14 @@ function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
         <h3>Diff 摘要</h3>
         <pre className="miniCode"><code>{diffSummary}</code></pre>
         <div className="workbenchActions">
-          <button type="button" onClick={copySummary}>{copied ? '已复制' : '复制摘要'}</button>
-          <button type="button" onClick={copySummary}>复制条目</button>
+          <button type="button" onClick={() => void copySummary('summary')} disabled={Boolean(copyBusy)}>
+            {copyBusy === 'summary' ? '复制中' : '复制摘要'}
+          </button>
+          <button type="button" onClick={() => void copySummary('entry')} disabled={Boolean(copyBusy)}>
+            {copyBusy === 'entry' ? '复制中' : '复制条目'}
+          </button>
         </div>
+        {copyStatus && <p className="railStatus" role="status">{copyStatus}</p>}
       </section>
     </>
   );
@@ -3931,6 +3951,15 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
       setBusy(false);
     }
   };
+  const openGateway = () => {
+    if (!runtime.connection?.baseUrl) {
+      setStatus('本机 Gateway 暂无可打开地址。');
+      return;
+    }
+
+    const previewWindow = window.open(runtime.connection.baseUrl, '_blank', 'noopener,noreferrer');
+    setStatus(previewWindow ? 'Gateway 已在新窗口打开。' : 'Gateway 窗口可能被拦截。');
+  };
 
   return (
     <>
@@ -3951,11 +3980,7 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
           <button
             type="button"
             disabled={!runtime.connection?.baseUrl}
-            onClick={() => {
-              if (runtime.connection?.baseUrl) {
-                window.open(runtime.connection.baseUrl, '_blank', 'noopener,noreferrer');
-              }
-            }}
+            onClick={openGateway}
           >
             打开 Gateway
           </button>

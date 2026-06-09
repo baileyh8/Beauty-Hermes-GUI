@@ -250,6 +250,13 @@ try {
     for (const [tab, expected] of workbenchChecks) {
       findButton(tab, document.querySelector('[data-testid="right-workbench"]'))?.click();
       await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes(expected), `${tab} tab`);
+      if (tab === '文件') {
+        findButton('复制摘要', document.querySelector('[data-testid="right-workbench"]'))?.click();
+        await waitFor(() => {
+          const text = document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent || '';
+          return text.includes('已复制') || text.includes('无法访问剪贴板') || text.includes('复制失败');
+        }, 'files copy feedback');
+      }
       if (tab === '终端') {
         findButton('停止', document.querySelector('[data-testid="right-workbench"]'))?.click();
         await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('停止'), 'terminal stop feedback');
@@ -257,6 +264,11 @@ try {
       if (tab === '预览') {
         findButton('刷新', document.querySelector('[data-testid="right-workbench"]'))?.click();
         await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('刷新'), 'preview refresh feedback');
+        const openGatewayButton = findButton('打开 Gateway', document.querySelector('[data-testid="right-workbench"]'));
+        if (openGatewayButton && !openGatewayButton.disabled) {
+          openGatewayButton.click();
+          await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('Gateway'), 'preview open gateway feedback');
+        }
       }
     }
     findButton('收起工作区')?.click();
@@ -472,7 +484,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
