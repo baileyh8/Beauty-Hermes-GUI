@@ -50,10 +50,8 @@ import Settings from 'lucide-react/dist/esm/icons/settings.js';
 import Shield from 'lucide-react/dist/esm/icons/shield.js';
 import SlidersHorizontal from 'lucide-react/dist/esm/icons/sliders-horizontal.js';
 import Sparkles from 'lucide-react/dist/esm/icons/sparkles.js';
-import Square from 'lucide-react/dist/esm/icons/square.js';
 import TerminalSquare from 'lucide-react/dist/esm/icons/terminal-square.js';
 import Trash2 from 'lucide-react/dist/esm/icons/trash-2.js';
-import UserRound from 'lucide-react/dist/esm/icons/user-round.js';
 import UsersRound from 'lucide-react/dist/esm/icons/users-round.js';
 import Wrench from 'lucide-react/dist/esm/icons/wrench.js';
 import X from 'lucide-react/dist/esm/icons/x.js';
@@ -392,6 +390,65 @@ function truncateText(text: string, maxLength = 1800) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
+function shortenPath(pathValue: string) {
+  const value = pathValue.trim();
+  if (!value) {
+    return '未设置';
+  }
+
+  const homePrefix = '/Users/huangyemin';
+  const normalized = value.startsWith(homePrefix) ? `~${value.slice(homePrefix.length)}` : value;
+  const parts = normalized.split('/').filter(Boolean);
+  if (normalized.startsWith('~/') && parts.length > 2) {
+    return `~/${parts.slice(-2).join('/')}`;
+  }
+  if (parts.length > 3) {
+    return `…/${parts.slice(-2).join('/')}`;
+  }
+  return normalized;
+}
+
+function summarizeCommand(command: string) {
+  const value = cleanDisplayText(command).replace(/\s+/g, ' ').trim();
+  if (!value) {
+    return '';
+  }
+
+  const lower = value.toLowerCase();
+  if (/\bgit pull\b/.test(lower)) {
+    return '同步仓库';
+  }
+  if (/\bgit fetch\b/.test(lower)) {
+    return '拉取远端信息';
+  }
+  if (/\bgit rev-parse\b/.test(lower)) {
+    return '检查 Git 版本';
+  }
+  if (/\bgit tag\b/.test(lower)) {
+    return '读取版本标签';
+  }
+  if (/\bhermes\s+--version\b|\bcat\s+.*version\b|\b_version\.py\b/.test(lower)) {
+    return '检查 Hermes 版本';
+  }
+  if (/\bpip install\b/.test(lower)) {
+    return '安装 Python 依赖';
+  }
+  if (/\bnpm (run )?build\b/.test(lower)) {
+    return '运行构建';
+  }
+  if (/\bnpm (run )?typecheck\b|\btsc\b/.test(lower)) {
+    return '运行类型检查';
+  }
+  if (/\bpwd\b/.test(lower)) {
+    return '读取工作目录';
+  }
+  if (/\bls\b/.test(lower)) {
+    return '列出文件';
+  }
+
+  return compactLine(value.replace(/^cd\s+[^&|;]+(&&|;)\s*/, ''), 64);
+}
+
 function normalizeStatusText(text: string) {
   const value = cleanDisplayText(text).trim();
 
@@ -483,7 +540,7 @@ function toolDisplayFromContent(value: unknown, fallbackName = '工具调用'): 
     exitCode !== undefined && exitCode !== null ? `exit: ${String(exitCode)}` : '',
   ].filter(Boolean);
   const details = detailParts.join('\n\n') || rawText;
-  const summary = compactLine(command || output || error || rawText || fallbackName);
+  const summary = compactLine(summarizeCommand(command) || output || error || rawText || fallbackName, 72);
 
   return {
     details: truncateText(details, 4000),
@@ -499,11 +556,11 @@ function toolDisplayFromPayload(payload: Record<string, unknown>, fallbackName =
     textFromUnknown(payload.output ?? payload.stdout ?? payload.stderr ?? payload.result ?? payload.preview ?? payload.context),
   ).trim();
   const details = [command ? `$ ${command}` : '', output].filter(Boolean).join('\n\n');
-  const summary = compactLine(command || output || coerceGatewayText(payload) || fallbackName);
+  const summary = compactLine(summarizeCommand(command) || output || coerceGatewayText(payload) || fallbackName, 72);
 
   return {
     details: truncateText(details || textFromUnknown(payload), 4000),
-    label: command ? '运行命令' : fallbackName,
+    label: command || fallbackName === 'terminal' ? '运行命令' : fallbackName,
     summary,
   };
 }
@@ -604,7 +661,11 @@ function sessionMessagesFromResponse(response: SessionMessagesResponse) {
 }
 
 function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
-  const sessions = sessionsFromResponse(response);
+  const sessions = [...sessionsFromResponse(response)].sort((left, right) => {
+    const leftActive = typeof left.last_active === 'number' ? left.last_active : 0;
+    const rightActive = typeof right.last_active === 'number' ? right.last_active : 0;
+    return rightActive - leftActive;
+  });
 
   return sessions.slice(0, 5).map((session, index) => ({
     color: index === 0 ? 'blue' : 'gray',
@@ -612,6 +673,29 @@ function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
     meta: `${session.message_count ?? 0} 条消息 · ${formatSessionTime(session.last_active)}`,
     title: session.title || session.preview || '未命名会话',
   }));
+}
+
+function promoteSidebarItem(items: SidebarItem[], sessionId: null | string, title?: string): SidebarItem[] {
+  if (!sessionId) {
+    return items;
+  }
+
+  const existing = items.find((item) => item.id === sessionId);
+  const nextTitle = existing?.title || compactLine(title || '新的 Hermes 会话', 18);
+  const nextMeta = existing?.meta?.replace(/·\s*[^·]+$/, '· 刚刚') || '进行中 · 刚刚';
+  const promoted: SidebarItem = {
+    color: 'blue',
+    id: sessionId,
+    meta: nextMeta,
+    title: nextTitle,
+  };
+
+  return [
+    promoted,
+    ...items
+      .filter((item) => item.id !== sessionId)
+      .map((item) => ({ ...item, color: item.color === 'blue' ? 'gray' : item.color })),
+  ].slice(0, 5);
 }
 
 function messagesFromStoredTranscript(messages: SessionMessageResponse[], sessionId?: null | string): ChatMessageModel[] {
@@ -1205,6 +1289,7 @@ function useHermesRuntime(): HermesRuntime {
         return;
       }
 
+      setRecentSessionItems((current) => promoteSidebarItem(current, storedSessionId));
       setSelectedStoredSessionId(storedSessionId);
       selectedStoredSessionIdRef.current = storedSessionId;
       setActiveSessionId(null);
@@ -1341,8 +1426,11 @@ function useHermesRuntime(): HermesRuntime {
         if (!sessionId) {
           const created = await client.request<SessionCreateResponse>('session.create', { cols: 96 }, 60000);
           sessionId = created.session_id;
+          const storedId = created.stored_session_id || created.session_id;
           setActiveSessionId(sessionId);
-          setSelectedStoredSessionId(created.stored_session_id || created.session_id);
+          setSelectedStoredSessionId(storedId);
+          selectedStoredSessionIdRef.current = storedId;
+          setRecentSessionItems((current) => promoteSidebarItem(current, storedId, trimmed));
           patchRuntimeInfo(created.info);
 
           if (created.messages?.length) {
@@ -1353,6 +1441,7 @@ function useHermesRuntime(): HermesRuntime {
           }
         }
 
+        setRecentSessionItems((current) => promoteSidebarItem(current, selectedStoredSessionIdRef.current || sessionId, trimmed));
         await client.request('prompt.submit', { session_id: sessionId, text: trimmed }, 30000);
         setStatusText('等待 Hermes 回复');
       } catch (error) {
@@ -1503,7 +1592,7 @@ function App() {
   const showWorkbench = surface === 'chat';
 
   return (
-    <div className="appShell" data-testid="app-shell">
+    <div className={rightOpen && showWorkbench ? 'appShell workbenchOpen' : 'appShell'} data-testid="app-shell">
       <Sidebar
         activeSessionId={runtime.activeSessionId}
         activeSurface={surface}
@@ -1521,38 +1610,33 @@ function App() {
       />
 
       <main className={rightOpen && showWorkbench ? 'content withWorkbench' : 'content'}>
-        <header className="topBar">
-          <div>
+        <header className={surface === 'chat' ? 'topBar chatTopBar' : 'topBar'}>
+          <div className="topBarTitle">
             <h1 data-testid="surface-title">{currentMeta.title}</h1>
-            <p>{currentMeta.subtitle}</p>
-          </div>
-          <div className="topActions">
             {surface === 'chat' && (
-              <>
-                <button className="lightButton" type="button" onClick={() => setSurface('projects')}>
-                  <Folder size={16} />
-                  项目
-                </button>
-                <button className="lightButton" type="button" onClick={() => setSurface('cron')}>
-                  <Zap size={16} />
-                  自动
-                </button>
-              </>
-            )}
-            <button className="iconButton" type="button" aria-label="搜索" onClick={() => setCommandOpen(true)}>
-              <Search size={17} />
-            </button>
-            {showWorkbench && (
-              <button
-                className="iconButton"
-                type="button"
-                aria-label={rightOpen ? '收起工作区' : '展开工作区'}
-                onClick={() => setRightOpen((value) => !value)}
-              >
-                {rightOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+              <button className="titleMoreButton" type="button" aria-label="会话更多操作">
+                <MoreHorizontal size={17} />
               </button>
             )}
+            {surface !== 'chat' && <p>{currentMeta.subtitle}</p>}
           </div>
+          {surface !== 'chat' && (
+            <div className="topActions">
+              <button className="iconButton" type="button" aria-label="搜索" onClick={() => setCommandOpen(true)}>
+                <Search size={17} />
+              </button>
+              {showWorkbench && (
+                <button
+                  className="iconButton"
+                  type="button"
+                  aria-label={rightOpen ? '收起工作区' : '展开工作区'}
+                  onClick={() => setRightOpen((value) => !value)}
+                >
+                  {rightOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+                </button>
+              )}
+            </div>
+          )}
         </header>
 
         {surface === 'chat' && (
@@ -1671,12 +1755,6 @@ function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="windowControls" aria-hidden="true">
-        <span className="traffic red" />
-        <span className="traffic yellow" />
-        <span className="traffic green" />
-      </div>
-
       <button className="profileBlock" type="button" onClick={() => onSurfaceChange('profiles')}>
         <div className="avatar">H</div>
         <div>
@@ -1779,10 +1857,23 @@ function SidebarSection({
   onSelectSession: (sessionId: string) => void;
   selectedSessionId: null | string;
 }) {
+  const orderedItems = useMemo(() => {
+    if (!selectedSessionId) {
+      return items;
+    }
+    const selectedIndex = items.findIndex((item) => item.id === selectedSessionId);
+    if (selectedIndex <= 0) {
+      return items;
+    }
+    const next = [...items];
+    const [selected] = next.splice(selectedIndex, 1);
+    return [selected, ...next];
+  }, [items, selectedSessionId]);
+
   return (
     <section className="navSection">
       <h2>{title}</h2>
-      {items.map((item, index) => (
+      {orderedItems.map((item, index) => (
         <SessionRow
           key={item.id || item.title}
           item={item}
@@ -1951,10 +2042,7 @@ function ChatMessage({
   if (message.kind === 'user') {
     return (
       <article className="message human">
-        <div className="bubble">{message.text}</div>
-        <div className="miniAvatar user">
-          <UserRound size={15} />
-        </div>
+        <MarkdownText className="humanText" text={message.text} />
       </article>
     );
   }
@@ -1972,7 +2060,6 @@ function ChatMessage({
 
   return (
     <article className={`message agent typed ${message.kind} ${message.status ?? ''}`}>
-      <div className="miniAvatar agentMark">H</div>
       <div className="agentContent">
         {message.kind === 'assistant' ? (
           <FinalAnswerMessage
@@ -1993,6 +2080,120 @@ function ChatMessage({
   );
 }
 
+function renderInlineMarkdown(text: string) {
+  const nodes: React.ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+
+    const token = match[0];
+    const key = `${match.index}-${token}`;
+    if (token.startsWith('`')) {
+      nodes.push(<code className="inlineCode" key={key}>{token.slice(1, -1)}</code>);
+    } else {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    }
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
+function MarkdownText({ className, text }: { className?: string; text: string }) {
+  const value = cleanDisplayText(text).trim();
+  if (!value) {
+    return null;
+  }
+
+  const blocks: Array<{ kind: 'code' | 'list' | 'paragraph'; lines: string[] }> = [];
+  let paragraph: string[] = [];
+  let list: string[] = [];
+  let code: string[] | null = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length > 0) {
+      blocks.push({ kind: 'paragraph', lines: paragraph });
+      paragraph = [];
+    }
+  };
+  const flushList = () => {
+    if (list.length > 0) {
+      blocks.push({ kind: 'list', lines: list });
+      list = [];
+    }
+  };
+
+  value.split('\n').forEach((line) => {
+    if (line.trim().startsWith('```')) {
+      if (code) {
+        blocks.push({ kind: 'code', lines: code });
+        code = null;
+      } else {
+        flushParagraph();
+        flushList();
+        code = [];
+      }
+      return;
+    }
+
+    if (code) {
+      code.push(line);
+      return;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      list.push(bullet[1]);
+      return;
+    }
+
+    flushList();
+    paragraph.push(line);
+  });
+
+  flushParagraph();
+  flushList();
+  if (code) {
+    blocks.push({ kind: 'code', lines: code });
+  }
+
+  return (
+    <div className={className ? `markdownText ${className}` : 'markdownText'}>
+      {blocks.map((block, index) => {
+        if (block.kind === 'code') {
+          return <pre key={index}><code>{block.lines.join('\n')}</code></pre>;
+        }
+        if (block.kind === 'list') {
+          return (
+            <ul key={index}>
+              {block.lines.map((item, itemIndex) => (
+                <li key={`${index}-${itemIndex}`}>{renderInlineMarkdown(item)}</li>
+              ))}
+            </ul>
+          );
+        }
+        return <p key={index}>{renderInlineMarkdown(block.lines.join('\n'))}</p>;
+      })}
+    </div>
+  );
+}
+
 function FinalAnswerMessage({
   message,
   onOpenWorkbenchTab,
@@ -2002,19 +2203,21 @@ function FinalAnswerMessage({
 }) {
   return (
     <div className={`finalAnswerCard ${message.status === 'running' ? 'streaming' : ''}`}>
-      <div className="finalAnswerHead">
-        <span>
-          {message.status === 'running' ? <CircleDot size={15} /> : <CheckCircle2 size={15} />}
-        </span>
-        <strong>{message.title || '最终结果'}</strong>
-      </div>
-      <div className="finalAnswerBody">{message.text || '正在生成...'}</div>
+      {message.status === 'running' && !message.text && (
+        <div className="finalAnswerHead">
+          <span>
+            <CircleDot size={13} />
+          </span>
+          <strong>正在生成</strong>
+        </div>
+      )}
+      <MarkdownText className="finalAnswerBody" text={message.text || '正在生成...'} />
       {message.checks && <CheckListCard items={message.checks} />}
       {message.artifacts && (
-        <div className="artifactGrid">
+        <div className="artifactTranscript">
           {message.artifacts.map((artifact) => (
             <Artifact
-              icon={artifact.kind === 'file' ? <File size={19} /> : artifact.kind === 'terminal' ? <TerminalSquare size={19} /> : <Eye size={19} />}
+              icon={artifact.kind === 'file' ? <File size={15} /> : artifact.kind === 'terminal' ? <TerminalSquare size={15} /> : <Eye size={15} />}
               key={`${artifact.title}-${artifact.meta}`}
               meta={artifact.meta}
               onClick={() => onOpenWorkbenchTab(artifact.tab)}
@@ -2029,9 +2232,9 @@ function FinalAnswerMessage({
 
 function CheckListCard({ items }: { items: ChatCheckItem[] }) {
   return (
-    <div className="checkCard">
+    <div className="checkTranscript">
       {items.map((item) => (
-        <div className={item.done ? undefined : 'current'} key={item.label}>
+        <div className={item.done ? 'done' : 'current'} key={item.label}>
           {item.done ? <CheckCircle2 size={15} /> : <CircleDot size={15} />}
           {item.label}
         </div>
@@ -2057,34 +2260,44 @@ function MessageEventCard({
   const isApproval = message.kind === 'approval';
   const isClarify = message.kind === 'clarify';
   const isTool = message.kind === 'tool';
+  const isReasoning = message.kind === 'reasoning';
+  const isStatus = message.kind === 'status';
+  const eventLabel = eventLineLabel(message);
+  const showStatusBody = isStatus && shouldShowEventBody(message);
+  const showActionBody = !isTool && !isReasoning && !isStatus && Boolean(message.text.trim());
+  const phaseText = isReasoning ? reasoningPhaseText(message) : '';
+  const detailsText = isTool ? (message.details || message.command) : (message.details || message.command || message.text);
 
   return (
-    <div className={`messageCard ${message.kind}`}>
-      <div className="messageCardHead">
-        <span>{icon}</span>
-        <div>
-          <strong>{message.title || cardTitle(message)}</strong>
-          {message.kind === 'reasoning' ? (
-            <small>{message.status === 'running' ? '正在更新，默认折叠' : '已折叠'}</small>
-          ) : (
-            message.meta && <small>{message.meta}</small>
+    <div className={`eventBlock ${message.kind} ${message.status ?? ''}`}>
+      {isTool || isReasoning ? (
+        <details className={`eventDetails ${isTool ? 'toolDetails' : 'reasoningDetails'}`}>
+          <summary>
+            <span className="eventIcon">{icon}</span>
+            <span>{eventLabel}</span>
+          </summary>
+          {isTool && message.text && <MarkdownText className="eventSummaryBody" text={message.text} />}
+          {detailsText && (
+            <pre><code>{detailsText}</code></pre>
           )}
-        </div>
-      </div>
-      {message.kind !== 'reasoning' && <p className={isTool ? 'toolSummaryText' : undefined}>{message.text}</p>}
-      {message.command && !isTool && (
-        <pre className="inlineCommand"><code>{message.command}</code></pre>
-      )}
-      {isTool && (message.details || message.command) && (
-        <details className="toolDetails">
-          <summary>查看工具详情</summary>
-          <pre><code>{message.details || message.command}</code></pre>
         </details>
+      ) : (
+        <div className="eventLine">
+          <span className="eventIcon">{icon}</span>
+          <span>{eventLabel}</span>
+          {message.meta && <small>{message.meta}</small>}
+        </div>
       )}
-      {message.kind === 'reasoning' && (
-        <details className="reasoningDetails">
-          <summary>查看推理文本</summary>
-          <p>{message.text}</p>
+      {phaseText && <MarkdownText className="phaseThought" text={phaseText} />}
+      {showStatusBody && <MarkdownText className="eventBody" text={message.text} />}
+      {showActionBody && <MarkdownText className="eventBody" text={message.text} />}
+      {!isTool && !isReasoning && message.command && (
+        <details className="eventDetails commandDetails">
+          <summary>
+            <span className="eventIcon"><TerminalSquare size={14} /></span>
+            <span>查看命令</span>
+          </summary>
+          <pre><code>{message.command}</code></pre>
         </details>
       )}
       {isApproval && message.status === 'pending' && (
@@ -2124,6 +2337,67 @@ function MessageEventCard({
       )}
     </div>
   );
+}
+
+function shouldShowEventBody(message: ChatMessageModel) {
+  const text = cleanDisplayText(message.text).trim();
+  if (!text) {
+    return false;
+  }
+
+  if (message.status === 'running' && /^(正在思考|正在生成|正在运行|正在提交|等待)/.test(text)) {
+    return false;
+  }
+
+  if (/(analy[sz]ing|cogitating|synthesizing|pondering|musing)/i.test(text)) {
+    return false;
+  }
+
+  return text !== (message.title || '').trim();
+}
+
+function eventLineLabel(message: ChatMessageModel) {
+  if (message.kind === 'tool') {
+    const count = message.text.split('\n').filter((line) => line.trim().startsWith('•')).length;
+    if (message.status === 'running') {
+      return count > 0 ? `正在运行 ${count} 条命令` : '正在运行命令';
+    }
+    return count > 1 ? `已运行 ${count} 条命令` : message.title || '已运行命令';
+  }
+
+  if (message.kind === 'reasoning') {
+    return message.status === 'running' ? '正在思考' : '思考过程';
+  }
+
+  if (message.kind === 'approval') {
+    return message.status === 'pending' ? '等待审批' : '审批记录';
+  }
+
+  if (message.kind === 'clarify') {
+    return '需要补充信息';
+  }
+
+  if (message.kind === 'error') {
+    return message.title || '出现错误';
+  }
+
+  if (message.kind === 'status') {
+    const text = normalizeStatusText(message.text);
+    if (/(正在思考|正在生成|正在运行|等待|就绪)/.test(text)) {
+      return text;
+    }
+    return message.title || compactLine(text, 42) || '状态更新';
+  }
+
+  return message.title || cardTitle(message);
+}
+
+function reasoningPhaseText(message: ChatMessageModel) {
+  if (message.status === 'running') {
+    return '正在梳理上下文和下一步。';
+  }
+
+  return '已整理思考过程，继续生成结果。';
 }
 
 function cardTitle(message: ChatMessageModel) {
@@ -2191,22 +2465,21 @@ function Composer({
   return (
     <div className="composerWrap" data-testid="composer">
       <div className="composerMeta" aria-label="任务上下文">
-        <button className="permission" type="button">
+        <button className="permission" type="button" title="完全访问">
           <Shield size={17} />
           完全访问
           <ChevronDown size={15} />
         </button>
-        <button className="modelName" type="button">
+        <button className="modelName" type="button" title={runtime.model}>
           <Zap size={16} />
           {runtime.model}
         </button>
-        <button className="workdir" type="button">
-          <Folder size={16} />
-          工作目录：{runtime.cwd}
+        <button className="workdir" type="button" title={runtime.cwd}>
+          工作目录 {shortenPath(runtime.cwd)}
         </button>
-        <button className="contextMeter" type="button">上下文 {runtime.contextPercent}%</button>
-        <button className="statusIcon" type="button" aria-label={runtime.statusText} title={runtime.statusText}>
-          <Square size={14} />
+        <button className="contextMeter" type="button" title={`上下文 ${runtime.contextPercent}%`}>
+          <span className="contextTrack"><span style={{ width: `${Math.max(5, runtime.contextPercent)}%` }} /></span>
+          上下文 {runtime.contextPercent}% · 1M
         </button>
       </div>
 
