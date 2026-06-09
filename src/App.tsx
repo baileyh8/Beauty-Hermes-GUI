@@ -197,6 +197,7 @@ interface PendingApproval {
   command: string;
   description: string;
   messageId: string;
+  requestId?: string;
   sessionId: null | string;
 }
 
@@ -1602,8 +1603,9 @@ function useHermesRuntime(): HermesRuntime {
         case 'approval.request': {
           const command = textFromUnknown(payload.command).trim();
           const description = textFromUnknown(payload.description).trim() || 'Hermes 需要确认这个操作后才能继续。';
+          const requestId = textFromUnknown(payload.request_id).trim();
           const id = makeId('approval');
-          const request = { command, description, messageId: id, sessionId };
+          const request = { command, description, messageId: id, requestId, sessionId };
 
           setPendingApproval(request);
           setStatusText('等待审批');
@@ -2580,6 +2582,7 @@ function App() {
 
       {approvalVariant && (
         <ApprovalModal
+          pendingApproval={runtime.pendingApproval}
           variant={approvalVariant}
           onClose={() => setApprovalVariant(null)}
           onDeny={() => {
@@ -2589,6 +2592,7 @@ function App() {
             setRightOpen(true);
             setWorkbenchTab('activity');
           }}
+          onRespondApproval={runtime.respondApproval}
         />
       )}
       {notice && <div className="toastNotice" role="status">{notice}</div>}
@@ -4765,22 +4769,33 @@ function CommandRow({
 }
 
 function ApprovalModal({
+  pendingApproval,
   variant,
   onClose,
   onDeny,
+  onRespondApproval,
 }: {
+  pendingApproval: PendingApproval | null;
   variant: ApprovalVariant;
   onClose: () => void;
   onDeny: () => void;
+  onRespondApproval: HermesRuntime['respondApproval'];
 }) {
   const [modalStatus, setModalStatus] = useState('');
+  const [actionBusy, setActionBusy] = useState('');
+  const hasPendingApproval = variant === 'risk' && Boolean(pendingApproval);
   const content = {
     risk: {
       icon: <Shield size={24} />,
-      title: '确认高风险命令',
-      desc: 'Hermes 需要运行桌面端测试来确认 approval UI 的行为是否完整。',
-      code: 'npm run test:desktop -- --approval-ui --update-snapshots',
-      details: ['cwd: 当前工作区', '来源: Hermes Agent', '可能修改: 本地文件', '恢复: 可回滚生成物'],
+      title: hasPendingApproval ? '确认高风险命令' : '暂无待审批命令',
+      desc: pendingApproval?.description || '当前没有真实待审批命令。高风险操作出现时会固定在这里。',
+      code: pendingApproval?.command || '等待 Hermes Gateway 发送 approval.request',
+      details: pendingApproval ? [
+        `session: ${pendingApproval.sessionId || '当前会话'}`,
+        `request: ${pendingApproval.requestId || '未提供'}`,
+        '来源: Hermes Agent',
+        '操作: 等待用户确认',
+      ] : ['状态: 空闲', '来源: Hermes Agent', '恢复: 回到会话继续描述任务'],
     },
     timeout: {
       icon: <Clock size={24} />,
@@ -4797,6 +4812,29 @@ function ApprovalModal({
       details: ['目标: ~/Library/Logs/Hermes', '权限: Files and Folders', '来源: 诊断与更新', '替代: 导出项目日志'],
     },
   }[variant];
+  const submitApproval = async (choice: 'once' | 'session' | 'always' | 'deny') => {
+    if (!hasPendingApproval) {
+      if (choice === 'deny') {
+        onDeny();
+        return;
+      }
+      setModalStatus(choice === 'once' ? '当前没有待审批命令。' : '当前没有可记住的审批规则。');
+      return;
+    }
+
+    try {
+      setActionBusy(choice);
+      setModalStatus('');
+      await onRespondApproval(choice);
+      setModalStatus(choice === 'deny' ? '已拒绝当前命令。' : '审批已提交，Hermes 会继续执行。');
+      window.setTimeout(onClose, 450);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setModalStatus(`审批提交失败：${message}`);
+    } finally {
+      setActionBusy('');
+    }
+  };
 
   return (
     <div className="overlayLayer" role="dialog" aria-modal="true" aria-label="工具审批" data-testid="approval-modal">
@@ -4817,8 +4855,8 @@ function ApprovalModal({
           ))}
         </div>
         <div className="approvalActions">
-          <button className="secondaryButton" type="button" onClick={onDeny}>
-            拒绝
+          <button className="secondaryButton" type="button" disabled={Boolean(actionBusy)} onClick={() => void submitApproval('deny')}>
+            {actionBusy === 'deny' ? '提交中' : '拒绝'}
           </button>
           {variant === 'timeout' ? (
             <button className="primaryButtonInline" type="button" onClick={() => setModalStatus('审批已重新标记，请回到会话重新发送。')}>
@@ -4837,11 +4875,11 @@ function ApprovalModal({
             </button>
           ) : (
             <>
-              <button className="secondaryButton" type="button" onClick={() => setModalStatus('已允许本次命令。')}>
-                本次允许
+              <button className="secondaryButton" type="button" disabled={Boolean(actionBusy)} onClick={() => void submitApproval('once')}>
+                {actionBusy === 'once' ? '提交中' : '本次允许'}
               </button>
-              <button className="primaryButtonInline" type="button" onClick={() => setModalStatus('已允许并记住当前项目。')}>
-                允许并记住当前项目
+              <button className="primaryButtonInline" type="button" disabled={Boolean(actionBusy)} onClick={() => void submitApproval('session')}>
+                {actionBusy === 'session' ? '提交中' : '允许并记住当前会话'}
               </button>
             </>
           )}
