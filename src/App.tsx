@@ -58,6 +58,7 @@ import X from 'lucide-react/dist/esm/icons/x.js';
 import XCircle from 'lucide-react/dist/esm/icons/x-circle.js';
 import Zap from 'lucide-react/dist/esm/icons/zap.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import hermesAgentLogo from './assets/hermes-agent-logo.png';
 import { JsonRpcGatewayClient, type GatewayConnectionState, type GatewayEvent } from './gateway';
 
 type Surface =
@@ -1798,7 +1799,9 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <button className="profileBlock" type="button" onClick={() => onSurfaceChange('profiles')}>
-        <div className="avatar">H</div>
+        <span className="brandLogo" aria-hidden="true">
+          <img src={hermesAgentLogo} alt="" />
+        </span>
         <div>
           <strong>Hermes</strong>
           <span>本地运行 · {model}</span>
