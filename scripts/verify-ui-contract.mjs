@@ -62,6 +62,11 @@ const requiredText = [
   'slashUiTargetLabel',
   'slashWorkbenchLabel',
   'ignoredSessionIdsRef',
+  'clearConversationRuntime',
+  'setPendingApproval(null)',
+  'setPendingClarify(null)',
+  'setTools([])',
+  'setFiles([])',
 ];
 
 const requiredStyles = [

@@ -1360,6 +1360,43 @@ function useHermesRuntime(): HermesRuntime {
     [],
   );
 
+  const clearConversationRuntime = useCallback((options: {
+    clearMessages?: boolean;
+    clearSelection?: boolean;
+    statusText?: string;
+  } = {}) => {
+    const {
+      clearMessages = true,
+      clearSelection = false,
+      statusText: nextStatusText,
+    } = options;
+
+    if (clearSelection) {
+      setSelectedStoredSessionId(null);
+      selectedStoredSessionIdRef.current = null;
+    }
+
+    setActiveSessionId(null);
+    activeSessionIdRef.current = null;
+    assistantMessageIdRef.current = null;
+    reasoningMessageIdRef.current = null;
+    statusMessageIdRef.current = null;
+    toolDigestMessageIdRef.current = null;
+    setPendingApproval(null);
+    setPendingClarify(null);
+    setTools([]);
+    setFiles([]);
+    setContextPercent(0);
+
+    if (clearMessages) {
+      setMessages([]);
+    }
+
+    if (nextStatusText) {
+      setStatusText(nextStatusText);
+    }
+  }, []);
+
   const resumeRuntimeSession = useCallback(
     async (
       client: JsonRpcGatewayClient,
@@ -1761,16 +1798,16 @@ function useHermesRuntime(): HermesRuntime {
         return;
       }
 
+      const previousSessionId = activeSessionIdRef.current;
+      const previousStoredSessionId = selectedStoredSessionIdRef.current;
+      if (previousSessionId) {
+        ignoredSessionIdsRef.current.add(previousSessionId);
+      }
+
       setRecentSessionItems((current) => promoteSidebarItem(current, storedSessionId));
+      clearConversationRuntime({ statusText: '正在加载会话' });
       setSelectedStoredSessionId(storedSessionId);
       selectedStoredSessionIdRef.current = storedSessionId;
-      setActiveSessionId(null);
-      activeSessionIdRef.current = null;
-      assistantMessageIdRef.current = null;
-      reasoningMessageIdRef.current = null;
-      statusMessageIdRef.current = null;
-      toolDigestMessageIdRef.current = null;
-      setStatusText('正在加载会话');
       setMessages([
         {
           id: makeId('session-loading'),
@@ -1781,6 +1818,11 @@ function useHermesRuntime(): HermesRuntime {
           title: '打开会话',
         },
       ]);
+
+      const previousClient = clientRef.current;
+      if (previousSessionId && previousStoredSessionId !== storedSessionId && previousClient?.connectionState === 'open') {
+        await previousClient.request('session.close', { session_id: previousSessionId }, 15000).catch(() => undefined);
+      }
 
       if (!window.hermesDesktop) {
         setMessages([
@@ -1854,7 +1896,7 @@ function useHermesRuntime(): HermesRuntime {
         });
       }
     },
-    [resumeRuntimeSession, upsertMessage],
+    [clearConversationRuntime, resumeRuntimeSession, upsertMessage],
   );
 
   const ensureRuntimeSession = useCallback(
@@ -1895,6 +1937,16 @@ function useHermesRuntime(): HermesRuntime {
         throw new Error('桌面 IPC 不可用，无法归档真实会话。');
       }
 
+      const activeRuntimeId = activeSessionIdRef.current;
+      const client = clientRef.current;
+      const wasSelected = selectedStoredSessionIdRef.current === item.id;
+      if (wasSelected && activeRuntimeId) {
+        ignoredSessionIdsRef.current.add(activeRuntimeId);
+      }
+      if (wasSelected && activeRuntimeId && client?.connectionState === 'open') {
+        await client.request('session.close', { session_id: activeRuntimeId }, 15000).catch(() => undefined);
+      }
+
       await window.hermesDesktop.api({
         body: { archived: true },
         method: 'PATCH',
@@ -1902,13 +1954,17 @@ function useHermesRuntime(): HermesRuntime {
         timeoutMs: 30000,
       });
       setRecentSessionItems((current) => current.filter((row) => row.id !== item.id));
-      setStatusText('会话已归档');
+      if (wasSelected) {
+        clearConversationRuntime({ clearSelection: true, statusText: '会话已归档' });
+      } else {
+        setStatusText('会话已归档');
+      }
       void refreshSessionList().catch((error) => {
         setLogs((current) => [`Session refresh error: ${error instanceof Error ? error.message : String(error)}`, ...current].slice(0, 120));
       });
       void refreshInventory();
     },
-    [refreshInventory, refreshSessionList],
+    [clearConversationRuntime, refreshInventory, refreshSessionList],
   );
 
   const deleteSession = useCallback(
@@ -1922,7 +1978,11 @@ function useHermesRuntime(): HermesRuntime {
 
       const activeRuntimeId = activeSessionIdRef.current;
       const client = clientRef.current;
-      if (selectedStoredSessionIdRef.current === item.id && activeRuntimeId && client?.connectionState === 'open') {
+      const wasSelected = selectedStoredSessionIdRef.current === item.id;
+      if (wasSelected && activeRuntimeId) {
+        ignoredSessionIdsRef.current.add(activeRuntimeId);
+      }
+      if (wasSelected && activeRuntimeId && client?.connectionState === 'open') {
         await client.request('session.close', { session_id: activeRuntimeId }, 15000).catch(() => undefined);
       }
 
@@ -1932,24 +1992,17 @@ function useHermesRuntime(): HermesRuntime {
         timeoutMs: 30000,
       });
       setRecentSessionItems((current) => current.filter((row) => row.id !== item.id));
-      if (selectedStoredSessionIdRef.current === item.id) {
-        setSelectedStoredSessionId(null);
-        selectedStoredSessionIdRef.current = null;
-        setActiveSessionId(null);
-        activeSessionIdRef.current = null;
-        assistantMessageIdRef.current = null;
-        reasoningMessageIdRef.current = null;
-        statusMessageIdRef.current = null;
-        toolDigestMessageIdRef.current = null;
-        setMessages([]);
+      if (wasSelected) {
+        clearConversationRuntime({ clearSelection: true, statusText: '会话已删除' });
+      } else {
+        setStatusText('会话已删除');
       }
-      setStatusText('会话已删除');
       void refreshSessionList().catch((error) => {
         setLogs((current) => [`Session refresh error: ${error instanceof Error ? error.message : String(error)}`, ...current].slice(0, 120));
       });
       void refreshInventory();
     },
-    [refreshInventory, refreshSessionList],
+    [clearConversationRuntime, refreshInventory, refreshSessionList],
   );
 
   const submitPrompt = useCallback(
@@ -2106,21 +2159,10 @@ function useHermesRuntime(): HermesRuntime {
       ignoredSessionIdsRef.current.add(previousSessionId);
     }
 
-    setSelectedStoredSessionId(null);
-    selectedStoredSessionIdRef.current = null;
-    setActiveSessionId(null);
-    activeSessionIdRef.current = null;
-    assistantMessageIdRef.current = null;
-    reasoningMessageIdRef.current = null;
-    statusMessageIdRef.current = null;
-    toolDigestMessageIdRef.current = null;
-    setPendingApproval(null);
-    setPendingClarify(null);
-    setMessages([]);
-    setTools([]);
-    setFiles([]);
-    setContextPercent(0);
-    setStatusText(client?.connectionState === 'open' ? '就绪' : gatewayStatus === 'connected' ? '正在连接 Hermes Gateway' : statusText);
+    clearConversationRuntime({
+      clearSelection: true,
+      statusText: client?.connectionState === 'open' ? '就绪' : gatewayStatus === 'connected' ? '正在连接 Hermes Gateway' : statusText,
+    });
 
     if (previousSessionId && client?.connectionState === 'open') {
       try {
@@ -2130,7 +2172,7 @@ function useHermesRuntime(): HermesRuntime {
         setLogs((current) => [`Session close during new task: ${message}`, ...current].slice(0, 120));
       }
     }
-  }, [gatewayStatus, statusText]);
+  }, [clearConversationRuntime, gatewayStatus, statusText]);
 
   const stopGateway = useCallback(async () => {
     clientRef.current?.close();
