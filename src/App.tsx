@@ -2339,6 +2339,7 @@ function App() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [approvalVariant, setApprovalVariant] = useState<ApprovalVariant | null>(null);
+  const [selectedWorkbenchFileLabel, setSelectedWorkbenchFileLabel] = useState('');
   const [deniedRecovery, setDeniedRecovery] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [hiddenSidebarKeys, setHiddenSidebarKeys] = useState<string[]>([]);
@@ -2628,6 +2629,7 @@ function App() {
             onCollapse={() => setRightOpen(false)}
             onOpenApproval={setApprovalVariant}
             runtime={runtime}
+            selectedFileLabel={selectedWorkbenchFileLabel}
           />
         ) : (
           <button
@@ -2654,6 +2656,13 @@ function App() {
           onOpenWorkbenchTab={(tab) => {
             setRightOpen(true);
             setWorkbenchTab(tab);
+            setCommandOpen(false);
+          }}
+          onOpenWorkbenchFile={(fileLabel) => {
+            setSurface('chat');
+            setRightOpen(true);
+            setWorkbenchTab('files');
+            setSelectedWorkbenchFileLabel(fileLabel);
             setCommandOpen(false);
           }}
           onOpenApproval={() => {
@@ -4205,12 +4214,14 @@ function Workbench({
   onCollapse,
   onOpenApproval,
   runtime,
+  selectedFileLabel,
 }: {
   activeTab: WorkbenchTab;
   onTabChange: (tab: WorkbenchTab) => void;
   onCollapse: () => void;
   onOpenApproval: (variant: ApprovalVariant) => void;
   runtime: HermesRuntime;
+  selectedFileLabel?: string;
 }) {
   const tabs: Array<{ id: WorkbenchTab; label: string }> = [
     { id: 'activity', label: '活动' },
@@ -4240,7 +4251,7 @@ function Workbench({
       </div>
 
       {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} runtime={runtime} />}
-      {activeTab === 'files' && <WorkbenchFiles files={runtime.files} />}
+      {activeTab === 'files' && <WorkbenchFiles files={runtime.files} selectedFileLabel={selectedFileLabel} />}
       {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} onStop={runtime.stopGateway} />}
       {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} />}
     </aside>
@@ -4300,7 +4311,7 @@ function WorkbenchActivity({
   );
 }
 
-function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
+function WorkbenchFiles({ files, selectedFileLabel }: { files: GatewayFileItem[]; selectedFileLabel?: string }) {
   const [copyBusy, setCopyBusy] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
@@ -4308,6 +4319,19 @@ function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
   const diffSummary = selectedFile
     ? `${selectedFile.change === 'add' ? '+' : '~'} ${selectedFile.label} · ${selectedFile.meta}`
     : '等待 Hermes 返回文件变更。';
+
+  useEffect(() => {
+    if (!selectedFileLabel) {
+      return;
+    }
+
+    const nextIndex = files.findIndex((file) => (
+      file.label === selectedFileLabel || `${file.label} ${file.meta}`.includes(selectedFileLabel)
+    ));
+    if (nextIndex >= 0) {
+      setSelectedFileIndex(nextIndex);
+    }
+  }, [files, selectedFileLabel]);
 
   const copySummary = async (kind: 'entry' | 'summary') => {
     const label = kind === 'entry' ? '条目' : '摘要';
@@ -4509,6 +4533,7 @@ function CommandCenter({
   onNewTask,
   onNavigate,
   onOpenWorkbenchTab,
+  onOpenWorkbenchFile,
   onOpenApproval,
   onOpenSettingsSection,
   runtime,
@@ -4519,6 +4544,7 @@ function CommandCenter({
   onNewTask: () => void;
   onNavigate: (surface: Surface) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
+  onOpenWorkbenchFile: (fileLabel: string) => void;
   onOpenApproval: () => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
   runtime: HermesRuntime;
@@ -4618,6 +4644,15 @@ function CommandCenter({
         },
         title: session.title,
       })),
+      ...runtime.files.slice(0, 12).map((file) => ({
+        action: '打开',
+        desc: file.meta || '当前会话文件变更',
+        group: '文件',
+        icon: <FileCode2 />,
+        keywords: `${file.label} ${file.meta} ${file.change} 文件 变更 diff`,
+        run: () => onOpenWorkbenchFile(file.label),
+        title: file.label,
+      })),
       ...(runtime.inventory?.skills.slice(0, 12).map((skill) => ({
         action: '查看',
         desc: skill.description || skill.path,
@@ -4656,7 +4691,7 @@ function CommandCenter({
     }
 
     return list;
-  }, [onClose, onNavigate, onNewTask, onOpenApproval, onOpenSettingsSection, onOpenWorkbenchTab, query, runtime]);
+  }, [onClose, onNavigate, onNewTask, onOpenApproval, onOpenSettingsSection, onOpenWorkbenchFile, onOpenWorkbenchTab, query, runtime]);
   const filteredActions = useMemo(() => {
     if (!normalized) {
       return actions;

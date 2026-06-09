@@ -71,6 +71,11 @@ const requiredText = [
   'readStoredDensity',
   'readStoredTheme',
   'writeStoredPreference',
+  'selectedWorkbenchFileLabel',
+  'selectedFileLabel',
+  'onOpenWorkbenchFile',
+  "group: '文件'",
+  'runtime.files.slice',
 ];
 
 const requiredStyles = [
