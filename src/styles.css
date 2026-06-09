@@ -2077,6 +2077,17 @@ kbd {
   background: #fff;
 }
 
+.automationRow button.rowTextAction {
+  width: auto;
+  min-width: 66px;
+  padding: 0 10px;
+  display: inline-flex;
+  gap: 6px;
+  color: #586173;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .gatewayCard svg,
 .diagnosticCard svg {
   color: var(--blue);

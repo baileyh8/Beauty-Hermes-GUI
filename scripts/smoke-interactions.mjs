@@ -264,6 +264,18 @@ try {
       throw new Error(failures.join('; '));
     }
 
+    findButton('自动化')?.click();
+    await waitFor(() => document.body.innerText.includes('后台调度'), 'automation feedback page');
+    const automationRefreshButton = await waitFor(
+      () => Array.from(document.querySelectorAll('.automationRow button.rowTextAction'))
+        .find((item) => item.textContent?.includes('刷新') && !item.disabled),
+      'automation row refresh action',
+    );
+    automationRefreshButton.click();
+    await waitFor(() => document.querySelector('.surfaceStatus')?.textContent?.includes('刷新'), 'automation row refresh feedback');
+
+    findButton('诊断')?.click();
+    await waitFor(() => document.body.innerText.includes('诊断与更新'), 'diagnostics feedback page');
     findButton('重新诊断')?.click();
     await waitFor(() => document.querySelector('.diagnostics .surfaceStatus')?.textContent?.includes('重新诊断'), 'diagnostics refresh feedback');
 
@@ -307,6 +319,8 @@ try {
     findCommandRow('Agents')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'agents command center auto close');
     await waitFor(() => document.body.innerText.includes('运行中工具'), 'agents page');
+    findButton('刷新状态')?.click();
+    await waitFor(() => document.querySelector('.surfaceStatus')?.textContent?.includes('Agents 状态'), 'agents refresh feedback');
     const staticAgentCard = await waitFor(() => document.querySelector('.agentCard.static'), 'static agent cards');
     if (staticAgentCard.tagName.toLowerCase() === 'button') {
       throw new Error('Static agent card should not be rendered as a button.');
@@ -405,7 +419,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

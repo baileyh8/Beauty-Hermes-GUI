@@ -4532,8 +4532,22 @@ function AgentsSurface({
   onOpenChat: () => void;
   onOpenApproval: () => void;
 }) {
+  const [agentBusy, setAgentBusy] = useState('');
+  const [agentStatus, setAgentStatus] = useState('');
   const runningTools = runtime.tools.filter((tool) => tool.state === 'running');
   const completedTools = runtime.tools.filter((tool) => tool.state === 'done');
+  const refreshAgents = async () => {
+    try {
+      setAgentBusy('refresh');
+      setAgentStatus('正在刷新 Agents 状态...');
+      await runtime.refreshInventory();
+      setAgentStatus('Agents 状态已刷新。');
+    } catch (error) {
+      setAgentStatus(`Agents 状态刷新失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setAgentBusy('');
+    }
+  };
   const runningCards = runningTools.length > 0
     ? runningTools.map((tool) => (
       <AgentCard
@@ -4562,11 +4576,18 @@ function AgentsSurface({
           <h2>Agents</h2>
           <p>运行中工具、待确认命令和最近完成事件集中在这里。</p>
         </div>
-        <button className="lightButton" type="button" onClick={onOpenChat}>
-          <Plus size={16} />
-          新建任务
-        </button>
+        <div className="topActions">
+          <button className="lightButton" type="button" onClick={() => void refreshAgents()} disabled={Boolean(agentBusy)}>
+            <RefreshCw className={agentBusy === 'refresh' ? 'spinIcon' : undefined} size={16} />
+            {agentBusy === 'refresh' ? '刷新中' : '刷新状态'}
+          </button>
+          <button className="lightButton" type="button" onClick={onOpenChat} disabled={Boolean(agentBusy)}>
+            <Plus size={16} />
+            新建任务
+          </button>
+        </div>
       </div>
+      {agentStatus && <p className="surfaceStatus" role="status">{agentStatus}</p>}
       <div className="kanbanGrid">
         <KanbanColumn title="运行中" count={String(runningTools.length || (runtime.socketState === 'open' ? 1 : 0))}>
           {runningCards}
@@ -5043,6 +5064,19 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
       setCronBusy('');
     }
   }, [apiRequest, loadCronJobs, refreshInventory]);
+  const runCronRefresh = useCallback(async (key: string, label: string) => {
+    try {
+      setCronBusy(key);
+      setCronStatus(`${label}刷新中...`);
+      await refreshInventory();
+      setCronStatus(`${label}已刷新`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCronStatus(`${label}刷新失败：${message}`);
+    } finally {
+      setCronBusy('');
+    }
+  }, [refreshInventory]);
   const createCronJob = useCallback(async () => {
     const prompt = newJobPrompt.trim();
     if (!prompt) {
@@ -5156,8 +5190,15 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
               <span>{meta}</span>
             </div>
             <span className={status === '启用' || status === '运行中' ? 'pill green' : status === '空闲' ? 'pill' : 'pill amber'}>{status}</span>
-            <button type="button" aria-label="刷新自动化状态" onClick={() => void runtime.refreshInventory()}>
-              <MoreHorizontal size={16} />
+            <button
+              className="rowTextAction"
+              type="button"
+              aria-label={`刷新${title}`}
+              disabled={Boolean(cronBusy)}
+              onClick={() => void runCronRefresh(`refresh:${title}`, `${title}`)}
+            >
+              <RefreshCw className={cronBusy === `refresh:${title}` ? 'spinIcon' : undefined} size={14} />
+              {cronBusy === `refresh:${title}` ? '刷新中' : '刷新'}
             </button>
           </article>
         ))}
@@ -5169,8 +5210,15 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
               <span>{count} 个历史会话</span>
             </div>
             <span className="pill">{count}</span>
-            <button type="button" aria-label="刷新会话来源" onClick={() => void runtime.refreshInventory()}>
-              <MoreHorizontal size={16} />
+            <button
+              className="rowTextAction"
+              type="button"
+              aria-label={`刷新${source}会话来源`}
+              disabled={Boolean(cronBusy)}
+              onClick={() => void runCronRefresh(`refresh:source:${source}`, `${source} 会话来源`)}
+            >
+              <RefreshCw className={cronBusy === `refresh:source:${source}` ? 'spinIcon' : undefined} size={14} />
+              {cronBusy === `refresh:source:${source}` ? '刷新中' : '刷新'}
             </button>
           </article>
         ))}
