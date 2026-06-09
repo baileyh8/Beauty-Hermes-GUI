@@ -194,12 +194,19 @@ try {
     await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('Hermes Gateway'), 'slash workbench terminal navigation');
 
     findButton('添加')?.click();
+    await waitFor(() => findButton('添加')?.getAttribute('aria-expanded') === 'true', 'attachment aria expanded');
     await waitFor(() => document.querySelector('.attachmentMenu')?.textContent?.includes('URL...'), 'attachment menu');
     findButton('URL...', document.querySelector('.attachmentMenu'))?.click();
     await waitFor(() => document.querySelector('.menuUrlForm input'), 'url form');
+    findButton('添加', document.querySelector('.menuUrlForm'))?.click();
+    await waitFor(() => document.querySelector('.menuStatus')?.textContent?.includes('请输入 URL'), 'empty url feedback');
+    setNativeValue(document.querySelector('.menuUrlForm input'), 'not-a-url');
+    findButton('添加', document.querySelector('.menuUrlForm'))?.click();
+    await waitFor(() => document.querySelector('.menuStatus')?.textContent?.includes('http(s) URL'), 'invalid url feedback');
     setNativeValue(document.querySelector('.menuUrlForm input'), 'https://example.com/spec');
     findButton('添加', document.querySelector('.menuUrlForm'))?.click();
     await waitFor(() => textarea.value.includes('https://example.com/spec'), 'url inserted');
+    await waitFor(() => document.querySelector('.composerNotice')?.textContent?.includes('URL 已添加'), 'url inserted feedback');
     setNativeValue(textarea, '');
     findButton('语音输入')?.click();
     await waitFor(
@@ -490,7 +497,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

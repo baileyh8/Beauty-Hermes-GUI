@@ -3478,6 +3478,7 @@ function Composer({
 
     if (kind === 'snippet') {
       insertDraftText('/prompt ');
+      setComposerNotice('已插入提示片段指令。');
       return;
     }
 
@@ -3489,6 +3490,7 @@ function Composer({
     try {
       const picks = await window.hermesDesktop.pickAttachment(kind);
       if (picks.length === 0) {
+        setComposerNotice('未选择附件。');
         return;
       }
 
@@ -3496,7 +3498,12 @@ function Composer({
         .map((pick) => pick.path ? `@${pick.path}` : pick.text || pick.label)
         .filter(Boolean)
         .join(' ');
+      if (!inserted) {
+        setComposerNotice('没有可插入的附件内容。');
+        return;
+      }
       insertDraftText(inserted);
+      setComposerNotice(`已添加 ${picks.length} 个附件。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setComposerNotice(`附件选择失败：${message}`);
@@ -3589,6 +3596,8 @@ function Composer({
         <button
           className="plusButton"
           type="button"
+          aria-expanded={attachmentOpen}
+          aria-haspopup="menu"
           aria-label="添加"
           onClick={() => setAttachmentOpen(!attachmentOpen)}
         >
@@ -3646,6 +3655,7 @@ function Composer({
             onInsertUrl={(value) => {
               setAttachmentOpen(false);
               insertDraftText(value);
+              setComposerNotice('URL 已添加。');
             }}
             onPick={(kind) => void handleAttachmentPick(kind)}
           />
@@ -3672,6 +3682,7 @@ function AttachmentMenu({
 }) {
   const [urlDraft, setUrlDraft] = useState('');
   const [urlOpen, setUrlOpen] = useState(false);
+  const [menuStatus, setMenuStatus] = useState('');
   const items: Array<{ icon: React.ReactNode; kind: AttachmentMenuKind; label: string }> = [
     { icon: <File size={18} />, kind: 'file', label: '文件...' },
     { icon: <Folder size={18} />, kind: 'folder', label: '文件夹...' },
@@ -3688,9 +3699,11 @@ function AttachmentMenu({
         <button
           className={index === 5 ? 'menuItem divided' : 'menuItem'}
           type="button"
+          role="menuitem"
           key={item.label}
           onClick={() => {
             if (item.kind === 'url') {
+              setMenuStatus('');
               setUrlOpen((open) => !open);
               return;
             }
@@ -3707,9 +3720,15 @@ function AttachmentMenu({
           onSubmit={(event) => {
             event.preventDefault();
             const value = urlDraft.trim();
-            if (value) {
-              onInsertUrl(value);
+            if (!value) {
+              setMenuStatus('请输入 URL。');
+              return;
             }
+            if (!/^https?:\/\/\S+\.\S+/.test(value)) {
+              setMenuStatus('请输入 http(s) URL。');
+              return;
+            }
+            onInsertUrl(value);
           }}
         >
           <input
@@ -3722,6 +3741,7 @@ function AttachmentMenu({
           <button type="submit">添加</button>
         </form>
       )}
+      {menuStatus && <div className="menuStatus" role="status">{menuStatus}</div>}
       <div className="menuHint">提示：输入 @ 可在正文中引用文件。</div>
     </div>
   );

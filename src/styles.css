@@ -1018,6 +1018,13 @@ kbd {
   margin-top: 8px;
 }
 
+.menuStatus {
+  padding: 6px 16px 2px;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .workbench {
   width: 360px;
   height: 100%;
