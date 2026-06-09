@@ -233,22 +233,9 @@ interface SessionRuntimeInfo {
   usage?: { context_percent?: number };
 }
 
-const pinnedSessions = [
-  { title: '修复桌面端审批流', meta: '正在等待确认 · 12m', color: 'blue' },
-  { title: '整理 Hermes UI 方向', meta: '设计规格 · 今天', color: 'green' },
-];
+const pinnedSessions: SidebarItem[] = [];
 
-const projects = [
-  { title: 'Hermes Desktop优化', meta: 'GUI · 进行中', active: true },
-  { title: 'Agent Gateway', meta: 'IPC adapter · 本周' },
-  { title: 'Skill Library', meta: '组件库 · 待续' },
-];
-
-const recentSessions = [
-  { title: '排查 gateway 启动', meta: 'macOS · 昨天' },
-  { title: 'Settings 深层页', meta: '视觉规范 · 2 天前' },
-  { title: '周报自动化', meta: 'cron · 3 天前' },
-];
+const recentSessions: SidebarItem[] = [];
 
 const settingsSections: Array<{ id: SettingsSection; label: string; desc: string }> = [
   { id: 'general', label: '通用', desc: '语言、启动和窗口行为' },
@@ -261,8 +248,8 @@ const settingsSections: Array<{ id: SettingsSection; label: string; desc: string
 
 const surfaceMeta: Record<Surface, { title: string; subtitle: string }> = {
   chat: {
-    title: '修复桌面端审批流',
-    subtitle: '目标：让手动 approval 在 GUI 中可见、可追踪、可恢复。',
+    title: 'Hermes Agent',
+    subtitle: '连接本地 Hermes Gateway 后开始真实会话。',
   },
   projects: { title: '项目', subtitle: '把会话、路径、模型配置和运行状态合并管理。' },
   agents: { title: 'Agents 并行任务', subtitle: '管理多个 Agent 工作树、审批队列和完成结果。' },
@@ -275,55 +262,11 @@ const surfaceMeta: Record<Surface, { title: string; subtitle: string }> = {
   onboarding: { title: '首次启动', subtitle: '选择 Hermes 的本地或远程工作方式。' },
 };
 
-const demoMessages: ChatMessageModel[] = [
-  {
-    id: 'demo-user-1',
-    kind: 'user',
-    text: '这个 GUI 在 Mac 下不太理想，先看看哪些方向值得优化。',
-  },
-  {
-    checks: [
-      { done: true, label: '检查本地 app 打包结构' },
-      { done: true, label: '对比官方桌面端与 Tauri 参考项目' },
-      { label: '整理 Codex-like 设计规格' },
-    ],
-    id: 'demo-assistant-1',
-    kind: 'assistant',
-    status: 'done',
-    text: '我会先把体验问题分为两层：一层是日常可用性，例如审批、输入、滚动；另一层是工作台设计，例如命令中心、右侧预览和状态可见性。',
-  },
-  {
-    command: 'npm run test:desktop -- --approval-ui',
-    id: 'demo-approval-1',
-    kind: 'approval',
-    status: 'pending',
-    text: '默认暂停，确认后继续执行。',
-    title: '等待审批',
-  },
-  {
-    artifacts: [
-      { kind: 'file', meta: 'src/App.tsx', tab: 'files', title: '变更文件' },
-      { kind: 'terminal', meta: 'typecheck · build', tab: 'terminal', title: '终端输出' },
-      { kind: 'preview', meta: 'exports/contact-sheet.png', tab: 'preview', title: '预览产物' },
-    ],
-    id: 'demo-assistant-2',
-    kind: 'assistant',
-    status: 'done',
-    text: '建议把 Hermes Desktop 从“聊天壳”升级为 Agent workbench：左侧管理会话和 profiles，中间是任务线程，右侧稳定承载文件、终端、预览和工具输出。',
-  },
-];
+const initialMessages: ChatMessageModel[] = [];
 
-const fallbackTools: GatewayToolItem[] = [
-  { detail: 'page-map.md', id: 'demo-tool-1', label: '读取 page-map.md', state: 'done', value: '0.2s' },
-  { detail: 'design/index.html', id: 'demo-tool-2', label: '生成界面骨架', state: 'done', value: '完成' },
-  { detail: 'smoke', id: 'demo-tool-3', label: '等待 Gateway 事件', state: 'pending', value: '待连接' },
-];
+const fallbackTools: GatewayToolItem[] = [];
 
-const fallbackFiles: GatewayFileItem[] = [
-  { change: 'add', label: 'src/App.tsx', meta: 'UI' },
-  { change: 'mod', label: 'src/styles.css', meta: 'CSS' },
-  { change: 'mod', label: 'electron/main.cjs', meta: 'Gateway' },
-];
+const fallbackFiles: GatewayFileItem[] = [];
 
 function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -753,12 +696,12 @@ function useHermesRuntime(): HermesRuntime {
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('browser');
   const [connection, setConnection] = useState<HermesGatewayConnection | null>(null);
   const [socketState, setSocketState] = useState<GatewayConnectionState>('idle');
-  const [messages, setMessages] = useState<ChatMessageModel[]>(demoMessages);
+  const [messages, setMessages] = useState<ChatMessageModel[]>(initialMessages);
   const [activeSessionId, setActiveSessionId] = useState<null | string>(null);
   const [selectedStoredSessionId, setSelectedStoredSessionId] = useState<null | string>(null);
   const [model, setModel] = useState('deepseek-v4-flash');
-  const [cwd, setCwd] = useState('Hermes Desktop优化');
-  const [contextPercent, setContextPercent] = useState(42);
+  const [cwd, setCwd] = useState('');
+  const [contextPercent, setContextPercent] = useState(0);
   const [statusText, setStatusText] = useState('正在连接 Hermes Gateway');
   const [logs, setLogs] = useState<string[]>([]);
   const [recentSessionItems, setRecentSessionItems] = useState<SidebarItem[]>(recentSessions);
@@ -1596,6 +1539,25 @@ function useHermesRuntime(): HermesRuntime {
   };
 }
 
+function projectSidebarItems(runtime: HermesRuntime): SidebarItem[] {
+  const cwdLabel = runtime.cwd ? shortenPath(runtime.cwd) : '未选择目录';
+  const sessionCount = runtime.recentSessions.length;
+
+  return [
+    {
+      active: true,
+      color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : 'gray',
+      meta: `${runtime.connectionLabel} · ${cwdLabel}`,
+      title: '本地 Hermes',
+    },
+    {
+      color: sessionCount > 0 ? 'blue' : 'gray',
+      meta: sessionCount > 0 ? `${sessionCount} 个最近会话` : '等待真实会话',
+      title: '会话',
+    },
+  ];
+}
+
 function App() {
   const runtime = useHermesRuntime();
   const [surface, setSurface] = useState<Surface>('chat');
@@ -1633,6 +1595,7 @@ function App() {
     return runtime.recentSessions.find((item) => item.id === runtime.selectedStoredSessionId)?.title || surfaceMeta.chat.title;
   }, [runtime.recentSessions, runtime.selectedStoredSessionId]);
   const currentMeta = surface === 'chat' ? { ...surfaceMeta.chat, title: chatTitle } : surfaceMeta[surface];
+  const projectItems = useMemo(() => projectSidebarItems(runtime), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions]);
   const showWorkbench = surface === 'chat';
 
   return (
@@ -1649,6 +1612,7 @@ function App() {
           void runtime.selectSession(sessionId);
         }}
         recentItems={runtime.recentSessions}
+        projectItems={projectItems}
         selectedStoredSessionId={runtime.selectedStoredSessionId}
         statusText={runtime.connectionLabel}
       />
@@ -1696,7 +1660,14 @@ function App() {
             }}
           />
         )}
-        {surface === 'projects' && <ProjectsSurface />}
+        {surface === 'projects' && (
+          <ProjectsSurface
+            runtime={runtime}
+            onOpenChat={() => setSurface('chat')}
+            onOpenDiagnostics={() => setSurface('diagnostics')}
+            onOpenSettings={() => setSurface('settings')}
+          />
+        )}
         {surface === 'agents' && <AgentsSurface onOpenApproval={() => setApprovalVariant('risk')} />}
         {surface === 'profiles' && <ProfilesSurface />}
         {surface === 'skills' && <SkillsSurface />}
@@ -1739,10 +1710,16 @@ function App() {
             setSurface(nextSurface);
             setCommandOpen(false);
           }}
+          onOpenWorkbenchTab={(tab) => {
+            setRightOpen(true);
+            setWorkbenchTab(tab);
+            setCommandOpen(false);
+          }}
           onOpenApproval={() => {
             setCommandOpen(false);
             setApprovalVariant('risk');
           }}
+          runtime={runtime}
         />
       )}
 
@@ -1771,6 +1748,7 @@ function Sidebar({
   onSurfaceChange,
   onOpenCommand,
   onSelectSession,
+  projectItems,
   recentItems,
   selectedStoredSessionId,
   statusText,
@@ -1782,17 +1760,18 @@ function Sidebar({
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
   onSelectSession: (sessionId: string) => void;
+  projectItems: SidebarItem[];
   recentItems: SidebarItem[];
   selectedStoredSessionId: null | string;
   statusText: string;
 }) {
   const utilityItems: Array<{ id: Surface; label: string; meta: string; icon: React.ReactNode }> = [
-    { id: 'agents', label: 'Agents', meta: '并行任务 · 3', icon: <Bot size={15} /> },
-    { id: 'profiles', label: 'Profiles', meta: 'Bailey / Product', icon: <UsersRound size={15} /> },
-    { id: 'skills', label: '技能库', meta: '12 已启用', icon: <Puzzle size={15} /> },
-    { id: 'cron', label: '自动化', meta: '2 运行中', icon: <CalendarClock size={15} /> },
-    { id: 'messaging', label: '消息网关', meta: '2 平台连接', icon: <Network size={15} /> },
-    { id: 'diagnostics', label: '诊断', meta: '1 个警告', icon: <Wrench size={15} /> },
+    { id: 'agents', label: 'Agents', meta: '任务队列', icon: <Bot size={15} /> },
+    { id: 'profiles', label: 'Profiles', meta: '身份与策略', icon: <UsersRound size={15} /> },
+    { id: 'skills', label: '技能库', meta: '本机 skills', icon: <Puzzle size={15} /> },
+    { id: 'cron', label: '自动化', meta: '定时任务', icon: <CalendarClock size={15} /> },
+    { id: 'messaging', label: '消息网关', meta: '外部消息', icon: <Network size={15} /> },
+    { id: 'diagnostics', label: '诊断', meta: '环境检查', icon: <Wrench size={15} /> },
     { id: 'onboarding', label: '首次启动', meta: '连接方式', icon: <Rocket size={15} /> },
   ];
 
@@ -1827,9 +1806,10 @@ function Sidebar({
           onSelectSession={onSelectSession}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
         />
-        <ProjectSection items={projects} onOpenProjects={() => onSurfaceChange('projects')} />
+        <ProjectSection items={projectItems} onOpenProjects={() => onSurfaceChange('projects')} />
         <SidebarSection
           title="最近"
+          emptyText="暂无真实会话"
           items={recentItems.length > 0 ? recentItems : recentSessions}
           muted
           onOpenChat={() => onSurfaceChange('chat')}
@@ -1891,12 +1871,14 @@ function SidebarSection({
   title,
   items,
   muted,
+  emptyText,
   onOpenChat,
   onSelectSession,
   selectedSessionId,
 }: {
   title: string;
   muted?: boolean;
+  emptyText?: string;
   items: SidebarItem[];
   onOpenChat: () => void;
   onSelectSession: (sessionId: string) => void;
@@ -1918,6 +1900,7 @@ function SidebarSection({
   return (
     <section className="navSection">
       <h2>{title}</h2>
+      {orderedItems.length === 0 && <div className="sectionEmpty">{emptyText || '暂无内容'}</div>}
       {orderedItems.map((item, index) => (
         <SessionRow
           key={item.id || item.title}
@@ -1940,7 +1923,7 @@ function ProjectSection({
   items,
   onOpenProjects,
 }: {
-  items: Array<{ title: string; meta: string; active?: boolean }>;
+  items: SidebarItem[];
   onOpenProjects: () => void;
 }) {
   return (
@@ -2038,6 +2021,14 @@ function ChatSurface({
   return (
     <section className="chatSurface" aria-label="会话">
       <div className="messageStack" ref={messageStackRef}>
+        {runtime.messages.length === 0 && (
+          <EmptyConversation
+            gatewayStatus={runtime.gatewayStatus}
+            model={runtime.model}
+            statusText={runtime.statusText}
+          />
+        )}
+
         {runtime.messages.map((message) => (
           <ChatMessage
             key={message.id}
@@ -2068,6 +2059,33 @@ function ChatSurface({
 
       <Composer attachmentOpen={attachmentOpen} setAttachmentOpen={setAttachmentOpen} runtime={runtime} />
     </section>
+  );
+}
+
+function EmptyConversation({
+  gatewayStatus,
+  model,
+  statusText,
+}: {
+  gatewayStatus: GatewayStatus;
+  model: string;
+  statusText: string;
+}) {
+  const ready = gatewayStatus === 'connected';
+
+  return (
+    <div className="emptyConversation">
+      <div className="emptyMark">
+        <img src={hermesAgentLogo} alt="" />
+      </div>
+      <h2>{ready ? 'Hermes 已就绪' : '正在准备 Hermes'}</h2>
+      <p>{ready ? `当前模型 ${model}，可以直接发送任务。` : statusText}</p>
+      <div className="emptyHints" aria-label="可开始的任务">
+        <span>让 Hermes 检查一个项目</span>
+        <span>读取文件并总结</span>
+        <span>运行命令前会请求审批</span>
+      </div>
+    </div>
   );
 }
 
@@ -2643,7 +2661,7 @@ function WorkbenchActivity({
     <>
       <section className="taskCard">
         <span>当前任务</span>
-        <strong>{runtime.activeSessionId ? 'Hermes Agent 会话' : 'Hermes Desktop 设计方向'}</strong>
+        <strong>{runtime.activeSessionId ? 'Hermes Agent 会话' : '等待新任务'}</strong>
         <p>{runtime.statusText}</p>
         <div className="progressBar">
           <span style={{ width: `${Math.max(8, runtime.contextPercent)}%` }} />
@@ -2651,9 +2669,13 @@ function WorkbenchActivity({
       </section>
       <section className="workbenchList">
         <h3>工具调用</h3>
-        {runtime.tools.map((item) => (
-          <WorkbenchItem key={item.id} detail={item.detail} state={item.state} label={item.label} value={item.value} />
-        ))}
+        {runtime.tools.length > 0 ? (
+          runtime.tools.map((item) => (
+            <WorkbenchItem key={item.id} detail={item.detail} state={item.state} label={item.label} value={item.value} />
+          ))
+        ) : (
+          <div className="railEmpty">工具调用会在运行任务时出现。</div>
+        )}
       </section>
       {runtime.pendingApproval ? (
         <section className="approvalCard">
@@ -2686,17 +2708,21 @@ function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
     <>
       <section className="railSection">
         <h3>变更文件</h3>
-        {files.map((file, index) => (
-          <button className={index === 0 ? 'fileChangeRow selected' : 'fileChangeRow'} key={`${file.label}-${file.meta}`} type="button">
-            <span className={file.change === 'add' ? 'changeTag add' : 'changeTag mod'}>{file.change === 'add' ? '新' : '改'}</span>
-            <span>{file.label}</span>
-            <small>{file.meta}</small>
-          </button>
-        ))}
+        {files.length > 0 ? (
+          files.map((file, index) => (
+            <button className={index === 0 ? 'fileChangeRow selected' : 'fileChangeRow'} key={`${file.label}-${file.meta}`} type="button">
+              <span className={file.change === 'add' ? 'changeTag add' : 'changeTag mod'}>{file.change === 'add' ? '新' : '改'}</span>
+              <span>{file.label}</span>
+              <small>{file.meta}</small>
+            </button>
+          ))
+        ) : (
+          <div className="railEmpty">当前会话还没有文件变更。</div>
+        )}
       </section>
       <section className="railSection">
         <h3>Diff 摘要</h3>
-        <pre className="miniCode"><code>{files.map((file) => `${file.change === 'add' ? '+' : '~'} ${file.label} · ${file.meta}`).join('\n')}</code></pre>
+        <pre className="miniCode"><code>{files.length > 0 ? files.map((file) => `${file.change === 'add' ? '+' : '~'} ${file.label} · ${file.meta}`).join('\n') : '等待 Hermes 返回文件变更。'}</code></pre>
         <div className="workbenchActions">
           <button type="button">打开文件</button>
           <button type="button">复制路径</button>
@@ -2733,20 +2759,22 @@ function WorkbenchTerminal({ logs }: { logs: string[] }) {
 }
 
 function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
+  const previewText = runtime.connection?.baseUrl
+    ? `Gateway: ${runtime.connection.baseUrl}`
+    : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
+
   return (
     <>
       <section className="previewPanel">
-        <div className="previewFrame">
-          <div className="previewTop" />
-          <div className="previewCanvas">
-            <div />
-            <span>contact-sheet.png</span>
-          </div>
+        <div className="previewEmpty">
+          <Eye size={22} />
+          <strong>暂无预览产物</strong>
+          <span>{previewText}</span>
         </div>
       </section>
       <section className="railSection">
         <h3>预览产物</h3>
-        <p>{runtime.connection?.baseUrl ? `Gateway: ${runtime.connection.baseUrl}` : '当前处于浏览器预览或等待连接。'}</p>
+        <p>{previewText}</p>
         <div className="workbenchActions">
           <button type="button">刷新</button>
           <button type="button">打开文件</button>
@@ -2784,13 +2812,17 @@ function CommandCenter({
   onQueryChange,
   onClose,
   onNavigate,
+  onOpenWorkbenchTab,
   onOpenApproval,
+  runtime,
 }: {
   query: string;
   onQueryChange: (query: string) => void;
   onClose: () => void;
   onNavigate: (surface: Surface) => void;
+  onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
   onOpenApproval: () => void;
+  runtime: HermesRuntime;
 }) {
   const normalized = query.trim().toLowerCase();
   const mode = normalized.includes('restricted') || normalized.includes('权限')
@@ -2820,14 +2852,18 @@ function CommandCenter({
           <div className="commandBody">
             <CommandGroup title="常用动作">
               <CommandRow icon={<Plus />} title="新建任务" desc="在当前项目中新建 Agent 线程" action="执行" onClick={() => onNavigate('chat')} />
-              <CommandRow icon={<TerminalSquare />} title="打开终端" desc="在右侧工作区打开终端 tab" action="打开" />
-              <CommandRow icon={<Shield />} title="查看待审批命令" desc="2 个命令正在等待确认" action="跳转" onClick={onOpenApproval} />
+              <CommandRow icon={<TerminalSquare />} title="打开终端" desc="在右侧工作区查看 Gateway 日志" action="打开" onClick={() => onOpenWorkbenchTab('terminal')} />
+              {runtime.pendingApproval ? (
+                <CommandRow icon={<Shield />} title="查看待审批命令" desc={runtime.pendingApproval.description} action="跳转" onClick={onOpenApproval} />
+              ) : (
+                <CommandRow icon={<Shield />} title="审批设置" desc="配置命令确认、权限范围和记住方式" action="打开" onClick={() => onNavigate('settings')} />
+              )}
             </CommandGroup>
             <CommandGroup title="跳转">
-              <CommandRow icon={<Bot />} title="Agents 并行任务" desc="查看运行中、待确认、已完成队列" action="跳转" onClick={() => onNavigate('agents')} />
+              <CommandRow icon={<Bot />} title="Agents" desc="查看任务、审批和运行状态" action="跳转" onClick={() => onNavigate('agents')} />
               <CommandRow icon={<Settings />} title="设置" desc="打开偏好设置" action="⌘," onClick={() => onNavigate('settings')} />
               <CommandRow icon={<Puzzle />} title="技能库" desc="管理 skill 启用和更新" action="跳转" onClick={() => onNavigate('skills')} />
-              <CommandRow icon={<Rocket />} title="首次启动" desc="选择本地、远程或离线预览" action="打开" onClick={() => onNavigate('onboarding')} />
+              <CommandRow icon={<Rocket />} title="连接向导" desc={runtime.connectionLabel} action="打开" onClick={() => onNavigate('onboarding')} />
             </CommandGroup>
           </div>
         )}
@@ -2835,13 +2871,32 @@ function CommandCenter({
         {mode === 'results' && (
           <div className="commandBody">
             <CommandGroup title="命令">
-              <CommandRow danger icon={<TerminalSquare />} title="运行桌面端审批测试" desc="npm run test:desktop -- --approval-ui" action="需审批" onClick={onOpenApproval} />
+              {runtime.pendingApproval ? (
+                <CommandRow danger icon={<TerminalSquare />} title="确认当前命令" desc={runtime.pendingApproval.command || runtime.pendingApproval.description} action="需审批" onClick={onOpenApproval} />
+              ) : (
+                <CommandRow icon={<TerminalSquare />} title="查看终端输出" desc={runtime.logs.length > 0 ? runtime.logs[0] : '暂无 Gateway 日志'} action="打开" onClick={() => onOpenWorkbenchTab('terminal')} />
+              )}
               <CommandRow icon={<Settings />} title="审批设置" desc="调整默认确认策略、规则范围和记住方式" action="跳转" onClick={() => onNavigate('settings')} />
             </CommandGroup>
-            <CommandGroup title="会话">
-              <CommandRow icon={<MessageSquare />} title="修复桌面端审批流" desc="正在等待确认 · 12m" action="打开" onClick={() => onNavigate('chat')} />
-              <CommandRow icon={<FileText />} title="approval renderer 设计记录" desc="docs/page-map.md" action="打开" />
-            </CommandGroup>
+            {runtime.recentSessions.length > 0 && (
+              <CommandGroup title="会话">
+                {runtime.recentSessions.slice(0, 3).map((session) => (
+                  <CommandRow
+                    key={session.id || session.title}
+                    icon={<MessageSquare />}
+                    title={session.title}
+                    desc={session.meta}
+                    action="打开"
+                    onClick={() => {
+                      onNavigate('chat');
+                      if (session.id) {
+                        void runtime.selectSession(session.id);
+                      }
+                    }}
+                  />
+                ))}
+              </CommandGroup>
+            )}
           </div>
         )}
 
@@ -2966,7 +3021,7 @@ function ApprovalModal({
     <div className="overlayLayer" role="dialog" aria-modal="true" aria-label="工具审批" data-testid="approval-modal">
       <button className="overlayBackdrop" type="button" aria-label="关闭审批" onClick={onClose} />
       <div className={variant === 'timeout' ? 'approvalModal timeout' : 'approvalModal'}>
-        <div className="approvalSource">来自 Hermes · 修复桌面端审批流 · Bailey / Product · Hermes Desktop优化</div>
+        <div className="approvalSource">来自 Hermes · 当前会话 · 本地 Hermes</div>
         <div className="approvalHead">
           <div className="approvalIcon">{content.icon}</div>
           <div>
@@ -3008,7 +3063,45 @@ function ApprovalModal({
   );
 }
 
-function ProjectsSurface() {
+function ProjectsSurface({
+  runtime,
+  onOpenChat,
+  onOpenDiagnostics,
+  onOpenSettings,
+}: {
+  runtime: HermesRuntime;
+  onOpenChat: () => void;
+  onOpenDiagnostics: () => void;
+  onOpenSettings: () => void;
+}) {
+  const gatewayReady = runtime.gatewayStatus === 'connected';
+  const projectCards = [
+    {
+      action: '打开会话',
+      icon: <Folder size={20} />,
+      meta: runtime.cwd ? shortenPath(runtime.cwd) : '尚未从会话读取工作目录',
+      onClick: onOpenChat,
+      stats: [runtime.model, `${runtime.contextPercent}% · 1M`],
+      title: '本地 Hermes 工作区',
+    },
+    {
+      action: gatewayReady ? '查看诊断' : '修复连接',
+      icon: <Network size={20} />,
+      meta: runtime.connection?.baseUrl || runtime.connectionLabel,
+      onClick: onOpenDiagnostics,
+      stats: [runtime.connectionLabel, runtime.socketState],
+      title: 'Hermes Gateway',
+    },
+    {
+      action: runtime.recentSessions.length > 0 ? '查看最近' : '新建任务',
+      icon: <MessageSquare size={20} />,
+      meta: runtime.recentSessions.length > 0 ? `${runtime.recentSessions.length} 个最近会话` : '还没有真实会话记录',
+      onClick: onOpenChat,
+      stats: runtime.recentSessions.slice(0, 2).map((item) => item.title),
+      title: '会话',
+    },
+  ];
+
   return (
     <section className="pageSurface">
       <div className="pageIntro">
@@ -3016,38 +3109,32 @@ function ProjectsSurface() {
           <h2>项目工作区</h2>
           <p>把会话、路径、模型配置和运行状态合并管理。</p>
         </div>
-        <button className="lightButton" type="button">
-          <Plus size={16} />
-          新建项目
+        <button className="lightButton" type="button" onClick={onOpenSettings}>
+          <Settings size={16} />
+          项目设置
         </button>
       </div>
 
       <div className="projectGrid">
-        {projects.map((project) => (
+        {projectCards.map((project) => (
           <article className="projectCard" key={project.title}>
             <div className="cardTop">
               <div className="projectIcon">
-                <Folder size={20} />
+                {project.icon}
               </div>
-              <button className="iconButton compact" type="button" aria-label="更多项目操作">
+              <button className="iconButton compact" type="button" aria-label="更多项目操作" onClick={project.onClick}>
                 <MoreHorizontal size={17} />
               </button>
             </div>
             <h3>{project.title}</h3>
             <p>{project.meta}</p>
             <div className="projectStats">
-              <span>12 会话</span>
-              <span>4 技能</span>
-              <span>2 运行中</span>
+              {project.stats.length > 0 ? project.stats.map((stat) => <span key={stat}>{stat}</span>) : <span>等待数据</span>}
             </div>
             <div className="projectActions">
-              <button type="button">
-                <Inbox size={15} />
-                归档
-              </button>
-              <button type="button">
-                <Trash2 size={15} />
-                删除
+              <button type="button" onClick={project.onClick}>
+                <ChevronRight size={15} />
+                {project.action}
               </button>
             </div>
           </article>
@@ -3072,15 +3159,15 @@ function AgentsSurface({ onOpenApproval }: { onOpenApproval: () => void }) {
       </div>
       <div className="kanbanGrid">
         <KanbanColumn title="运行中" count="2">
-          <AgentCard title="实现 GUI approval renderer" status="运行中" meta="branch: gui/approval · 18m" />
-          <AgentCard title="重构 composer 状态" status="运行中" meta="apps/desktop · 9m" />
+          <AgentCard title="等待 Gateway 事件" status="运行中" meta="本机 Hermes · WebSocket" />
+          <AgentCard title="同步会话状态" status="运行中" meta="最近会话 · runtime info" />
         </KanbanColumn>
         <KanbanColumn title="待确认" count="1">
-          <AgentCard title="运行端到端测试" status="approval" meta="npm run test:desktop" danger onClick={onOpenApproval} />
+          <AgentCard title="高风险命令确认" status="approval" meta="需要用户手动允许" danger onClick={onOpenApproval} />
         </KanbanColumn>
         <KanbanColumn title="已完成" count="2">
-          <AgentCard title="整理技术栈选择" status="完成" meta="local-first · gateway adapter" muted />
-          <AgentCard title="确定视觉规范" status="完成" meta="neutral workbench · 中文优先" muted />
+          <AgentCard title="Gateway 连接检查" status="完成" meta="本机服务可复用" muted />
+          <AgentCard title="会话列表读取" status="完成" meta="按最近活跃排序" muted />
         </KanbanColumn>
       </div>
     </section>
@@ -3230,7 +3317,7 @@ function CronSurface() {
   const jobs = [
     ['每日 GUI smoke', '工作日 17:00 · 截图 + 构建检查', '启用'],
     ['依赖更新巡检', '每周一 10:00 · npm audit + release notes', '暂停'],
-    ['设计稿回归报告', '每次发布候选 · Browser screenshot diff', '草稿'],
+    ['界面回归检查', '每次发布候选 · Browser screenshot diff', '草稿'],
   ];
 
   return (
@@ -3434,9 +3521,11 @@ function OnboardingSurface({ onFinish }: { onFinish: () => void }) {
   return (
     <section className="onboardingSurface">
       <div className="onboardingPanel">
-        <div className="brandMark">H</div>
+        <div className="brandMark">
+          <img src={hermesAgentLogo} alt="" />
+        </div>
         <h2>连接 Hermes 工作方式</h2>
-        <p>选择本地 Hermes、远程 Gateway，或先进入离线 UI 体验。</p>
+        <p>优先复用本机 Hermes Gateway；连接失败时再进入诊断和权限恢复。</p>
         <div className="choiceGrid">
           <button type="button">
             <Monitor size={22} />
@@ -3450,8 +3539,8 @@ function OnboardingSurface({ onFinish }: { onFinish: () => void }) {
           </button>
           <button type="button">
             <Eye size={22} />
-            <strong>先预览界面</strong>
-            <span>使用 mock 数据进入工作台</span>
+            <strong>查看连接状态</strong>
+            <span>确认 Gateway、会话和审批事件</span>
           </button>
         </div>
         <button className="primaryButtonInline wide" type="button" onClick={onFinish}>
