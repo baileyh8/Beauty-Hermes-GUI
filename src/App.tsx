@@ -168,10 +168,12 @@ interface PendingClarify {
 
 interface HermesRuntime {
   activeSessionId: null | string;
+  archiveSession: (item: SidebarItem) => Promise<void>;
   connection: HermesGatewayConnection | null;
   connectionLabel: string;
   contextPercent: number;
   cwd: string;
+  deleteSession: (item: SidebarItem) => Promise<void>;
   files: GatewayFileItem[];
   gatewayStatus: GatewayStatus;
   inventory: HermesLocalInventory | null;
@@ -438,6 +440,19 @@ function compactDuplicateReasoning(previous: string, incoming: string, replace =
   return `${previous}${next}`;
 }
 
+function slashOutputText(result: unknown) {
+  if (result && typeof result === 'object') {
+    const row = result as Record<string, unknown>;
+    return cleanDisplayText(
+      [textFromUnknown(row.output), textFromUnknown(row.warning)]
+        .filter((item) => item.trim())
+        .join('\n\n'),
+    ).trim();
+  }
+
+  return cleanDisplayText(textFromUnknown(result)).trim();
+}
+
 function maybeJsonRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -624,7 +639,7 @@ function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
     return rightActive - leftActive;
   });
 
-  return sessions.slice(0, 5).map((session, index) => ({
+  return sessions.slice(0, 12).map((session, index) => ({
     color: index === 0 ? 'blue' : 'gray',
     id: session.id,
     meta: `${session.message_count ?? 0} 条消息 · ${formatSessionTime(session.last_active)}`,
@@ -780,6 +795,21 @@ function useHermesRuntime(): HermesRuntime {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setInventoryError(message);
+    }
+  }, []);
+
+  const refreshSessionList = useCallback(async () => {
+    if (!window.hermesDesktop?.api) {
+      return;
+    }
+
+    const response = await window.hermesDesktop.api<SessionListResponse>({
+      path: '/api/sessions?limit=40&offset=0&min_messages=1&archived=exclude&order=recent',
+      timeoutMs: 12000,
+    });
+    const nextItems = sessionsToSidebarItems(response);
+    if (nextItems.length > 0) {
+      setRecentSessionItems(nextItems);
     }
   }, []);
 
@@ -1087,7 +1117,7 @@ function useHermesRuntime(): HermesRuntime {
               kind: 'reasoning',
               sessionId,
               status: 'running',
-              text: compactDuplicateReasoning(existing?.text ?? '', delta),
+              text: existing?.text ?? '',
               title: '推理过程',
             };
             const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
@@ -1254,19 +1284,11 @@ function useHermesRuntime(): HermesRuntime {
 
       void (async () => {
         const [sessionsResponse, statusResponse] = await Promise.allSettled([
-          desktop.api<SessionListResponse>({
-            path: '/api/sessions?limit=20&offset=0&min_messages=1&archived=exclude&order=recent',
-            timeoutMs: 12000,
-          }),
+          refreshSessionList(),
           desktop.api<Record<string, unknown>>({ path: '/api/status', timeoutMs: 12000 }),
         ]);
 
-        if (sessionsResponse.status === 'fulfilled') {
-          const nextItems = sessionsToSidebarItems(sessionsResponse.value);
-          if (nextItems.length > 0) {
-            setRecentSessionItems(nextItems);
-          }
-        } else {
+        if (sessionsResponse.status === 'rejected') {
           setLogs((current) => [`Session list error: ${sessionsResponse.reason}`, ...current].slice(0, 120));
         }
 
@@ -1293,7 +1315,7 @@ function useHermesRuntime(): HermesRuntime {
         title: '无法连接 Hermes Gateway',
       });
     }
-  }, [handleGatewayEvent, refreshInventory, resumeRuntimeSession, upsertMessage]);
+  }, [handleGatewayEvent, refreshInventory, refreshSessionList, resumeRuntimeSession, upsertMessage]);
 
   useEffect(() => {
     void connectGateway();
@@ -1407,6 +1429,101 @@ function useHermesRuntime(): HermesRuntime {
     [resumeRuntimeSession, upsertMessage],
   );
 
+  const ensureRuntimeSession = useCallback(
+    async (client: JsonRpcGatewayClient, title?: string) => {
+      const currentSessionId = activeSessionIdRef.current;
+      if (currentSessionId) {
+        return currentSessionId;
+      }
+
+      const created = await client.request<SessionCreateResponse>('session.create', { cols: 96, title: title || '' }, 60000);
+      const sessionId = created.session_id;
+      const storedId = created.stored_session_id || created.session_id;
+      setActiveSessionId(sessionId);
+      activeSessionIdRef.current = sessionId;
+      setSelectedStoredSessionId(storedId);
+      selectedStoredSessionIdRef.current = storedId;
+      setRecentSessionItems((current) => promoteSidebarItem(current, storedId, title));
+      patchRuntimeInfo(created.info);
+
+      if (created.messages?.length) {
+        const transcript = messagesFromStoredTranscript(created.messages, sessionId);
+        if (transcript.length) {
+          setMessages(transcript);
+        }
+      }
+
+      return sessionId;
+    },
+    [patchRuntimeInfo],
+  );
+
+  const archiveSession = useCallback(
+    async (item: SidebarItem) => {
+      if (!item.id) {
+        throw new Error('只有真实 Hermes 会话可以归档。');
+      }
+      if (!window.hermesDesktop?.api) {
+        throw new Error('桌面 IPC 不可用，无法归档真实会话。');
+      }
+
+      await window.hermesDesktop.api({
+        body: { archived: true },
+        method: 'PATCH',
+        path: `/api/sessions/${encodeURIComponent(item.id)}`,
+        timeoutMs: 30000,
+      });
+      setRecentSessionItems((current) => current.filter((row) => row.id !== item.id));
+      setStatusText('会话已归档');
+      void refreshSessionList().catch((error) => {
+        setLogs((current) => [`Session refresh error: ${error instanceof Error ? error.message : String(error)}`, ...current].slice(0, 120));
+      });
+      void refreshInventory();
+    },
+    [refreshInventory, refreshSessionList],
+  );
+
+  const deleteSession = useCallback(
+    async (item: SidebarItem) => {
+      if (!item.id) {
+        throw new Error('只有真实 Hermes 会话可以删除。');
+      }
+      if (!window.hermesDesktop?.api) {
+        throw new Error('桌面 IPC 不可用，无法删除真实会话。');
+      }
+
+      const activeRuntimeId = activeSessionIdRef.current;
+      const client = clientRef.current;
+      if (selectedStoredSessionIdRef.current === item.id && activeRuntimeId && client?.connectionState === 'open') {
+        await client.request('session.close', { session_id: activeRuntimeId }, 15000).catch(() => undefined);
+      }
+
+      await window.hermesDesktop.api({
+        method: 'DELETE',
+        path: `/api/sessions/${encodeURIComponent(item.id)}`,
+        timeoutMs: 30000,
+      });
+      setRecentSessionItems((current) => current.filter((row) => row.id !== item.id));
+      if (selectedStoredSessionIdRef.current === item.id) {
+        setSelectedStoredSessionId(null);
+        selectedStoredSessionIdRef.current = null;
+        setActiveSessionId(null);
+        activeSessionIdRef.current = null;
+        assistantMessageIdRef.current = null;
+        reasoningMessageIdRef.current = null;
+        statusMessageIdRef.current = null;
+        toolDigestMessageIdRef.current = null;
+        setMessages([]);
+      }
+      setStatusText('会话已删除');
+      void refreshSessionList().catch((error) => {
+        setLogs((current) => [`Session refresh error: ${error instanceof Error ? error.message : String(error)}`, ...current].slice(0, 120));
+      });
+      void refreshInventory();
+    },
+    [refreshInventory, refreshSessionList],
+  );
+
   const submitPrompt = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -1436,22 +1553,21 @@ function useHermesRuntime(): HermesRuntime {
       setStatusText('正在提交消息');
 
       try {
-        if (!sessionId) {
-          const created = await client.request<SessionCreateResponse>('session.create', { cols: 96 }, 60000);
-          sessionId = created.session_id;
-          const storedId = created.stored_session_id || created.session_id;
-          setActiveSessionId(sessionId);
-          setSelectedStoredSessionId(storedId);
-          selectedStoredSessionIdRef.current = storedId;
-          setRecentSessionItems((current) => promoteSidebarItem(current, storedId, trimmed));
-          patchRuntimeInfo(created.info);
+        sessionId = await ensureRuntimeSession(client, trimmed);
 
-          if (created.messages?.length) {
-            const transcript = messagesFromStoredTranscript(created.messages, sessionId);
-            if (transcript.length) {
-              setMessages(transcript);
-            }
-          }
+        if (trimmed.startsWith('/')) {
+          const result = await client.request('slash.exec', { command: trimmed, session_id: sessionId }, 90000);
+          const output = slashOutputText(result) || '指令已完成。';
+          upsertMessage({
+            id: makeId('slash-output'),
+            kind: 'status',
+            sessionId,
+            status: 'done',
+            text: output,
+            title: `已运行 ${trimmed.split(/\s+/)[0]}`,
+          });
+          setStatusText('就绪');
+          return;
         }
 
         setRecentSessionItems((current) => promoteSidebarItem(current, selectedStoredSessionIdRef.current || sessionId, trimmed));
@@ -1470,7 +1586,7 @@ function useHermesRuntime(): HermesRuntime {
         });
       }
     },
-    [patchRuntimeInfo, upsertMessage],
+    [ensureRuntimeSession, upsertMessage],
   );
 
   const respondApproval = useCallback(
@@ -1571,10 +1687,12 @@ function useHermesRuntime(): HermesRuntime {
 
   return {
     activeSessionId,
+    archiveSession,
     connection,
     connectionLabel,
     contextPercent,
     cwd,
+    deleteSession,
     files,
     gatewayStatus,
     inventory,
@@ -1684,6 +1802,32 @@ function App() {
     setHiddenSidebarKeys((current) => current.includes(key) ? current : [...current, key]);
     showNotice(`${item.title} 已${action}`);
   }, [showNotice]);
+  const handleArchiveItem = useCallback((item: SidebarItem) => {
+    if (!item.id) {
+      hideSidebarItem(item, '归档');
+      return;
+    }
+
+    void runtime.archiveSession(item)
+      .then(() => showNotice(`${item.title} 已归档`))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        showNotice(`归档失败：${message}`);
+      });
+  }, [hideSidebarItem, runtime, showNotice]);
+  const handleDeleteItem = useCallback((item: SidebarItem) => {
+    if (!item.id) {
+      hideSidebarItem(item, '删除');
+      return;
+    }
+
+    void runtime.deleteSession(item)
+      .then(() => showNotice(`${item.title} 已删除`))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        showNotice(`删除失败：${message}`);
+      });
+  }, [hideSidebarItem, runtime, showNotice]);
 
   return (
     <div className={rightOpen && showWorkbench ? 'appShell workbenchOpen' : 'appShell'} data-testid="app-shell">
@@ -1698,8 +1842,8 @@ function App() {
           setSurface('chat');
           void runtime.selectSession(sessionId);
         }}
-        onArchiveItem={(item) => hideSidebarItem(item, '归档')}
-        onDeleteItem={(item) => hideSidebarItem(item, '删除')}
+        onArchiveItem={handleArchiveItem}
+        onDeleteItem={handleDeleteItem}
         onMoreItem={(item) => {
           setCommandQuery(item.title);
           setCommandOpen(true);
@@ -2789,10 +2933,6 @@ function Composer({
     setAttachmentOpen(false);
 
     if (kind === 'url') {
-      const value = window.prompt('输入 URL');
-      if (value?.trim()) {
-        insertDraftText(value.trim());
-      }
       return;
     }
 
@@ -2890,7 +3030,15 @@ function Composer({
           <SendHorizontal size={20} />
         </button>
 
-        {attachmentOpen && <AttachmentMenu onPick={(kind) => void handleAttachmentPick(kind)} />}
+        {attachmentOpen && (
+          <AttachmentMenu
+            onInsertUrl={(value) => {
+              setAttachmentOpen(false);
+              insertDraftText(value);
+            }}
+            onPick={(kind) => void handleAttachmentPick(kind)}
+          />
+        )}
         {slashOpen && (
           <SlashMenu
             options={visibleSlashOptions}
@@ -2904,7 +3052,15 @@ function Composer({
   );
 }
 
-function AttachmentMenu({ onPick }: { onPick: (kind: AttachmentMenuKind) => void }) {
+function AttachmentMenu({
+  onInsertUrl,
+  onPick,
+}: {
+  onInsertUrl: (value: string) => void;
+  onPick: (kind: AttachmentMenuKind) => void;
+}) {
+  const [urlDraft, setUrlDraft] = useState('');
+  const [urlOpen, setUrlOpen] = useState(false);
   const items: Array<{ icon: React.ReactNode; kind: AttachmentMenuKind; label: string }> = [
     { icon: <File size={18} />, kind: 'file', label: '文件...' },
     { icon: <Folder size={18} />, kind: 'folder', label: '文件夹...' },
@@ -2918,11 +3074,43 @@ function AttachmentMenu({ onPick }: { onPick: (kind: AttachmentMenuKind) => void
     <div className="attachmentMenu" role="menu">
       <span className="menuTitle">添加</span>
       {items.map((item, index) => (
-        <button className={index === 5 ? 'menuItem divided' : 'menuItem'} type="button" key={item.label} onClick={() => onPick(item.kind)}>
+        <button
+          className={index === 5 ? 'menuItem divided' : 'menuItem'}
+          type="button"
+          key={item.label}
+          onClick={() => {
+            if (item.kind === 'url') {
+              setUrlOpen((open) => !open);
+              return;
+            }
+            onPick(item.kind);
+          }}
+        >
           {item.icon}
           {item.label}
         </button>
       ))}
+      {urlOpen && (
+        <form
+          className="menuUrlForm"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = urlDraft.trim();
+            if (value) {
+              onInsertUrl(value);
+            }
+          }}
+        >
+          <input
+            autoFocus
+            aria-label="URL"
+            onChange={(event) => setUrlDraft(event.target.value)}
+            placeholder="https://..."
+            value={urlDraft}
+          />
+          <button type="submit">添加</button>
+        </form>
+      )}
       <div className="menuHint">提示：输入 @ 可在正文中引用文件。</div>
     </div>
   );
