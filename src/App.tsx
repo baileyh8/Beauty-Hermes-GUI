@@ -310,6 +310,7 @@ interface HermesProfileInfo {
   path?: string;
   provider?: null | string;
   skill_count?: number;
+  source?: string;
 }
 
 interface HermesSkillInfo {
@@ -5321,6 +5322,7 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
       model: config?.defaultModel || runtime.model,
       name: 'default',
       provider: config?.provider || '',
+      source: 'desktop-local-bridge',
       skill_count: runtime.inventory?.skills.length ?? 0,
     },
   ];
@@ -5338,7 +5340,7 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
     try {
       setProfileBusy('load');
       const [list, active] = await Promise.all([
-        apiRequest<{ profiles?: HermesProfileInfo[] }>({ path: '/api/profiles', timeoutMs: 12000 }),
+        apiRequest<{ profiles?: HermesProfileInfo[]; source?: string }>({ path: '/api/profiles', timeoutMs: 12000 }),
         apiRequest<{ active?: string; current?: string }>({ path: '/api/profiles/active', timeoutMs: 12000 }),
       ]);
       const rows = Array.isArray(list.profiles) ? list.profiles : [];
@@ -5525,7 +5527,8 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
   const loadSkills = useCallback(async () => {
     try {
       setSkillBusy('load');
-      const rows = await apiRequest<HermesSkillInfo[]>({ path: '/api/skills', timeoutMs: 12000 });
+      const response = await apiRequest<HermesSkillInfo[] | { skills?: HermesSkillInfo[]; source?: string }>({ path: '/api/skills', timeoutMs: 12000 });
+      const rows = Array.isArray(response) ? response : Array.isArray(response.skills) ? response.skills : [];
       setSkillRows(Array.isArray(rows) ? rows : []);
       setSkillStatus(Array.isArray(rows) ? `已同步 ${rows.length} 个 skills` : 'skills 返回为空');
     } catch (error) {
@@ -5626,7 +5629,9 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
             <strong>{skill.name}</strong>
             <p>{skill.description || skill.path || '暂无描述'}</p>
             <div>
-              <span className={(skill.enabled ?? true) ? 'pill green' : 'pill amber'}>{skill.source || ((skill.enabled ?? true) ? 'enabled' : 'disabled')}</span>
+              <span className={(skill.enabled ?? true) ? 'pill green' : 'pill amber'}>
+                {skill.source || ((skill.enabled ?? true) ? 'enabled' : 'disabled')}
+              </span>
               <button type="button" onClick={() => void toggleSkill(skill)} disabled={Boolean(skillBusy)}>
                 {skillBusy === `toggle:${skill.name}` ? '更新中' : (skill.enabled ?? true) ? '停用' : '启用'}
               </button>
@@ -5655,7 +5660,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
   const [cronJobs, setCronJobs] = useState<HermesCronJobInfo[]>([]);
   const [cronStatus, setCronStatus] = useState('');
   const [newJobName, setNewJobName] = useState('');
-  const [newJobSchedule, setNewJobSchedule] = useState('daily@09:00');
+  const [newJobSchedule, setNewJobSchedule] = useState('0 9 * * *');
   const [newJobPrompt, setNewJobPrompt] = useState('');
   const [cronBusy, setCronBusy] = useState('');
   const [pendingCronDeleteId, setPendingCronDeleteId] = useState('');
@@ -5664,9 +5669,14 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
   const loadCronJobs = useCallback(async () => {
     try {
       setCronBusy('load');
-      const rows = await apiRequest<HermesCronJobInfo[]>({ path: '/api/cron/jobs', timeoutMs: 20000 });
-      setCronJobs(Array.isArray(rows) ? rows : []);
-      setCronStatus(Array.isArray(rows) ? `已同步 ${rows.length} 个自动化任务` : 'Cron 返回为空');
+      const response = await apiRequest<HermesCronJobInfo[] | { jobs?: HermesCronJobInfo[]; source?: string }>({ path: '/api/cron/jobs', timeoutMs: 20000 });
+      const rows = (Array.isArray(response) ? response : Array.isArray(response.jobs) ? response.jobs : [])
+        .map((job) => ({
+          ...job,
+          schedule: typeof job.schedule === 'string' ? job.schedule : String((job as { schedule_display?: string }).schedule_display || '未设置 schedule'),
+        }));
+      setCronJobs(rows);
+      setCronStatus(`已同步 ${rows.length} 个自动化任务`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setCronStatus(`读取 cron 失败：${message}`);
@@ -5747,7 +5757,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
           deliver: 'local',
           name: newJobName.trim(),
           prompt,
-          schedule: newJobSchedule.trim() || 'daily@09:00',
+          schedule: newJobSchedule.trim() || '0 9 * * *',
         },
         method: 'POST',
         path: '/api/cron/jobs?profile=default',
@@ -5794,7 +5804,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
         }}
       >
         <input aria-label="任务名称" disabled={Boolean(cronBusy)} placeholder="任务名称" value={newJobName} onChange={(event) => setNewJobName(event.target.value)} />
-        <input aria-label="计划表达式" disabled={Boolean(cronBusy)} placeholder="daily@09:00" value={newJobSchedule} onChange={(event) => setNewJobSchedule(event.target.value)} />
+        <input aria-label="计划表达式" disabled={Boolean(cronBusy)} placeholder="0 9 * * *" value={newJobSchedule} onChange={(event) => setNewJobSchedule(event.target.value)} />
         <input aria-label="自动化 prompt" disabled={Boolean(cronBusy)} placeholder="让 Hermes 做什么..." value={newJobPrompt} onChange={(event) => setNewJobPrompt(event.target.value)} />
         <button type="submit" disabled={Boolean(cronBusy)}>{cronBusy === 'create' ? '创建中' : '新建'}</button>
       </form>
@@ -5895,7 +5905,7 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
   const loadPlatforms = useCallback(async () => {
     try {
       setMessagingBusy('load');
-      const response = await apiRequest<{ platforms?: HermesMessagingPlatformInfo[] }>({ path: '/api/messaging/platforms', timeoutMs: 12000 });
+      const response = await apiRequest<{ platforms?: HermesMessagingPlatformInfo[]; source?: string }>({ path: '/api/messaging/platforms', timeoutMs: 12000 });
       const rows = Array.isArray(response.platforms) ? response.platforms : [];
       setPlatformsState(rows);
       setMessagingStatus(rows.length > 0 ? `已同步 ${rows.length} 个平台` : '暂无平台配置');

@@ -77,6 +77,10 @@ const requiredText = [
   'onOpenWorkbenchFile',
   "group: '文件'",
   'runtime.files.slice',
+  'createProfile',
+  'toggleSkill',
+  'createCronJob',
+  'togglePlatform',
 ];
 
 const requiredStyles = [
@@ -106,7 +110,12 @@ const missingConfig = requiredConfig.filter((token) => !viteConfig.includes(toke
 const requiredElectronText = [
   'localApiFallback',
   'desktopApi',
-  'desktop-local-fallback',
+  'desktop-local-bridge',
+  'runHermesPython',
+  'localProfilesApi',
+  'localSkillsApi',
+  'localCronApi',
+  'localMessagingApi',
   "url.pathname === '/api/profiles'",
   "url.pathname === '/api/skills'",
   "url.pathname === '/api/cron/jobs'",

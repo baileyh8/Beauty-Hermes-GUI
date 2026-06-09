@@ -412,6 +412,16 @@ try {
 
     findNavButton('Profiles')?.click();
     await waitFor(() => document.body.innerText.includes('工作身份'), 'profiles feedback page');
+    const profileCreateButton = await waitFor(
+      () => {
+        const button = document.querySelector('.inlineCreateForm button[type="submit"]');
+        return button && !button.disabled && button.textContent?.includes('创建') ? button : null;
+      },
+      'available profile create action',
+      12000,
+    );
+    profileCreateButton.click();
+    await waitFor(() => document.querySelector('.panelStatus')?.textContent?.includes('请输入 profile 名称'), 'profile create validation feedback');
     const profileRow = await waitFor(
       () => Array.from(document.querySelectorAll('.profileRow')).find((item) => !item.disabled),
       'selectable profile row',
@@ -437,6 +447,16 @@ try {
 
     findNavButton('自动化')?.click();
     await waitFor(() => document.body.innerText.includes('后台调度'), 'automation feedback page');
+    const cronCreateButton = await waitFor(
+      () => {
+        const button = document.querySelector('.cronCreateForm button[type="submit"]');
+        return button && !button.disabled && button.textContent?.includes('新建') ? button : null;
+      },
+      'available cron create action',
+      12000,
+    );
+    cronCreateButton.click();
+    await waitFor(() => document.querySelector('.surfaceStatus')?.textContent?.includes('请输入自动化 prompt'), 'cron create validation feedback');
     const automationRefreshButton = await waitFor(
       () => Array.from(document.querySelectorAll('.automationRow button.rowTextAction'))
         .find((item) => item.textContent?.includes('刷新') && !item.disabled),
@@ -452,6 +472,15 @@ try {
 
     findNavButton('技能库')?.click();
     await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'skills copy page');
+    const skillToggleButton = await waitFor(
+      () => Array.from(document.querySelectorAll('.skillCard button'))
+        .find((item) => !item.disabled && (item.textContent?.includes('停用') || item.textContent?.includes('启用'))),
+      'skill toggle action',
+      20000,
+    );
+    if (!skillToggleButton || skillToggleButton.disabled) {
+      throw new Error('Skill toggle action should be available.');
+    }
     const skillCopyButton = await waitFor(
       () => Array.from(document.querySelectorAll('.skillCard button')).find((item) => item.textContent?.includes('复制') && !item.disabled),
       'enabled skill copy action',
