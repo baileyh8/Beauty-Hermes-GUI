@@ -172,6 +172,12 @@ try {
     findButton('添加', document.querySelector('.menuUrlForm'))?.click();
     await waitFor(() => textarea.value.includes('https://example.com/spec'), 'url inserted');
     setNativeValue(textarea, '');
+    findButton('语音输入')?.click();
+    await waitFor(
+      () => document.querySelector('.composerNotice')?.textContent?.includes('语音') || document.querySelector('.ghostIcon.active'),
+      'voice input feedback',
+    );
+    findButton('停止语音输入')?.click();
 
     await openCommandCenter();
     document.querySelector('.overlayBackdrop')?.click();
@@ -221,6 +227,23 @@ try {
       throw new Error(failures.join('; '));
     }
 
+    findButton('技能库')?.click();
+    await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'skills copy page');
+    const skillCopyButton = await waitFor(
+      () => Array.from(document.querySelectorAll('.skillCard button')).find((item) => item.textContent?.includes('复制') && !item.disabled),
+      'enabled skill copy action',
+    );
+    if (!skillCopyButton) {
+      throw new Error('Missing skill copy action');
+    }
+    skillCopyButton.click();
+    await waitFor(
+      () => document.querySelector('.surfaceStatus')?.textContent?.includes('已复制')
+        || document.querySelector('.surfaceStatus')?.textContent?.includes('无法访问剪贴板')
+        || document.querySelector('.surfaceStatus')?.textContent?.includes('复制失败'),
+      'skill copy feedback',
+    );
+
     await openCommandCenter('项目');
     await waitFor(() => findCommandRow('项目'), 'projects command row');
     findCommandRow('项目')?.click();
@@ -236,6 +259,10 @@ try {
     await waitFor(() => findCommandRow('Agents'), 'agents command row');
     findCommandRow('Agents')?.click();
     await waitFor(() => document.body.innerText.includes('运行中工具'), 'agents page');
+    const staticAgentCard = await waitFor(() => document.querySelector('.agentCard.static'), 'static agent cards');
+    if (staticAgentCard.tagName.toLowerCase() === 'button') {
+      throw new Error('Static agent card should not be rendered as a button.');
+    }
     findButton('新建任务')?.click();
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'agents new task target');
 
@@ -329,6 +356,7 @@ try {
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

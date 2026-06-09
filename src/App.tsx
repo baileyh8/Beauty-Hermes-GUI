@@ -175,6 +175,24 @@ interface LocalSlashResponse {
 
 type AttachmentMenuKind = HermesAttachmentKind | 'snippet' | 'url';
 
+interface SpeechRecognitionEventLike {
+  results: ArrayLike<{
+    0?: { transcript?: string };
+    isFinal?: boolean;
+  }>;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onend: null | (() => void);
+  onerror: null | ((event: { error?: string; message?: string }) => void);
+  onresult: null | ((event: SpeechRecognitionEventLike) => void);
+  start: () => void;
+  stop: () => void;
+}
+
 interface PendingApproval {
   command: string;
   description: string;
@@ -3199,7 +3217,9 @@ function Composer({
 }) {
   const [draft, setDraft] = useState('');
   const [composerNotice, setComposerNotice] = useState('');
+  const [isListening, setIsListening] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
+  const recognitionRef = useRef<null | SpeechRecognitionLike>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canSend = runtime.gatewayStatus === 'connected' && runtime.socketState === 'open';
   const trimmedDraft = draft.trim();
@@ -3320,6 +3340,66 @@ function Composer({
     }
   };
 
+  const handleVoiceInput = async () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      setComposerNotice('语音输入已停止。');
+      return;
+    }
+
+    const speechWindow = window as typeof window & {
+      SpeechRecognition?: new () => SpeechRecognitionLike;
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    };
+    const SpeechRecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+
+    if (SpeechRecognitionCtor) {
+      try {
+        const recognition = new SpeechRecognitionCtor();
+        recognition.lang = navigator.language || 'zh-CN';
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.onresult = (event) => {
+          const transcript = Array.from({ length: event.results.length }, (_, index) => event.results[index]?.[0]?.transcript || '')
+            .join('')
+            .trim();
+          if (transcript) {
+            setDraft(transcript);
+          }
+        };
+        recognition.onerror = (event) => {
+          setIsListening(false);
+          setComposerNotice(`语音输入失败：${event.error || event.message || '运行时不可用'}`);
+        };
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+        recognitionRef.current = recognition;
+        setIsListening(true);
+        setComposerNotice('正在听写，识别文本会填入输入框。');
+        recognition.start();
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setIsListening(false);
+        setComposerNotice(`语音输入启动失败：${message}`);
+        return;
+      }
+    }
+
+    try {
+      const permissions = navigator.permissions;
+      const status = permissions?.query
+        ? await permissions.query({ name: 'microphone' as PermissionName })
+        : null;
+      const suffix = status?.state ? `麦克风权限状态：${status.state}。` : '';
+      setComposerNotice(`当前运行时没有可用语音转写接口。${suffix}`);
+    } catch {
+      setComposerNotice('当前运行时没有可用语音转写接口。');
+    }
+  };
+
   return (
     <div className="composerWrap" data-testid="composer">
       <div className="composerMeta" aria-label="任务状态">
@@ -3385,7 +3465,13 @@ function Composer({
           rows={1}
           value={draft}
         />
-        <button className="ghostIcon" type="button" aria-label="语音输入">
+        <button
+          className={isListening ? 'ghostIcon active' : 'ghostIcon'}
+          type="button"
+          aria-label={isListening ? '停止语音输入' : '语音输入'}
+          title={isListening ? '停止语音输入' : '语音输入'}
+          onClick={() => void handleVoiceInput()}
+        >
           <Mic size={19} />
         </button>
         <button className="sendButton" type="button" aria-label="发送" disabled={!canSubmit} onClick={submit}>
@@ -4241,9 +4327,24 @@ function AgentsSurface({
   const completedTools = runtime.tools.filter((tool) => tool.state === 'done');
   const runningCards = runningTools.length > 0
     ? runningTools.map((tool) => (
-      <AgentCard key={tool.id} title={tool.label} status="运行中" meta={tool.detail || tool.value} />
+      <AgentCard
+        key={tool.id}
+        title={tool.label}
+        status="运行中"
+        desc="工具正在执行，输出会同步到聊天和右侧活动。"
+        meta={tool.detail || tool.value}
+      />
     ))
-    : [<AgentCard key="gateway" title="Hermes Gateway" status={runtime.socketState === 'open' ? '已连接' : runtime.connectionLabel} meta={runtime.statusText} muted={runtime.socketState !== 'open'} />];
+    : [(
+      <AgentCard
+        key="gateway"
+        title="Hermes Gateway"
+        status={runtime.socketState === 'open' ? '已连接' : runtime.connectionLabel}
+        desc="连接状态来自本机 Gateway。"
+        meta={runtime.statusText}
+        muted={runtime.socketState !== 'open'}
+      />
+    )];
 
   return (
     <section className="pageSurface">
@@ -4263,18 +4364,25 @@ function AgentsSurface({
         </KanbanColumn>
         <KanbanColumn title="待确认" count={runtime.pendingApproval ? '1' : '0'}>
           {runtime.pendingApproval ? (
-            <AgentCard title="高风险命令确认" status="approval" meta={runtime.pendingApproval.description} danger onClick={onOpenApproval} />
+            <AgentCard
+              title="高风险命令确认"
+              status="approval"
+              desc="需要手动确认后，Hermes 才会继续执行。"
+              meta={runtime.pendingApproval.description}
+              danger
+              onClick={onOpenApproval}
+            />
           ) : (
-            <AgentCard title="暂无待审批命令" status="空闲" meta="出现高风险操作时会固定在这里" muted />
+            <AgentCard title="暂无待审批命令" status="空闲" desc="出现高风险操作时会固定在这里。" meta="审批队列为空" muted />
           )}
         </KanbanColumn>
         <KanbanColumn title="已完成" count={String(completedTools.length)}>
           {completedTools.length > 0 ? (
             completedTools.slice(0, 4).map((tool) => (
-              <AgentCard key={tool.id} title={tool.label} status="完成" meta={tool.detail || tool.value} muted />
+              <AgentCard key={tool.id} title={tool.label} status="完成" desc="最近动作已同步到当前线程。" meta={tool.detail || tool.value} muted />
             ))
           ) : (
-            <AgentCard title="等待任务完成" status="空" meta="完成后的工具调用会显示在这里" muted />
+            <AgentCard title="等待任务完成" status="空" desc="完成后的工具调用会显示在这里。" meta="暂无完成事件" muted />
           )}
         </KanbanColumn>
       </div>
@@ -4295,6 +4403,7 @@ function KanbanColumn({ title, count, children }: { title: string; count: string
 }
 
 function AgentCard({
+  desc,
   title,
   status,
   meta,
@@ -4302,6 +4411,7 @@ function AgentCard({
   muted,
   onClick,
 }: {
+  desc: string;
   title: string;
   status: string;
   meta: string;
@@ -4309,17 +4419,32 @@ function AgentCard({
   muted?: boolean;
   onClick?: () => void;
 }) {
-  return (
-    <button className={muted ? 'agentCard muted' : 'agentCard'} type="button" onClick={onClick}>
+  const className = `${muted ? 'agentCard muted' : 'agentCard'}${onClick ? '' : ' static'}`;
+  const content = (
+    <>
       <div className="cardHead">
         <strong>{title}</strong>
         <span className={danger ? 'pill red' : 'pill'}>{status}</span>
       </div>
-      <p>最近动作已同步到当前线程，可随时进入查看。</p>
+      <p>{desc}</p>
       <div className="cardFoot">
         <span>{meta}</span>
-        <ChevronRight size={14} />
+        {onClick && <ChevronRight size={14} />}
       </div>
+    </>
+  );
+
+  if (!onClick) {
+    return (
+      <article className={className}>
+        {content}
+      </article>
+    );
+  }
+
+  return (
+    <button className={className} type="button" onClick={onClick}>
+      {content}
     </button>
   );
 }
@@ -4558,6 +4683,24 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
       setSkillBusy('');
     }
   }, [apiRequest, refreshInventory]);
+  const copySkillInfo = useCallback(async (skill: HermesSkillInfo) => {
+    const value = skill.path || skill.description || skill.name;
+    if (!navigator.clipboard?.writeText) {
+      setSkillStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    try {
+      setSkillBusy(`copy:${skill.name}`);
+      await navigator.clipboard.writeText(value);
+      setSkillStatus(`${skill.name} 已复制`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`复制失败：${message}`);
+    } finally {
+      setSkillBusy('');
+    }
+  }, []);
   useEffect(() => {
     void loadSkills();
   }, [loadSkills]);
@@ -4615,7 +4758,9 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
               <button type="button" onClick={() => void toggleSkill(skill)} disabled={Boolean(skillBusy)}>
                 {skillBusy === `toggle:${skill.name}` ? '更新中' : (skill.enabled ?? true) ? '停用' : '启用'}
               </button>
-              <button type="button" onClick={() => void navigator.clipboard?.writeText(skill.path || skill.description || skill.name)} disabled={Boolean(skillBusy)}>复制</button>
+              <button type="button" onClick={() => void copySkillInfo(skill)} disabled={Boolean(skillBusy)}>
+                {skillBusy === `copy:${skill.name}` ? '复制中' : '复制'}
+              </button>
             </div>
           </article>
         )) : (

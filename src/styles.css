@@ -5650,6 +5650,21 @@ textarea {
   cursor: pointer;
 }
 
+.ghostIcon.active {
+  color: #2563eb;
+  background: #eaf0ff;
+}
+
+.agentCard.static {
+  cursor: default;
+}
+
+.agentCard.static:hover {
+  border-color: var(--line);
+  transform: none;
+  box-shadow: none;
+}
+
 .spinIcon {
   animation: spinIcon 0.9s linear infinite;
 }
