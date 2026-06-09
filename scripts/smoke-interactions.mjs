@@ -138,6 +138,8 @@ try {
     };
     const findButton = (label, root = document) => Array.from(root.querySelectorAll('button'))
       .find((item) => item.textContent?.includes(label) || item.getAttribute('aria-label')?.includes(label));
+    const findNavButton = (label) => Array.from(document.querySelectorAll('.sidebar button, .sidebarFooter button'))
+      .find((item) => item.textContent?.includes(label) || item.getAttribute('aria-label')?.includes(label));
     const findCommandRow = (title) => Array.from(document.querySelectorAll('.commandRow'))
       .find((item) => item.querySelector('strong')?.textContent?.trim() === title);
     const findProjectCard = (title) => Array.from(document.querySelectorAll('.projectCard'))
@@ -164,6 +166,16 @@ try {
         sendButton: document.querySelector('.sendButton'),
         textarea: document.querySelector('textarea[aria-label="消息"]'),
       };
+    };
+    const runSlashNavigation = async (command, titleText, contentText, label) => {
+      setNativeValue(textarea, command);
+      await sleep(120);
+      sendButton.click();
+      await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes(titleText), `${label} title`);
+      if (contentText) {
+        await waitFor(() => document.body.innerText.includes(contentText), `${label} content`);
+      }
+      ({ textarea, sendButton } = await startNewTaskFromPage(label));
     };
 
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'composer');
@@ -206,33 +218,20 @@ try {
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Agents'), 'slash agents navigation');
     ({ textarea, sendButton } = await startNewTaskFromPage('slash agents'));
 
-    setNativeValue(textarea, '/settings 外观');
-    await sleep(120);
-    sendButton.click();
-    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('设置'), 'slash settings navigation');
-    await waitFor(() => document.body.innerText.includes('界面密度'), 'slash settings appearance section');
-    ({ textarea, sendButton } = await startNewTaskFromPage('slash settings'));
-
-    setNativeValue(textarea, '/messaging');
-    await sleep(120);
-    sendButton.click();
-    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('消息网关'), 'slash messaging navigation');
-    await waitFor(() => document.body.innerText.includes('Messaging Gateway'), 'slash messaging content');
-    ({ textarea, sendButton } = await startNewTaskFromPage('slash messaging'));
-
-    setNativeValue(textarea, '/diagnostics');
-    await sleep(120);
-    sendButton.click();
-    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('诊断与更新'), 'slash diagnostics navigation');
-    await waitFor(() => document.body.innerText.includes('Desktop shell'), 'slash diagnostics content');
-    ({ textarea, sendButton } = await startNewTaskFromPage('slash diagnostics'));
-
-    setNativeValue(textarea, '/profiles');
-    await sleep(120);
-    sendButton.click();
-    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Profiles'), 'slash profiles navigation');
-    await waitFor(() => document.body.innerText.includes('工作身份'), 'slash profiles content');
-    ({ textarea, sendButton } = await startNewTaskFromPage('slash profiles'));
+    await runSlashNavigation('/projects', '项目', '项目工作区', 'slash projects');
+    await runSlashNavigation('/settings 外观', '设置', '界面密度', 'slash settings');
+    await runSlashNavigation('/models', '设置', '默认模型', 'slash models');
+    await runSlashNavigation('/approval', '设置', '命令审批', 'slash approval');
+    await runSlashNavigation('/skills', '技能库', '读取本机 Hermes skills', 'slash skills');
+    await runSlashNavigation('/cron', '自动化', '后台调度', 'slash cron');
+    await runSlashNavigation('/messaging', '消息网关', 'Messaging Gateway', 'slash messaging');
+    await runSlashNavigation('/diagnostics', '诊断与更新', 'Desktop shell', 'slash diagnostics');
+    await runSlashNavigation('/diagnose', '诊断与更新', 'Desktop shell', 'slash diagnose');
+    await runSlashNavigation('/gateway', '诊断与更新', 'Desktop shell', 'slash gateway');
+    await runSlashNavigation('/profiles', 'Profiles', '工作身份', 'slash profiles');
+    await runSlashNavigation('/onboarding', '首次启动', '选择 Hermes', 'slash onboarding');
+    await runSlashNavigation('/files', 'Hermes Agent', '变更文件', 'slash files');
+    await runSlashNavigation('/preview', 'Hermes Agent', '暂无预览产物', 'slash preview');
 
     setNativeValue(textarea, '/workbench terminal');
     await sleep(120);
@@ -363,13 +362,13 @@ try {
       ['技能库', '读取本机 Hermes skills'],
       ['自动化', '后台调度'],
       ['消息网关', 'Messaging Gateway'],
-      ['设置', '界面密度'],
+      ['设置', '通用'],
       ['诊断', '诊断与更新'],
     ];
 
     const failures = [];
     for (const [label, expected] of pages) {
-      const button = Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.includes(label));
+      const button = findNavButton(label);
       if (!button) {
         failures.push(`${label}: missing button`);
         continue;
@@ -397,7 +396,7 @@ try {
       throw new Error(failures.join('; '));
     }
 
-    findButton('Profiles')?.click();
+    findNavButton('Profiles')?.click();
     await waitFor(() => document.body.innerText.includes('工作身份'), 'profiles feedback page');
     const profileRow = await waitFor(
       () => Array.from(document.querySelectorAll('.profileRow')).find((item) => !item.disabled),
@@ -422,7 +421,7 @@ try {
       'profile copy feedback',
     );
 
-    findButton('自动化')?.click();
+    findNavButton('自动化')?.click();
     await waitFor(() => document.body.innerText.includes('后台调度'), 'automation feedback page');
     const automationRefreshButton = await waitFor(
       () => Array.from(document.querySelectorAll('.automationRow button.rowTextAction'))
@@ -432,12 +431,12 @@ try {
     automationRefreshButton.click();
     await waitFor(() => document.querySelector('.surfaceStatus')?.textContent?.includes('刷新'), 'automation row refresh feedback');
 
-    findButton('诊断')?.click();
+    findNavButton('诊断')?.click();
     await waitFor(() => document.body.innerText.includes('诊断与更新'), 'diagnostics feedback page');
     findButton('重新诊断')?.click();
     await waitFor(() => document.querySelector('.diagnostics .surfaceStatus')?.textContent?.includes('重新诊断'), 'diagnostics refresh feedback');
 
-    findButton('技能库')?.click();
+    findNavButton('技能库')?.click();
     await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'skills copy page');
     const skillCopyButton = await waitFor(
       () => Array.from(document.querySelectorAll('.skillCard button')).find((item) => item.textContent?.includes('复制') && !item.disabled),
@@ -476,7 +475,7 @@ try {
     workspaceAction.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'workspace action opens chat');
     await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('变更文件'), 'workspace action opens files workbench');
-    findButton('项目')?.click();
+    findNavButton('项目')?.click();
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after workspace action');
     const sessionAction = findProjectAction('会话', '新建任务');
     if (!sessionAction) {
@@ -485,7 +484,7 @@ try {
     sessionAction.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'project new task opens chat');
     await waitFor(() => document.querySelector('[data-testid="message-list"]')?.querySelectorAll('.message').length === 0, 'project new task clears transcript');
-    findButton('项目')?.click();
+    findNavButton('项目')?.click();
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after session action');
     findButton('项目设置')?.click();
     await waitFor(() => document.querySelector('.settingsSurface'), 'project settings navigation');
@@ -504,7 +503,7 @@ try {
     findButton('新建任务')?.click();
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'agents new task target');
 
-    findButton('设置')?.click();
+    findNavButton('设置')?.click();
     await waitFor(() => document.querySelector('.settingsSurface'), 'settings surface');
     const settingsSections = [
       ['模型', '默认模型'],
@@ -554,11 +553,11 @@ try {
     await selectSettingsSection('集成', 'Gateway');
     findSettingButton('Plugins', '查看').click();
     await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'plugins settings navigation');
-    findButton('设置')?.click();
+    findNavButton('设置')?.click();
     await waitFor(() => document.body.innerText.includes('Gateway'), 'settings integrations return');
     findSettingButton('消息平台', '管理').click();
     await waitFor(() => document.body.innerText.includes('Messaging Gateway'), 'messaging settings navigation');
-    findButton('设置')?.click();
+    findNavButton('设置')?.click();
     await waitFor(() => document.body.innerText.includes('Gateway'), 'settings integrations return again');
 
     await selectSettingsSection('权限', '命令审批');
@@ -594,7 +593,7 @@ try {
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,
-      slashNavigation: ['/agents', '/settings', '/messaging', '/diagnostics', '/profiles', '/workbench'],
+      slashNavigation: ['/agents', '/projects', '/settings', '/models', '/approval', '/skills', '/cron', '/messaging', '/diagnostics', '/diagnose', '/gateway', '/profiles', '/onboarding', '/files', '/preview', '/workbench'],
       uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'project-workspace-routing', 'project-new-task-routing', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering', 'empty-prompt-actions'],
       workbench: workbenchChecks.map(([label]) => label),
     };

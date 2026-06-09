@@ -52,6 +52,8 @@ const requiredText = [
   'pendingCronDeleteId',
   "insert: '/messaging'",
   "insert: '/diagnostics'",
+  "'/diagnose': 'diagnostics'",
+  "'/gateway': 'diagnostics'",
   "insert: '/cron'",
   "insert: '/terminal'",
   'slashUiTargetLabel',
