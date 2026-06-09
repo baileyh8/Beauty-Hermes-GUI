@@ -233,6 +233,7 @@ interface HermesRuntime {
   socketState: GatewayConnectionState;
   statusText: string;
   selectSession: (sessionId: string) => Promise<void>;
+  startNewTask: () => Promise<void>;
   stopGateway: () => Promise<void>;
   submitPrompt: (text: string) => Promise<void>;
   respondApproval: (choice: 'once' | 'session' | 'always' | 'deny') => Promise<void>;
@@ -1159,6 +1160,7 @@ function useHermesRuntime(): HermesRuntime {
   const reasoningMessageIdRef = useRef<null | string>(null);
   const statusMessageIdRef = useRef<null | string>(null);
   const toolDigestMessageIdRef = useRef<null | string>(null);
+  const ignoredSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingApprovalRef = useRef<PendingApproval | null>(null);
   const pendingClarifyRef = useRef<PendingClarify | null>(null);
 
@@ -1367,6 +1369,8 @@ function useHermesRuntime(): HermesRuntime {
         60000,
       );
       const runtimeSessionId = resumed.session_id || storedSessionId;
+      ignoredSessionIdsRef.current.delete(runtimeSessionId);
+      ignoredSessionIdsRef.current.delete(storedSessionId);
       setActiveSessionId(runtimeSessionId);
       activeSessionIdRef.current = runtimeSessionId;
       patchRuntimeInfo(resumed.info);
@@ -1386,6 +1390,10 @@ function useHermesRuntime(): HermesRuntime {
     (event: GatewayEvent) => {
       const payload = payloadRecord(event);
       const sessionId = eventSessionId(event, activeSessionIdRef.current);
+
+      if (event.session_id && ignoredSessionIdsRef.current.has(event.session_id)) {
+        return;
+      }
 
       if (event.session_id && activeSessionIdRef.current && event.session_id !== activeSessionIdRef.current) {
         return;
@@ -2086,6 +2094,40 @@ function useHermesRuntime(): HermesRuntime {
     [upsertMessage],
   );
 
+  const startNewTask = useCallback(async () => {
+    const previousSessionId = activeSessionIdRef.current;
+    const client = clientRef.current;
+
+    if (previousSessionId) {
+      ignoredSessionIdsRef.current.add(previousSessionId);
+    }
+
+    setSelectedStoredSessionId(null);
+    selectedStoredSessionIdRef.current = null;
+    setActiveSessionId(null);
+    activeSessionIdRef.current = null;
+    assistantMessageIdRef.current = null;
+    reasoningMessageIdRef.current = null;
+    statusMessageIdRef.current = null;
+    toolDigestMessageIdRef.current = null;
+    setPendingApproval(null);
+    setPendingClarify(null);
+    setMessages([]);
+    setTools([]);
+    setFiles([]);
+    setContextPercent(0);
+    setStatusText(client?.connectionState === 'open' ? '就绪' : gatewayStatus === 'connected' ? '正在连接 Hermes Gateway' : statusText);
+
+    if (previousSessionId && client?.connectionState === 'open') {
+      try {
+        await client.request('session.close', { session_id: previousSessionId }, 15000);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setLogs((current) => [`Session close during new task: ${message}`, ...current].slice(0, 120));
+      }
+    }
+  }, [gatewayStatus, statusText]);
+
   const stopGateway = useCallback(async () => {
     clientRef.current?.close();
     clientRef.current = null;
@@ -2167,6 +2209,7 @@ function useHermesRuntime(): HermesRuntime {
     restartGateway,
     selectedStoredSessionId,
     selectSession,
+    startNewTask,
     stopGateway,
     respondApproval,
     respondClarify,
@@ -2328,6 +2371,19 @@ function App() {
       })
       .finally(() => setSelectingSessionId(''));
   }, [runtime, showNotice]);
+  const handleStartNewTask = useCallback(() => {
+    setSurface('chat');
+    setRightOpen(true);
+    setPendingSidebarDeleteKey('');
+    setSelectingSessionId('');
+
+    void runtime.startNewTask()
+      .then(() => showNotice('已开始新任务'))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        showNotice(`新建任务失败：${message}`);
+      });
+  }, [runtime, showNotice]);
 
   return (
     <div
@@ -2341,6 +2397,7 @@ function App() {
         activeSurface={surface}
         gatewayStatus={runtime.gatewayStatus}
         model={runtime.model}
+        onNewTask={handleStartNewTask}
         onSurfaceChange={setSurface}
         onOpenCommand={() => setCommandOpen(true)}
         onSelectSession={handleSelectSession}
@@ -2427,7 +2484,7 @@ function App() {
             onOpenSettings={() => setSurface('settings')}
           />
         )}
-        {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} onOpenChat={() => setSurface('chat')} />}
+        {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} onOpenChat={handleStartNewTask} />}
         {surface === 'profiles' && <ProfilesSurface runtime={runtime} />}
         {surface === 'skills' && <SkillsSurface runtime={runtime} />}
         {surface === 'cron' && <CronSurface runtime={runtime} />}
@@ -2490,6 +2547,7 @@ function App() {
           query={commandQuery}
           onQueryChange={setCommandQuery}
           onClose={() => setCommandOpen(false)}
+          onNewTask={handleStartNewTask}
           onNavigate={(nextSurface) => {
             setSurface(nextSurface);
             setCommandOpen(false);
@@ -2535,6 +2593,7 @@ function Sidebar({
   activeSurface,
   gatewayStatus,
   model,
+  onNewTask,
   onSurfaceChange,
   onOpenCommand,
   onArchiveItem,
@@ -2552,6 +2611,7 @@ function Sidebar({
   activeSurface: Surface;
   gatewayStatus: GatewayStatus;
   model: string;
+  onNewTask: () => void;
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
   onArchiveItem: (item: SidebarItem) => void;
@@ -2587,7 +2647,7 @@ function Sidebar({
         </div>
       </button>
 
-      <button className="primaryButton" type="button" onClick={() => onSurfaceChange('chat')}>
+      <button className="primaryButton" type="button" onClick={onNewTask}>
         <Plus size={17} />
         新建任务
       </button>
@@ -2912,7 +2972,7 @@ function ChatSurface({
 
   return (
     <section className="chatSurface" aria-label="会话">
-      <div className="messageStack" ref={messageStackRef}>
+      <div className="messageStack" data-testid="message-list" ref={messageStackRef}>
         {runtime.messages.length === 0 && (
           <EmptyConversation
             gatewayStatus={runtime.gatewayStatus}
@@ -4321,6 +4381,7 @@ function CommandCenter({
   query,
   onQueryChange,
   onClose,
+  onNewTask,
   onNavigate,
   onOpenWorkbenchTab,
   onOpenApproval,
@@ -4330,6 +4391,7 @@ function CommandCenter({
   query: string;
   onQueryChange: (query: string) => void;
   onClose: () => void;
+  onNewTask: () => void;
   onNavigate: (surface: Surface) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
   onOpenApproval: () => void;
@@ -4346,7 +4408,7 @@ function CommandCenter({
         group: '常用动作',
         icon: <Plus />,
         keywords: 'new chat task 新建 任务 对话',
-        run: () => onNavigate('chat'),
+        run: onNewTask,
         title: '新建任务',
       },
       {
@@ -4452,7 +4514,11 @@ function CommandCenter({
         keywords: `${queryText} prompt send 发送`,
         run: () => {
           onClose();
-          void runtime.submitPrompt(queryText);
+          onNavigate('chat');
+          void (async () => {
+            await runtime.startNewTask();
+            await runtime.submitPrompt(queryText);
+          })();
         },
         title: '用当前输入新建任务',
       };
@@ -4465,7 +4531,7 @@ function CommandCenter({
     }
 
     return list;
-  }, [onClose, onNavigate, onOpenApproval, onOpenSettingsSection, onOpenWorkbenchTab, query, runtime]);
+  }, [onClose, onNavigate, onNewTask, onOpenApproval, onOpenSettingsSection, onOpenWorkbenchTab, query, runtime]);
   const filteredActions = useMemo(() => {
     if (!normalized) {
       return actions;

@@ -28,8 +28,11 @@ const requiredText = [
   'URL...',
   '提示片段...',
   'selectSession',
+  'startNewTask',
   'session.resume',
+  'session.close',
   'messageStackRef',
+  'data-testid="message-list"',
   'finalAnswerCard',
   'toolDisplayFromContent',
   'appendToolDigest',
@@ -48,6 +51,7 @@ const requiredText = [
   "insert: '/terminal'",
   'slashUiTargetLabel',
   'slashWorkbenchLabel',
+  'ignoredSessionIdsRef',
 ];
 
 const requiredStyles = [

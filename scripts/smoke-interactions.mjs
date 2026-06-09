@@ -148,6 +148,17 @@ try {
       await sleep(120);
       return document.querySelector('[data-testid="command-center"]');
     };
+    const startNewTaskFromPage = async (label) => {
+      findButton('新建任务')?.click();
+      await waitFor(() => document.querySelector('[data-testid="composer"]'), `${label} return to chat`);
+      await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), `${label} chat title`);
+      await waitFor(() => document.querySelector('[data-testid="message-list"]')?.querySelectorAll('.message').length === 0, `${label} clears transcript`);
+      await waitFor(() => document.querySelector('.toastNotice')?.textContent?.includes('已开始新任务'), `${label} new task feedback`);
+      return {
+        sendButton: document.querySelector('.sendButton'),
+        textarea: document.querySelector('textarea[aria-label="消息"]'),
+      };
+    };
 
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'composer');
 
@@ -183,55 +194,35 @@ try {
     }
     sendButton.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Agents'), 'slash agents navigation');
-    findButton('新建任务')?.click();
-    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash agents return to chat');
-    await waitFor(() => document.body.innerText.includes('已处理 /agents'), 'slash agents response');
-    textarea = document.querySelector('textarea[aria-label="消息"]');
-    sendButton = document.querySelector('.sendButton');
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash agents'));
 
     setNativeValue(textarea, '/settings 外观');
     await sleep(120);
     sendButton.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('设置'), 'slash settings navigation');
     await waitFor(() => document.body.innerText.includes('界面密度'), 'slash settings appearance section');
-    findButton('新建任务')?.click();
-    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash settings return to chat');
-    await waitFor(() => document.body.innerText.includes('已处理 /settings'), 'slash settings response');
-    textarea = document.querySelector('textarea[aria-label="消息"]');
-    sendButton = document.querySelector('.sendButton');
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash settings'));
 
     setNativeValue(textarea, '/messaging');
     await sleep(120);
     sendButton.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('消息网关'), 'slash messaging navigation');
     await waitFor(() => document.body.innerText.includes('Messaging Gateway'), 'slash messaging content');
-    findButton('新建任务')?.click();
-    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash messaging return to chat');
-    await waitFor(() => document.body.innerText.includes('已处理 /messaging'), 'slash messaging response');
-    textarea = document.querySelector('textarea[aria-label="消息"]');
-    sendButton = document.querySelector('.sendButton');
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash messaging'));
 
     setNativeValue(textarea, '/diagnostics');
     await sleep(120);
     sendButton.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('诊断与更新'), 'slash diagnostics navigation');
     await waitFor(() => document.body.innerText.includes('Desktop shell'), 'slash diagnostics content');
-    findButton('新建任务')?.click();
-    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash diagnostics return to chat');
-    await waitFor(() => document.body.innerText.includes('已处理 /diagnostics'), 'slash diagnostics response');
-    textarea = document.querySelector('textarea[aria-label="消息"]');
-    sendButton = document.querySelector('.sendButton');
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash diagnostics'));
 
     setNativeValue(textarea, '/profiles');
     await sleep(120);
     sendButton.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Profiles'), 'slash profiles navigation');
     await waitFor(() => document.body.innerText.includes('工作身份'), 'slash profiles content');
-    findButton('新建任务')?.click();
-    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash profiles return to chat');
-    await waitFor(() => document.body.innerText.includes('默认模型') && document.body.innerText.includes('Provider'), 'slash profiles response');
-    textarea = document.querySelector('textarea[aria-label="消息"]');
-    sendButton = document.querySelector('.sendButton');
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash profiles'));
 
     setNativeValue(textarea, '/workbench terminal');
     await sleep(120);
