@@ -1588,7 +1588,14 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const currentMeta = surfaceMeta[surface];
+  const chatTitle = useMemo(() => {
+    if (!runtime.selectedStoredSessionId) {
+      return surfaceMeta.chat.title;
+    }
+
+    return runtime.recentSessions.find((item) => item.id === runtime.selectedStoredSessionId)?.title || surfaceMeta.chat.title;
+  }, [runtime.recentSessions, runtime.selectedStoredSessionId]);
+  const currentMeta = surface === 'chat' ? { ...surfaceMeta.chat, title: chatTitle } : surfaceMeta[surface];
   const showWorkbench = surface === 'chat';
 
   return (
@@ -1676,13 +1683,12 @@ function App() {
           />
         ) : (
           <button
-            className="floatingWorkbenchButton hasBadge"
+            className="floatingWorkbenchButton"
             type="button"
             aria-label="展开工作区"
             onClick={() => setRightOpen(true)}
           >
             <PanelRightOpen size={19} />
-            <span>2</span>
           </button>
         )
       )}
@@ -1878,7 +1884,7 @@ function SidebarSection({
           key={item.id || item.title}
           item={item}
           muted={muted}
-          active={item.id ? item.id === selectedSessionId : !muted && index === 0}
+          active={item.id ? item.id === selectedSessionId : !selectedSessionId && !muted && index === 0}
           onSelect={() => {
             onOpenChat();
             if (item.id) {
@@ -2203,15 +2209,11 @@ function FinalAnswerMessage({
 }) {
   return (
     <div className={`finalAnswerCard ${message.status === 'running' ? 'streaming' : ''}`}>
-      {message.status === 'running' && !message.text && (
-        <div className="finalAnswerHead">
-          <span>
-            <CircleDot size={13} />
-          </span>
-          <strong>正在生成</strong>
-        </div>
+      {message.text ? (
+        <MarkdownText className="finalAnswerBody" text={message.text} />
+      ) : (
+        <p className="answerPlaceholder">正在生成...</p>
       )}
-      <MarkdownText className="finalAnswerBody" text={message.text || '正在生成...'} />
       {message.checks && <CheckListCard items={message.checks} />}
       {message.artifacts && (
         <div className="artifactTranscript">
@@ -2362,7 +2364,7 @@ function eventLineLabel(message: ChatMessageModel) {
     if (message.status === 'running') {
       return count > 0 ? `正在运行 ${count} 条命令` : '正在运行命令';
     }
-    return count > 1 ? `已运行 ${count} 条命令` : message.title || '已运行命令';
+    return count > 1 ? `已运行 ${count} 条命令` : '已运行命令';
   }
 
   if (message.kind === 'reasoning') {
@@ -2394,10 +2396,10 @@ function eventLineLabel(message: ChatMessageModel) {
 
 function reasoningPhaseText(message: ChatMessageModel) {
   if (message.status === 'running') {
-    return '正在梳理上下文和下一步。';
+    return '正在梳理上下文、命令输出和下一步。';
   }
 
-  return '已整理思考过程，继续生成结果。';
+  return '';
 }
 
 function cardTitle(message: ChatMessageModel) {
@@ -2475,7 +2477,8 @@ function Composer({
           {runtime.model}
         </button>
         <button className="workdir" type="button" title={runtime.cwd}>
-          工作目录 {shortenPath(runtime.cwd)}
+          <span className="workdirLabel">工作目录</span>
+          <span className="workdirPath">{shortenPath(runtime.cwd)}</span>
         </button>
         <button className="contextMeter" type="button" title={`上下文 ${runtime.contextPercent}%`}>
           <span className="contextTrack"><span style={{ width: `${Math.max(5, runtime.contextPercent)}%` }} /></span>

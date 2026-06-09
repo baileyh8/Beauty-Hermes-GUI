@@ -37,7 +37,18 @@ child.on('exit', (code, signal) => {
   }
 });
 
-await wait(5000);
+const deadline = Date.now() + 15000;
+while (
+  Date.now() < deadline
+  && !exited
+  && (
+    !output.includes('[beauty-hermes] window-ready')
+    || !output.includes('[beauty-hermes] capture-ready')
+    || !existsSync(capturePath)
+  )
+) {
+  await wait(250);
+}
 
 if (exited) {
   console.error('Electron exited before smoke window was stable.');
