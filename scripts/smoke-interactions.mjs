@@ -220,6 +220,17 @@ try {
       );
     }
 
+    const firstDeleteButton = document.querySelector('.sessionMain[data-session-id]')?.closest('.sessionRow')?.querySelector('.rowActions button[aria-label="删除"]')
+      ?? document.querySelector('.sessionRow .rowActions button[aria-label="删除"]');
+    if (firstDeleteButton) {
+      firstDeleteButton.click();
+      await waitFor(
+        () => document.querySelector('.toastNotice')?.textContent?.includes('再次点击')
+          && document.querySelector('.sessionRow.confirmDelete .rowActions button[aria-label="确认删除"]'),
+        'sidebar inline delete confirmation',
+      );
+    }
+
     findButton('语音输入')?.click();
     await waitFor(
       () => document.querySelector('.composerNotice')?.textContent?.includes('语音') || document.querySelector('.ghostIcon.active'),
@@ -320,6 +331,17 @@ try {
       button.click();
       try {
         await waitFor(() => document.body.innerText.includes(expected), `${label} content`, 2500);
+        if (label === '自动化') {
+          const cronDeleteButton = document.querySelector('.automationRow button[aria-label="删除自动化任务"]');
+          if (cronDeleteButton) {
+            cronDeleteButton.click();
+            await waitFor(
+              () => document.querySelector('.automationRow.confirmDelete button[aria-label="确认删除自动化任务"]')
+                && document.body.innerText.includes('再次点击删除'),
+              'cron inline delete confirmation',
+            );
+          }
+        }
       } catch (error) {
         failures.push(`${label}: ${error.message}`);
       }
@@ -509,7 +531,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

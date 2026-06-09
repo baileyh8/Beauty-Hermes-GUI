@@ -37,6 +37,8 @@ const requiredText = [
   "kind === 'heading'",
   "kind === 'orderedList'",
   "kind === 'quote'",
+  'pendingSidebarDeleteKey',
+  'pendingCronDeleteId',
 ];
 
 const requiredStyles = [
@@ -61,12 +63,15 @@ const missingText = requiredText.filter((token) => !app.includes(token));
 const missingStyles = requiredStyles.filter((token) => !styles.includes(token));
 const requiredConfig = ["base: './'"];
 const missingConfig = requiredConfig.filter((token) => !viteConfig.includes(token));
+const forbiddenAppText = ['window.confirm('];
+const forbiddenText = forbiddenAppText.filter((token) => app.includes(token));
 
-if (missingText.length || missingStyles.length || missingConfig.length) {
+if (missingText.length || missingStyles.length || missingConfig.length || forbiddenText.length) {
   console.error('UI contract check failed.');
   if (missingText.length) console.error('Missing App tokens:', missingText.join(', '));
   if (missingStyles.length) console.error('Missing CSS tokens:', missingStyles.join(', '));
   if (missingConfig.length) console.error('Missing Vite config tokens:', missingConfig.join(', '));
+  if (forbiddenText.length) console.error('Forbidden App tokens:', forbiddenText.join(', '));
   process.exit(1);
 }
 

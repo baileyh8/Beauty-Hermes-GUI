@@ -2165,6 +2165,10 @@ function projectSidebarItems(runtime: HermesRuntime): SidebarItem[] {
   ];
 }
 
+function sidebarItemKey(item: SidebarItem) {
+  return item.id || item.title;
+}
+
 function App() {
   const runtime = useHermesRuntime();
   const [surface, setSurface] = useState<Surface>('chat');
@@ -2179,6 +2183,7 @@ function App() {
   const [deniedRecovery, setDeniedRecovery] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [hiddenSidebarKeys, setHiddenSidebarKeys] = useState<string[]>([]);
+  const [pendingSidebarDeleteKey, setPendingSidebarDeleteKey] = useState('');
   const [selectingSessionId, setSelectingSessionId] = useState('');
   const [notice, setNotice] = useState('');
 
@@ -2208,6 +2213,15 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => {
+    if (!pendingSidebarDeleteKey) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => setPendingSidebarDeleteKey(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [pendingSidebarDeleteKey]);
+
   const showNotice = useCallback((message: string) => {
     setNotice(message);
   }, []);
@@ -2222,16 +2236,16 @@ function App() {
   const currentMeta = surface === 'chat' ? { ...surfaceMeta.chat, title: chatTitle } : surfaceMeta[surface];
   const projectItems = useMemo(() => projectSidebarItems(runtime), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions]);
   const visibleRecentItems = useMemo(
-    () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(item.id || item.title)),
+    () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
     [hiddenSidebarKeys, runtime.recentSessions],
   );
   const visibleProjectItems = useMemo(
-    () => projectItems.filter((item) => !hiddenSidebarKeys.includes(item.id || item.title)),
+    () => projectItems.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
     [hiddenSidebarKeys, projectItems],
   );
   const showWorkbench = surface === 'chat';
   const hideSidebarItem = useCallback((item: SidebarItem) => {
-    const key = item.id || item.title;
+    const key = sidebarItemKey(item);
     setHiddenSidebarKeys((current) => current.includes(key) ? current : [...current, key]);
     showNotice(`${item.title} 已隐藏`);
   }, [showNotice]);
@@ -2249,14 +2263,16 @@ function App() {
       });
   }, [hideSidebarItem, runtime, showNotice]);
   const handleDeleteItem = useCallback((item: SidebarItem) => {
-    if (!item.id) {
-      if (window.confirm(`从侧边栏隐藏“${item.title}”？`)) {
-        hideSidebarItem(item);
-      }
+    const key = sidebarItemKey(item);
+    if (pendingSidebarDeleteKey !== key) {
+      setPendingSidebarDeleteKey(key);
+      showNotice(item.id ? `再次点击删除“${item.title}”` : `再次点击隐藏“${item.title}”`);
       return;
     }
 
-    if (!window.confirm(`删除真实 Hermes 会话“${item.title}”？这个操作不可恢复。`)) {
+    setPendingSidebarDeleteKey('');
+    if (!item.id) {
+      hideSidebarItem(item);
       return;
     }
 
@@ -2266,7 +2282,7 @@ function App() {
         const message = error instanceof Error ? error.message : String(error);
         showNotice(`删除失败：${message}`);
       });
-  }, [hideSidebarItem, runtime, showNotice]);
+  }, [hideSidebarItem, pendingSidebarDeleteKey, runtime, showNotice]);
   const handleSelectSession = useCallback((sessionId: string) => {
     const item = runtime.recentSessions.find((row) => row.id === sessionId);
     setSurface('chat');
@@ -2305,6 +2321,7 @@ function App() {
         }}
         recentItems={visibleRecentItems}
         projectItems={visibleProjectItems}
+        pendingDeleteKey={pendingSidebarDeleteKey}
         selectedStoredSessionId={runtime.selectedStoredSessionId}
         selectingSessionId={selectingSessionId}
         statusText={runtime.connectionLabel}
@@ -2493,6 +2510,7 @@ function Sidebar({
   onDeleteItem,
   onMoreItem,
   onSelectSession,
+  pendingDeleteKey,
   projectItems,
   recentItems,
   selectedStoredSessionId,
@@ -2509,6 +2527,7 @@ function Sidebar({
   onDeleteItem: (item: SidebarItem) => void;
   onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
+  pendingDeleteKey: string;
   projectItems: SidebarItem[];
   recentItems: SidebarItem[];
   selectedStoredSessionId: null | string;
@@ -2557,6 +2576,7 @@ function Sidebar({
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
+          pendingDeleteKey={pendingDeleteKey}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
           selectingSessionId={selectingSessionId}
         />
@@ -2566,6 +2586,7 @@ function Sidebar({
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
+          pendingDeleteKey={pendingDeleteKey}
         />
         <SidebarSection
           title="最近"
@@ -2577,6 +2598,7 @@ function Sidebar({
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
+          pendingDeleteKey={pendingDeleteKey}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
           selectingSessionId={selectingSessionId}
         />
@@ -2641,6 +2663,7 @@ function SidebarSection({
   onOpenChat,
   onMoreItem,
   onSelectSession,
+  pendingDeleteKey,
   selectedSessionId,
   selectingSessionId,
 }: {
@@ -2653,6 +2676,7 @@ function SidebarSection({
   onOpenChat: () => void;
   onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
+  pendingDeleteKey: string;
   selectedSessionId: null | string;
   selectingSessionId: string;
 }) {
@@ -2680,6 +2704,7 @@ function SidebarSection({
           muted={muted}
           active={item.id ? item.id === selectedSessionId : !selectedSessionId && !muted && index === 0}
           busy={Boolean(item.id && item.id === selectingSessionId)}
+          confirmingDelete={pendingDeleteKey === sidebarItemKey(item)}
           onSelect={() => {
             onOpenChat();
             if (item.id) {
@@ -2701,12 +2726,14 @@ function ProjectSection({
   onDeleteItem,
   onMoreItem,
   onOpenProjects,
+  pendingDeleteKey,
 }: {
   items: SidebarItem[];
   onArchiveItem: (item: SidebarItem) => void;
   onDeleteItem: (item: SidebarItem) => void;
   onMoreItem: (item: SidebarItem) => void;
   onOpenProjects: () => void;
+  pendingDeleteKey: string;
 }) {
   return (
     <section className="navSection">
@@ -2721,6 +2748,7 @@ function ProjectSection({
           key={item.title}
           item={{ ...item, color: item.active ? 'indigo' : 'gray' }}
           active={item.active}
+          confirmingDelete={pendingDeleteKey === sidebarItemKey(item)}
           onSelect={onOpenProjects}
           onArchive={() => onArchiveItem(item)}
           onDelete={() => onDeleteItem(item)}
@@ -2735,6 +2763,7 @@ function SessionRow({
   item,
   active,
   busy,
+  confirmingDelete,
   muted,
   onArchive,
   onDelete,
@@ -2744,19 +2773,24 @@ function SessionRow({
   item: SidebarItem;
   active?: boolean;
   busy?: boolean;
+  confirmingDelete?: boolean;
   muted?: boolean;
   onArchive?: () => void;
   onDelete?: () => void;
   onMore?: () => void;
   onSelect: () => void;
 }) {
+  const secondaryText = confirmingDelete
+    ? item.id ? '再次点击删除，操作不可恢复' : '再次点击隐藏'
+    : busy ? '打开中...' : item.meta;
+
   return (
-    <div className={`${active ? 'sessionRow active' : 'sessionRow'}${busy ? ' loading' : ''}`}>
+    <div className={`${active ? 'sessionRow active' : 'sessionRow'}${busy ? ' loading' : ''}${confirmingDelete ? ' confirmDelete' : ''}`}>
       <button className="sessionMain" data-session-id={item.id} type="button" disabled={busy} onClick={onSelect}>
         <span className={`statusDot ${item.color ?? (muted ? 'gray' : 'blue')}`} />
         <span className="sessionText">
           <strong>{item.title}</strong>
-          <span>{busy ? '打开中...' : item.meta}</span>
+          <span>{secondaryText}</span>
         </span>
       </button>
       <div className="rowActions" aria-label="会话操作">
@@ -2773,9 +2807,10 @@ function SessionRow({
           <Archive size={14} />
         </button>
         <button
+          className={confirmingDelete ? 'danger confirm' : undefined}
           type="button"
-          aria-label="删除"
-          title="删除"
+          aria-label={confirmingDelete ? '确认删除' : '删除'}
+          title={confirmingDelete ? '确认删除' : '删除'}
           disabled={busy}
           onClick={(event) => {
             event.stopPropagation();
@@ -5226,6 +5261,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
   const [newJobSchedule, setNewJobSchedule] = useState('daily@09:00');
   const [newJobPrompt, setNewJobPrompt] = useState('');
   const [cronBusy, setCronBusy] = useState('');
+  const [pendingCronDeleteId, setPendingCronDeleteId] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const loadCronJobs = useCallback(async () => {
@@ -5247,17 +5283,30 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     const profile = job.profile ? `?profile=${encodeURIComponent(job.profile)}` : '';
     return `/api/cron/jobs/${encodeURIComponent(id)}${suffix}${profile}`;
   };
+  useEffect(() => {
+    if (!pendingCronDeleteId) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => setPendingCronDeleteId(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [pendingCronDeleteId]);
   const runCronAction = useCallback(async (job: HermesCronJobInfo, action: 'delete' | 'pause' | 'resume' | 'trigger') => {
     const id = job.id || job.name;
     if (!id) {
       setCronStatus('这个任务缺少 id，无法操作。');
       return;
     }
-    if (action === 'delete' && !window.confirm(`删除自动化任务 ${job.name || id}？`)) {
+    if (action === 'delete' && pendingCronDeleteId !== id) {
+      setPendingCronDeleteId(id);
+      setCronStatus(`再次点击删除 ${job.name || id}。`);
       return;
     }
 
     try {
+      if (action === 'delete') {
+        setPendingCronDeleteId('');
+      }
       setCronBusy(`${action}:${id}`);
       await apiRequest({
         method: action === 'delete' ? 'DELETE' : 'POST',
@@ -5273,7 +5322,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     } finally {
       setCronBusy('');
     }
-  }, [apiRequest, loadCronJobs, refreshInventory]);
+  }, [apiRequest, loadCronJobs, pendingCronDeleteId, refreshInventory]);
   const runCronRefresh = useCallback(async (key: string, label: string) => {
     try {
       setCronBusy(key);
@@ -5357,12 +5406,13 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
         {cronJobs.map((job) => {
           const id = job.id || job.name || 'cron-job';
           const paused = Boolean(job.paused) || job.enabled === false;
+          const confirmingDelete = pendingCronDeleteId === id;
           return (
-            <article className="automationRow" key={id}>
+            <article className={confirmingDelete ? 'automationRow confirmDelete' : 'automationRow'} key={id}>
               <CalendarClock size={18} />
               <div>
                 <strong>{job.name || id}</strong>
-                <span>{job.schedule || '未设置 schedule'} · {compactLine(job.prompt || '', 64) || '无 prompt 预览'}</span>
+                <span>{confirmingDelete ? '再次点击删除，操作不可恢复' : `${job.schedule || '未设置 schedule'} · ${compactLine(job.prompt || '', 64) || '无 prompt 预览'}`}</span>
               </div>
               <span className={paused ? 'pill amber' : 'pill green'}>{paused ? '已暂停' : '启用'}</span>
               <button
@@ -5382,8 +5432,9 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
                 <Zap size={16} />
               </button>
               <button
+                className={confirmingDelete ? 'danger confirm' : undefined}
                 type="button"
-                aria-label="删除自动化任务"
+                aria-label={confirmingDelete ? '确认删除自动化任务' : '删除自动化任务'}
                 onClick={() => void runCronAction(job, 'delete')}
                 disabled={Boolean(cronBusy)}
               >
