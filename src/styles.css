@@ -4386,12 +4386,67 @@ body {
   background: #ffffff;
 }
 
+.appShell[data-theme="soft"] {
+  --bg: #f0f2f5;
+  --canvas: #fbfbfc;
+  --panel-soft: #f1f3f5;
+  --line: #dfe3e8;
+  background: #fbfbfc;
+}
+
+.appShell[data-theme="soft"] .sidebar,
+.appShell[data-theme="soft"] .workbench {
+  background: #eef1f5;
+}
+
+.appShell[data-theme="soft"] .content,
+.appShell[data-theme="soft"] .pageSurface,
+.appShell[data-theme="soft"] .settingsSurface,
+.appShell[data-theme="soft"] .onboardingSurface {
+  background: #fbfbfc;
+}
+
 .appShell {
   grid-template-columns: 268px minmax(0, 1fr);
 }
 
 .appShell.workbenchOpen {
   grid-template-columns: 268px minmax(0, 1fr) 366px;
+}
+
+.appShell[data-density="compact"] {
+  grid-template-columns: 252px minmax(0, 1fr);
+}
+
+.appShell[data-density="compact"].workbenchOpen {
+  grid-template-columns: 252px minmax(0, 1fr) 344px;
+}
+
+.appShell[data-density="compact"] .sidebar {
+  gap: 7px;
+  padding-right: 8px;
+  padding-left: 8px;
+}
+
+.appShell[data-density="compact"] .topBar {
+  min-height: 58px;
+  padding: 10px 28px;
+}
+
+.appShell[data-density="compact"] .messageStack {
+  padding-top: 18px;
+  padding-bottom: 150px;
+}
+
+.appShell[data-density="compact"] .composerWrap {
+  max-width: min(690px, calc(100% - 72px));
+  padding: 11px 14px 13px;
+}
+
+.appShell[data-density="compact"] .pageSurface,
+.appShell[data-density="compact"] .settingsSurface,
+.appShell[data-density="compact"] .onboardingSurface {
+  padding: 22px 30px;
 }
 
 .sidebar {

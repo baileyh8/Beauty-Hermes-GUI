@@ -258,6 +258,30 @@ try {
       await waitFor(() => document.body.innerText.includes(expected), `${section} settings`);
     }
 
+    const selectSettingsSection = async (section, expected) => {
+      const button = Array.from(document.querySelectorAll('.settingNavItem')).find((item) => item.textContent?.includes(section));
+      if (!button) {
+        throw new Error(`Missing settings section ${section}`);
+      }
+      button.click();
+      await waitFor(() => document.body.innerText.includes(expected), `${section} settings`);
+    };
+    const settingRow = (label) => Array.from(document.querySelectorAll('.settingRow')).find((row) => row.textContent?.includes(label));
+
+    await selectSettingsSection('外观', '界面密度');
+    const densityRow = settingRow('界面密度');
+    findButton('舒适', densityRow)?.click();
+    await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-density') === 'compact', 'compact density applied');
+    const themeRow = settingRow('主题');
+    findButton('浅色', themeRow)?.click();
+    await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'soft', 'soft theme applied');
+
+    await selectSettingsSection('权限', '命令审批');
+    findButton('手动确认', settingRow('命令审批'))?.click();
+    await waitFor(() => document.querySelector('[data-testid="approval-modal"]')?.textContent?.includes('缺少 macOS 系统权限'), 'permission approval modal');
+    document.querySelector('.overlayBackdrop')?.click();
+    await waitFor(() => !document.querySelector('[data-testid="approval-modal"]'), 'permission approval close');
+
     await openCommandCenter('首次启动');
     await waitFor(() => document.querySelector('[data-testid="command-center"]')?.innerText.includes('首次启动'), 'onboarding command');
     await waitFor(() => findCommandRow('首次启动'), 'onboarding command row');
@@ -281,6 +305,7 @@ try {
       commandCenter: true,
       pages: pages.map(([label]) => label),
       projectAgents: ['项目', 'Agents'],
+      preferences: ['density', 'theme', 'permission-modal'],
       settings: settingsSections.map(([label]) => label),
       slash: true,
       workbench: workbenchChecks.map(([label]) => label),

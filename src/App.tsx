@@ -75,6 +75,8 @@ type Surface =
 type WorkbenchTab = 'activity' | 'files' | 'terminal' | 'preview';
 type ApprovalVariant = 'risk' | 'timeout' | 'permission';
 type SettingsSection = 'general' | 'models' | 'permissions' | 'integrations' | 'appearance' | 'advanced';
+type UiDensity = 'comfortable' | 'compact';
+type UiTheme = 'light' | 'soft';
 type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error' | 'stopped';
 type ChatMessageKind =
   | 'assistant'
@@ -2046,6 +2048,8 @@ function App() {
   const [surface, setSurface] = useState<Surface>('chat');
   const [rightOpen, setRightOpen] = useState(true);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('activity');
+  const [uiDensity, setUiDensity] = useState<UiDensity>('comfortable');
+  const [uiTheme, setUiTheme] = useState<UiTheme>('light');
   const [attachmentOpen, setAttachmentOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
@@ -2142,7 +2146,12 @@ function App() {
   }, [hideSidebarItem, runtime, showNotice]);
 
   return (
-    <div className={rightOpen && showWorkbench ? 'appShell workbenchOpen' : 'appShell'} data-testid="app-shell">
+    <div
+      className={rightOpen && showWorkbench ? 'appShell workbenchOpen' : 'appShell'}
+      data-density={uiDensity}
+      data-testid="app-shell"
+      data-theme={uiTheme}
+    >
       <Sidebar
         activeSessionId={runtime.activeSessionId}
         activeSurface={surface}
@@ -2240,7 +2249,16 @@ function App() {
         {surface === 'cron' && <CronSurface runtime={runtime} />}
         {surface === 'messaging' && <MessagingSurface runtime={runtime} />}
         {surface === 'settings' && (
-          <SettingsSurface runtime={runtime} selected={settingsSection} onSelect={setSettingsSection} />
+          <SettingsSurface
+            density={uiDensity}
+            runtime={runtime}
+            selected={settingsSection}
+            theme={uiTheme}
+            onDensityChange={setUiDensity}
+            onOpenPermission={() => setApprovalVariant('permission')}
+            onSelect={setSettingsSection}
+            onThemeChange={setUiTheme}
+          />
         )}
         {surface === 'diagnostics' && <DiagnosticsSurface runtime={runtime} onOpenPermission={() => setApprovalVariant('permission')} />}
         {surface === 'onboarding' && (
@@ -4100,7 +4118,14 @@ function ApprovalModal({
               重新请求审批
             </button>
           ) : variant === 'permission' ? (
-            <button className="primaryButtonInline" type="button" onClick={onClose}>
+            <button
+              className="primaryButtonInline"
+              type="button"
+              onClick={() => {
+                window.open('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles', '_blank', 'noopener,noreferrer');
+                onClose();
+              }}
+            >
               打开系统设置
             </button>
           ) : (
@@ -4948,13 +4973,23 @@ function GatewayCard({ title, status, desc }: { title: string; status: string; d
 }
 
 function SettingsSurface({
+  density,
   runtime,
   selected,
+  theme,
+  onDensityChange,
+  onOpenPermission,
   onSelect,
+  onThemeChange,
 }: {
+  density: UiDensity;
   runtime: HermesRuntime;
   selected: SettingsSection;
+  theme: UiTheme;
+  onDensityChange: (density: UiDensity) => void;
+  onOpenPermission: () => void;
   onSelect: (section: SettingsSection) => void;
+  onThemeChange: (theme: UiTheme) => void;
 }) {
   return (
     <section className="settingsSurface">
@@ -4971,24 +5006,41 @@ function SettingsSurface({
           </button>
         ))}
       </aside>
-      <SettingsPanel runtime={runtime} selected={selected} onSelect={onSelect} />
+      <SettingsPanel
+        density={density}
+        runtime={runtime}
+        selected={selected}
+        theme={theme}
+        onDensityChange={onDensityChange}
+        onOpenPermission={onOpenPermission}
+        onSelect={onSelect}
+        onThemeChange={onThemeChange}
+      />
     </section>
   );
 }
 
 function SettingsPanel({
+  density,
   runtime,
   selected,
+  theme,
+  onDensityChange,
+  onOpenPermission,
   onSelect,
+  onThemeChange,
 }: {
+  density: UiDensity;
   runtime: HermesRuntime;
   selected: SettingsSection;
+  theme: UiTheme;
+  onDensityChange: (density: UiDensity) => void;
+  onOpenPermission: () => void;
   onSelect: (section: SettingsSection) => void;
+  onThemeChange: (theme: UiTheme) => void;
 }) {
   const title = settingsSections.find((item) => item.id === selected)!;
   const config = runtime.inventory?.config;
-  const [density, setDensity] = useState<'舒适' | '紧凑'>('舒适');
-  const [theme, setTheme] = useState<'浅色' | '系统'>('浅色');
   const copyText = (value: string) => {
     if (value) {
       void navigator.clipboard?.writeText(value);
@@ -5001,8 +5053,34 @@ function SettingsPanel({
       { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
     ],
     appearance: [
-      { icon: <Sparkles size={18} />, title: '界面密度', desc: 'Codex-like compact density，统一小字号和宽松输入框。', control: <button className="selectButton" type="button" onClick={() => setDensity((value) => value === '舒适' ? '紧凑' : '舒适')}>{density}</button> },
-      { icon: <Monitor size={18} />, title: '主题', desc: '当前使用浅色工作台。', control: <button className="selectButton" type="button" onClick={() => setTheme((value) => value === '浅色' ? '系统' : '浅色')}>{theme}</button> },
+      {
+        icon: <Sparkles size={18} />,
+        title: '界面密度',
+        desc: density === 'compact' ? '紧凑布局已应用到侧栏、页面和输入区。' : '舒适布局已应用，适合长时间阅读。',
+        control: (
+          <button
+            className="selectButton"
+            type="button"
+            onClick={() => onDensityChange(density === 'comfortable' ? 'compact' : 'comfortable')}
+          >
+            {density === 'compact' ? '紧凑' : '舒适'}
+          </button>
+        ),
+      },
+      {
+        icon: <Monitor size={18} />,
+        title: '主题',
+        desc: theme === 'soft' ? '柔和主题已应用，降低背景和边界对比。' : '浅色主题已应用，贴近 Codex Desktop 默认观感。',
+        control: (
+          <button
+            className="selectButton"
+            type="button"
+            onClick={() => onThemeChange(theme === 'light' ? 'soft' : 'light')}
+          >
+            {theme === 'soft' ? '柔和' : '浅色'}
+          </button>
+        ),
+      },
     ],
     general: [
       { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" onClick={() => void (runtime.gatewayStatus === 'connected' ? runtime.stopGateway() : runtime.restartGateway())}>{runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
@@ -5018,7 +5096,7 @@ function SettingsPanel({
       { icon: <Database size={18} />, title: '模型库', desc: `${runtime.inventory?.models.length ?? 0} 个本机模型配置`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
     ],
     permissions: [
-      { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" onClick={() => onSelect('permissions')}>手动确认</button> },
+      { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" onClick={onOpenPermission}>手动确认</button> },
       { icon: <KeyRound size={18} />, title: 'Toolsets', desc: config?.toolsets.join(', ') || '未配置 toolset', control: <button className="selectButton" type="button" onClick={() => copyText(config?.toolsets.join(', ') || '')}>复制</button> },
     ],
   };
