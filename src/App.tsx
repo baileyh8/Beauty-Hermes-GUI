@@ -2977,9 +2977,18 @@ function ChatMessage({
   );
 }
 
+function safeMarkdownHref(href: string) {
+  try {
+    const url = new URL(href);
+    return ['http:', 'https:', 'mailto:'].includes(url.protocol) ? href : '';
+  } catch {
+    return '';
+  }
+}
+
 function renderInlineMarkdown(text: string) {
   const nodes: React.ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -2992,8 +3001,14 @@ function renderInlineMarkdown(text: string) {
     const key = `${match.index}-${token}`;
     if (token.startsWith('`')) {
       nodes.push(<code className="inlineCode" key={key}>{token.slice(1, -1)}</code>);
-    } else {
+    } else if (token.startsWith('**')) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else {
+      const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      const href = link ? safeMarkdownHref(link[2].trim()) : '';
+      nodes.push(href
+        ? <a href={href} key={key} rel="noreferrer" target="_blank">{link?.[1]}</a>
+        : token);
     }
     lastIndex = pattern.lastIndex;
   }
@@ -3011,9 +3026,10 @@ function MarkdownText({ className, text }: { className?: string; text: string })
     return null;
   }
 
-  const blocks: Array<{ kind: 'code' | 'list' | 'paragraph'; lines: string[] }> = [];
+  const blocks: Array<{ kind: 'code' | 'heading' | 'list' | 'orderedList' | 'paragraph' | 'quote'; level?: number; lines: string[] }> = [];
   let paragraph: string[] = [];
   let list: string[] = [];
+  let listKind: 'list' | 'orderedList' | null = null;
   let code: string[] | null = null;
 
   const flushParagraph = () => {
@@ -3024,9 +3040,18 @@ function MarkdownText({ className, text }: { className?: string; text: string })
   };
   const flushList = () => {
     if (list.length > 0) {
-      blocks.push({ kind: 'list', lines: list });
+      blocks.push({ kind: listKind ?? 'list', lines: list });
       list = [];
+      listKind = null;
     }
+  };
+  const pushListItem = (kind: 'list' | 'orderedList', item: string) => {
+    flushParagraph();
+    if (listKind && listKind !== kind) {
+      flushList();
+    }
+    listKind = kind;
+    list.push(item);
   };
 
   value.split('\n').forEach((line) => {
@@ -3053,10 +3078,31 @@ function MarkdownText({ className, text }: { className?: string; text: string })
       return;
     }
 
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ kind: 'heading', level: heading[1].length, lines: [heading[2]] });
+      return;
+    }
+
+    const quote = line.match(/^\s*>\s?(.+)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      blocks.push({ kind: 'quote', lines: [quote[1]] });
+      return;
+    }
+
     const bullet = line.match(/^\s*[-*]\s+(.+)$/);
     if (bullet) {
-      flushParagraph();
-      list.push(bullet[1]);
+      pushListItem('list', bullet[1]);
+      return;
+    }
+
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      pushListItem('orderedList', ordered[1]);
       return;
     }
 
@@ -3076,6 +3122,13 @@ function MarkdownText({ className, text }: { className?: string; text: string })
         if (block.kind === 'code') {
           return <pre key={index}><code>{block.lines.join('\n')}</code></pre>;
         }
+        if (block.kind === 'heading') {
+          const HeadingTag = block.level && block.level <= 2 ? 'h3' : 'h4';
+          return <HeadingTag className="markdownHeading" key={index}>{renderInlineMarkdown(block.lines.join(' '))}</HeadingTag>;
+        }
+        if (block.kind === 'quote') {
+          return <blockquote key={index}>{renderInlineMarkdown(block.lines.join('\n'))}</blockquote>;
+        }
         if (block.kind === 'list') {
           return (
             <ul key={index}>
@@ -3083,6 +3136,15 @@ function MarkdownText({ className, text }: { className?: string; text: string })
                 <li key={`${index}-${itemIndex}`}>{renderInlineMarkdown(item)}</li>
               ))}
             </ul>
+          );
+        }
+        if (block.kind === 'orderedList') {
+          return (
+            <ol key={index}>
+              {block.lines.map((item, itemIndex) => (
+                <li key={`${index}-${itemIndex}`}>{renderInlineMarkdown(item)}</li>
+              ))}
+            </ol>
           );
         }
         return <p key={index}>{renderInlineMarkdown(block.lines.join('\n'))}</p>;

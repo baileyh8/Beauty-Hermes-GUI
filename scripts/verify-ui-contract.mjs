@@ -33,6 +33,10 @@ const requiredText = [
   'finalAnswerCard',
   'toolDisplayFromContent',
   'appendToolDigest',
+  'safeMarkdownHref',
+  "kind === 'heading'",
+  "kind === 'orderedList'",
+  "kind === 'quote'",
 ];
 
 const requiredStyles = [
@@ -48,6 +52,9 @@ const requiredStyles = [
   '.finalAnswerBody',
   '.toolDetails',
   '.toolSummaryText',
+  '.markdownText .markdownHeading',
+  '.markdownText blockquote',
+  '.markdownText ol',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));

@@ -3895,19 +3895,50 @@ kbd {
   white-space: pre-wrap;
 }
 
+.markdownText .markdownHeading {
+  margin: 18px 0 8px;
+  color: #1f242c;
+  font-size: 1.02em;
+  font-weight: 680;
+  line-height: 1.45;
+}
+
+.markdownText .markdownHeading:first-child {
+  margin-top: 0;
+}
+
 .markdownText p:last-child,
 .markdownText ul:last-child,
+.markdownText ol:last-child,
+.markdownText blockquote:last-child,
 .markdownText pre:last-child {
   margin-bottom: 0;
 }
 
-.markdownText ul {
+.markdownText ul,
+.markdownText ol {
   margin: 0 0 11px;
-  padding-left: 17px;
+  padding-left: 18px;
 }
 
 .markdownText li {
   margin: 3px 0;
+}
+
+.markdownText blockquote {
+  margin: 8px 0 12px;
+  padding-left: 12px;
+  border-left: 2px solid #d9dee6;
+  color: #667085;
+}
+
+.markdownText a {
+  color: #2f67e8;
+  text-decoration: none;
+}
+
+.markdownText a:hover {
+  text-decoration: underline;
 }
 
 .markdownText pre {
