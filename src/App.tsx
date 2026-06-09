@@ -5505,6 +5505,25 @@ function DiagnosticsSurface({
   onOpenPermission: () => void;
 }) {
   const diagnostics = runtime.inventory?.diagnostics;
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState('');
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState('');
+  const runDiagnosticAction = async (key: string, label: string, action: () => Promise<void>) => {
+    try {
+      setDiagnosticsBusy(key);
+      setDiagnosticsStatus('');
+      await action();
+      setDiagnosticsStatus(`${label} 已完成。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setDiagnosticsStatus(`${label} 失败：${message}`);
+    } finally {
+      setDiagnosticsBusy('');
+    }
+  };
+  const openPermissionCheck = () => {
+    onOpenPermission();
+    setDiagnosticsStatus('已打开权限确认面板。');
+  };
 
   return (
     <section className="pageSurface diagnostics">
@@ -5513,11 +5532,17 @@ function DiagnosticsSurface({
           <h2>诊断与更新</h2>
           <p>启动、权限、连接、版本和日志问题集中恢复。</p>
         </div>
-        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
-          <RefreshCw size={16} />
-          重新诊断
+        <button
+          className="lightButton"
+          type="button"
+          disabled={Boolean(diagnosticsBusy)}
+          onClick={() => void runDiagnosticAction('refresh', '重新诊断', runtime.refreshInventory)}
+        >
+          <RefreshCw className={diagnosticsBusy === 'refresh' ? 'spinIcon' : undefined} size={16} />
+          {diagnosticsBusy === 'refresh' ? '诊断中' : '重新诊断'}
         </button>
       </div>
+      {diagnosticsStatus && <p className="surfaceStatus" role="status">{diagnosticsStatus}</p>}
       <div className="diagnosticGrid">
         <DiagnosticCard icon={<CheckCircle2 />} title="Desktop shell" desc="Electron IPC bridge 正常" state="正常" />
         <DiagnosticCard
@@ -5525,7 +5550,9 @@ function DiagnosticsSurface({
           title="Hermes 配置"
           desc={diagnostics?.configExists ? shortenPath(`${diagnostics.hermesHome}/config.yaml`) : '未找到 config.yaml'}
           state={diagnostics?.configExists ? '正常' : '需要检查'}
-          action={diagnostics?.configExists ? undefined : onOpenPermission}
+          action={diagnostics?.configExists ? undefined : openPermissionCheck}
+          actionLabel="检查权限"
+          busy={diagnosticsBusy === 'permission'}
         />
         <DiagnosticCard
           icon={diagnostics?.agentRepoExists ? <CheckCircle2 /> : <AlertTriangle />}
@@ -5538,7 +5565,9 @@ function DiagnosticsSurface({
           title="Gateway"
           desc={`${runtime.connectionLabel} · ${diagnostics?.gatewayState || runtime.gatewayStatus} · pid ${diagnostics?.gatewayPid ?? '-'}`}
           state={runtime.gatewayStatus === 'connected' ? '正常' : '检查'}
-          action={runtime.gatewayStatus === 'connected' ? undefined : () => void runtime.restartGateway()}
+          action={runtime.gatewayStatus === 'connected' ? undefined : () => void runDiagnosticAction('gateway', 'Gateway 修复', runtime.restartGateway)}
+          actionLabel={runtime.gatewayStatus === 'connected' ? undefined : '修复连接'}
+          busy={diagnosticsBusy === 'gateway'}
         />
       </div>
       <section className="logPanel">
@@ -5550,6 +5579,8 @@ function DiagnosticsSurface({
 }
 
 function DiagnosticCard({
+  actionLabel,
+  busy,
   icon,
   title,
   desc,
@@ -5561,13 +5592,17 @@ function DiagnosticCard({
   desc: string;
   state: string;
   action?: () => void;
+  actionLabel?: string;
+  busy?: boolean;
 }) {
   return (
     <article className="diagnosticCard">
       {icon}
       <strong>{title}</strong>
       <p>{desc}</p>
-      <button type="button" onClick={action} disabled={!action}>{state}</button>
+      <button type="button" onClick={action} disabled={!action || busy}>
+        {busy ? '处理中' : action ? actionLabel || state : state}
+      </button>
     </article>
   );
 }

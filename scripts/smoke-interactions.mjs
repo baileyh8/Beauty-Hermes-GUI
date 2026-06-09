@@ -264,6 +264,9 @@ try {
       throw new Error(failures.join('; '));
     }
 
+    findButton('重新诊断')?.click();
+    await waitFor(() => document.querySelector('.diagnostics .surfaceStatus')?.textContent?.includes('重新诊断'), 'diagnostics refresh feedback');
+
     findButton('技能库')?.click();
     await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'skills copy page');
     const skillCopyButton = await waitFor(
@@ -396,7 +399,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
