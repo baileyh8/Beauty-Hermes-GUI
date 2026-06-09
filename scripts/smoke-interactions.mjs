@@ -385,6 +385,11 @@ try {
       button.click();
       try {
         await waitFor(() => document.body.innerText.includes(expected), `${label} content`, 2500);
+        const loadFailures = ['读取 profiles 失败', '读取 skills 失败', '读取 cron 失败', '读取平台失败'];
+        const currentFailure = loadFailures.find((pattern) => document.body.innerText.includes(pattern));
+        if (currentFailure) {
+          throw new Error(currentFailure);
+        }
         if (label === '自动化') {
           const cronDeleteButton = document.querySelector('.automationRow button[aria-label="删除自动化任务"]');
           if (cronDeleteButton) {

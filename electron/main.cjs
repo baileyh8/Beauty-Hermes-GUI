@@ -408,6 +408,138 @@ function readHermesInventory() {
   };
 }
 
+function localApiFallback(request, error) {
+  const rawPath = String(request?.path || '');
+  const method = String(request?.method || 'GET').toUpperCase();
+
+  if (!rawPath.startsWith('/')) {
+    return { handled: false };
+  }
+
+  const url = new URL(rawPath, 'http://beauty-hermes.local');
+  const inventory = readHermesInventory();
+  const defaultProfile = {
+    description: '来自本机 Hermes 配置的默认工作身份',
+    gateway_running: Boolean(inventory.diagnostics.gatewayPid) || inventory.diagnostics.gatewayState === 'connected',
+    has_env: fs.existsSync(path.join(inventory.diagnostics.hermesHome, '.env')),
+    is_default: true,
+    model: inventory.config.defaultModel,
+    name: 'default',
+    path: inventory.diagnostics.hermesHome,
+    provider: inventory.config.provider,
+    skill_count: inventory.skills.length,
+  };
+
+  if (method === 'GET' && url.pathname === '/api/profiles') {
+    return {
+      handled: true,
+      value: {
+        profiles: [defaultProfile],
+        source: 'desktop-local-fallback',
+      },
+    };
+  }
+
+  if (method === 'GET' && url.pathname === '/api/profiles/active') {
+    return {
+      handled: true,
+      value: {
+        active: 'default',
+        source: 'desktop-local-fallback',
+      },
+    };
+  }
+
+  const setupMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)\/setup-command$/);
+  if (method === 'GET' && setupMatch) {
+    const name = decodeURIComponent(setupMatch[1]);
+    return {
+      handled: true,
+      value: {
+        command: name === 'default' ? 'hermes' : '',
+        source: 'desktop-local-fallback',
+      },
+    };
+  }
+
+  if (method === 'GET' && url.pathname === '/api/skills') {
+    return {
+      handled: true,
+      value: inventory.skills.map((skill) => ({
+        ...skill,
+        enabled: true,
+      })),
+    };
+  }
+
+  if (method === 'GET' && url.pathname === '/api/cron/jobs') {
+    return {
+      handled: true,
+      value: [],
+    };
+  }
+
+  if (method === 'GET' && url.pathname === '/api/messaging/platforms') {
+    return {
+      handled: true,
+      value: {
+        platforms: inventory.messaging.platforms.map((platform) => ({
+          description: `${inventory.messaging.channelCounts[platform.name] ?? 0} 个频道 · ${platform.updatedAt || '未记录更新时间'}`,
+          enabled: platform.state !== 'disabled',
+          id: platform.name,
+          name: platform.name,
+          state: platform.state,
+          updated_at: platform.updatedAt,
+        })),
+        source: 'desktop-local-fallback',
+      },
+    };
+  }
+
+  const messagingTestMatch = url.pathname.match(/^\/api\/messaging\/platforms\/([^/]+)\/test$/);
+  if (method === 'POST' && messagingTestMatch) {
+    const id = decodeURIComponent(messagingTestMatch[1]);
+    const platform = inventory.messaging.platforms.find((item) => item.name === id);
+    return {
+      handled: true,
+      value: {
+        message: platform
+          ? `本机状态：${platform.state || 'unknown'}；当前 Gateway 未暴露平台测试接口。`
+          : '当前 Gateway 未暴露平台测试接口。',
+        ok: Boolean(platform && platform.state === 'connected'),
+        source: 'desktop-local-fallback',
+        state: platform?.state || 'unavailable',
+      },
+    };
+  }
+
+  if (method !== 'GET' && (
+    url.pathname.startsWith('/api/profiles')
+    || url.pathname.startsWith('/api/skills')
+    || url.pathname.startsWith('/api/cron/jobs')
+    || url.pathname.startsWith('/api/messaging/platforms')
+  )) {
+    return {
+      handled: false,
+      error: new Error(`当前 Hermes Gateway 不支持这个桌面增强操作：${method} ${url.pathname}${error ? `；原始错误：${error instanceof Error ? error.message : String(error)}` : ''}`),
+    };
+  }
+
+  return { handled: false };
+}
+
+async function desktopApi(request) {
+  try {
+    return await gatewayManager.api(request);
+  } catch (error) {
+    const fallback = localApiFallback(request, error);
+    if (fallback.handled) {
+      return fallback.value;
+    }
+    throw fallback.error || error;
+  }
+}
+
 app.whenReady().then(() => {
   createApplicationMenu();
 
@@ -427,7 +559,7 @@ app.whenReady().then(() => {
   ipcMain.handle('hermes:start', (_event, options) => gatewayManager.start(options));
   ipcMain.handle('hermes:stop', () => gatewayManager.stop());
   ipcMain.handle('hermes:get-gateway-ws-url', () => gatewayManager.getGatewayWsUrl());
-  ipcMain.handle('hermes:api', (_event, request) => gatewayManager.api(request));
+  ipcMain.handle('hermes:api', (_event, request) => desktopApi(request));
   ipcMain.handle('hermes:get-local-inventory', () => readHermesInventory());
   ipcMain.handle('hermes:pick-attachment', (event, kind) => pickAttachment(event, kind));
 
