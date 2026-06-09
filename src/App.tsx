@@ -2103,14 +2103,14 @@ function App() {
     [hiddenSidebarKeys, projectItems],
   );
   const showWorkbench = surface === 'chat';
-  const hideSidebarItem = useCallback((item: SidebarItem, action: '归档' | '删除') => {
+  const hideSidebarItem = useCallback((item: SidebarItem) => {
     const key = item.id || item.title;
     setHiddenSidebarKeys((current) => current.includes(key) ? current : [...current, key]);
-    showNotice(`${item.title} 已${action}`);
+    showNotice(`${item.title} 已隐藏`);
   }, [showNotice]);
   const handleArchiveItem = useCallback((item: SidebarItem) => {
     if (!item.id) {
-      hideSidebarItem(item, '归档');
+      hideSidebarItem(item);
       return;
     }
 
@@ -2123,7 +2123,13 @@ function App() {
   }, [hideSidebarItem, runtime, showNotice]);
   const handleDeleteItem = useCallback((item: SidebarItem) => {
     if (!item.id) {
-      hideSidebarItem(item, '删除');
+      if (window.confirm(`从侧边栏隐藏“${item.title}”？`)) {
+        hideSidebarItem(item);
+      }
+      return;
+    }
+
+    if (!window.confirm(`删除真实 Hermes 会话“${item.title}”？这个操作不可恢复。`)) {
       return;
     }
 
@@ -2221,10 +2227,14 @@ function App() {
             runtime={runtime}
             onOpenChat={() => setSurface('chat')}
             onOpenDiagnostics={() => setSurface('diagnostics')}
+            onOpenProjectMenu={() => {
+              setCommandQuery('项目');
+              setCommandOpen(true);
+            }}
             onOpenSettings={() => setSurface('settings')}
           />
         )}
-        {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} />}
+        {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} onOpenChat={() => setSurface('chat')} />}
         {surface === 'profiles' && <ProfilesSurface runtime={runtime} />}
         {surface === 'skills' && <SkillsSurface runtime={runtime} />}
         {surface === 'cron' && <CronSurface runtime={runtime} />}
@@ -4113,11 +4123,13 @@ function ProjectsSurface({
   runtime,
   onOpenChat,
   onOpenDiagnostics,
+  onOpenProjectMenu,
   onOpenSettings,
 }: {
   runtime: HermesRuntime;
   onOpenChat: () => void;
   onOpenDiagnostics: () => void;
+  onOpenProjectMenu: () => void;
   onOpenSettings: () => void;
 }) {
   const gatewayReady = runtime.gatewayStatus === 'connected';
@@ -4168,7 +4180,7 @@ function ProjectsSurface({
               <div className="projectIcon">
                 {project.icon}
               </div>
-              <button className="iconButton compact" type="button" aria-label="更多项目操作" onClick={project.onClick}>
+              <button className="iconButton compact" type="button" aria-label={`${project.title} 更多操作`} onClick={onOpenProjectMenu}>
                 <MoreHorizontal size={17} />
               </button>
             </div>
@@ -4192,9 +4204,11 @@ function ProjectsSurface({
 
 function AgentsSurface({
   runtime,
+  onOpenChat,
   onOpenApproval,
 }: {
   runtime: HermesRuntime;
+  onOpenChat: () => void;
   onOpenApproval: () => void;
 }) {
   const runningTools = runtime.tools.filter((tool) => tool.state === 'running');
@@ -4212,9 +4226,9 @@ function AgentsSurface({
           <h2>Agents</h2>
           <p>运行中工具、待确认命令和最近完成事件集中在这里。</p>
         </div>
-        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
+        <button className="lightButton" type="button" onClick={onOpenChat}>
           <Plus size={16} />
-          委派任务
+          新建任务
         </button>
       </div>
       <div className="kanbanGrid">

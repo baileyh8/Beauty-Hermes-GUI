@@ -221,6 +221,24 @@ try {
       throw new Error(failures.join('; '));
     }
 
+    await openCommandCenter('项目');
+    await waitFor(() => findCommandRow('项目'), 'projects command row');
+    findCommandRow('项目')?.click();
+    await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page');
+    const projectMoreButton = Array.from(document.querySelectorAll('.projectCard .iconButton'))
+      .find((item) => item.getAttribute('aria-label')?.includes('更多操作'));
+    projectMoreButton?.click();
+    await waitFor(() => document.querySelector('[data-testid="command-center"]'), 'project more command center');
+    document.querySelector('.overlayBackdrop')?.click();
+    await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'project command center close');
+
+    await openCommandCenter('Agents');
+    await waitFor(() => findCommandRow('Agents'), 'agents command row');
+    findCommandRow('Agents')?.click();
+    await waitFor(() => document.body.innerText.includes('运行中工具'), 'agents page');
+    findButton('新建任务')?.click();
+    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'agents new task target');
+
     findButton('设置')?.click();
     await waitFor(() => document.body.innerText.includes('启动行为'), 'settings general');
     const settingsSections = [
@@ -262,6 +280,7 @@ try {
     return {
       commandCenter: true,
       pages: pages.map(([label]) => label),
+      projectAgents: ['项目', 'Agents'],
       settings: settingsSections.map(([label]) => label),
       slash: true,
       workbench: workbenchChecks.map(([label]) => label),
