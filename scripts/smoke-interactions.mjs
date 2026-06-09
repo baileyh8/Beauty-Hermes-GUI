@@ -161,6 +161,10 @@ try {
     };
 
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'composer');
+    await waitFor(() => document.querySelectorAll('.emptyHints button').length === 3, 'empty prompt action buttons');
+    if (!Array.from(document.querySelectorAll('.emptyHints button')).every((button) => button.disabled)) {
+      throw new Error('Empty prompt action buttons should be disabled while gateway is skipped.');
+    }
 
     let textarea = document.querySelector('textarea[aria-label="消息"]');
     setNativeValue(textarea, '/');
@@ -567,7 +571,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/messaging', '/diagnostics', '/profiles', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering', 'empty-prompt-actions'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

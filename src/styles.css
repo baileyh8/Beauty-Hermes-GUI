@@ -5443,18 +5443,40 @@ textarea {
   margin-top: 6px;
 }
 
-.emptyHints span,
+.emptyHints button,
 .railEmpty {
   color: #8d949d;
   font-size: 11.5px;
   line-height: 1.45;
 }
 
-.emptyHints span {
+.emptyHints button {
   padding: 4px 8px;
   border: 1px solid #e3e7ec;
   border-radius: 999px;
   background: #f7f8fa;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease,
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.emptyHints button:hover:not(:disabled) {
+  border-color: #cbd6e8;
+  color: #536071;
+  background: #fff;
+  transform: translateY(-1px);
+}
+
+.emptyHints button:focus-visible {
+  outline: 2px solid rgba(47, 107, 234, 0.24);
+  outline-offset: 2px;
+}
+
+.emptyHints button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .railEmpty {

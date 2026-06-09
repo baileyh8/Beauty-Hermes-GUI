@@ -2977,6 +2977,7 @@ function ChatSurface({
           <EmptyConversation
             gatewayStatus={runtime.gatewayStatus}
             model={runtime.model}
+            onSubmitPrompt={runtime.submitPrompt}
             statusText={runtime.statusText}
           />
         )}
@@ -3025,13 +3026,29 @@ function ChatSurface({
 function EmptyConversation({
   gatewayStatus,
   model,
+  onSubmitPrompt,
   statusText,
 }: {
   gatewayStatus: GatewayStatus;
   model: string;
+  onSubmitPrompt: (text: string) => Promise<void>;
   statusText: string;
 }) {
   const ready = gatewayStatus === 'connected';
+  const emptyPromptActions = [
+    {
+      label: '检查当前项目',
+      prompt: '请检查当前项目结构，找出最影响可用性的 3 个问题，并按优先级给出修复建议。',
+    },
+    {
+      label: '读取文件并总结',
+      prompt: '请读取当前目录里最能说明项目用途的文件，并用中文总结项目如何运行、如何验证。',
+    },
+    {
+      label: '安全运行命令',
+      prompt: '请先说明你准备运行哪些命令来检查当前项目；遇到高风险命令时先请求审批。',
+    },
+  ];
 
   return (
     <div className="emptyConversation">
@@ -3041,9 +3058,16 @@ function EmptyConversation({
       <h2>{ready ? 'Hermes 已就绪' : '正在准备 Hermes'}</h2>
       <p>{ready ? `当前模型 ${model}，可以直接发送任务。` : statusText}</p>
       <div className="emptyHints" aria-label="可开始的任务">
-        <span>让 Hermes 检查一个项目</span>
-        <span>读取文件并总结</span>
-        <span>运行命令前会请求审批</span>
+        {emptyPromptActions.map((action) => (
+          <button
+            key={action.label}
+            type="button"
+            disabled={!ready}
+            onClick={() => void onSubmitPrompt(action.prompt)}
+          >
+            {action.label}
+          </button>
+        ))}
       </div>
     </div>
   );

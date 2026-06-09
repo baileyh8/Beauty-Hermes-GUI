@@ -33,6 +33,8 @@ const requiredText = [
   'session.close',
   'messageStackRef',
   'data-testid="message-list"',
+  'emptyPromptActions',
+  'onSubmitPrompt',
   'finalAnswerCard',
   'toolDisplayFromContent',
   'appendToolDigest',
@@ -71,6 +73,7 @@ const requiredStyles = [
   '.markdownText blockquote',
   '.markdownText ol',
   '.markdownTableWrap',
+  '.emptyHints button',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));
