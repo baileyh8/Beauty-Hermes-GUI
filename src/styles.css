@@ -5640,6 +5640,13 @@ textarea {
   line-height: 1.45;
 }
 
+.railStatus {
+  margin: 9px 0 0;
+  color: #717882;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .panelStatus {
   padding: 0 7px;
 }

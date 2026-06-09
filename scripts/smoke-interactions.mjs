@@ -222,6 +222,14 @@ try {
     for (const [tab, expected] of workbenchChecks) {
       findButton(tab, document.querySelector('[data-testid="right-workbench"]'))?.click();
       await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes(expected), `${tab} tab`);
+      if (tab === '终端') {
+        findButton('停止', document.querySelector('[data-testid="right-workbench"]'))?.click();
+        await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('停止'), 'terminal stop feedback');
+      }
+      if (tab === '预览') {
+        findButton('刷新', document.querySelector('[data-testid="right-workbench"]'))?.click();
+        await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('刷新'), 'preview refresh feedback');
+      }
     }
     findButton('收起工作区')?.click();
     await waitFor(() => !document.querySelector('[data-testid="right-workbench"]') && document.querySelector('.floatingWorkbenchButton'), 'workbench collapse');
@@ -276,6 +284,7 @@ try {
     await openCommandCenter('项目');
     await waitFor(() => findCommandRow('项目'), 'projects command row');
     findCommandRow('项目')?.click();
+    await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'project command center auto close');
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page');
     const projectMoreButton = Array.from(document.querySelectorAll('.projectCard .iconButton'))
       .find((item) => item.getAttribute('aria-label')?.includes('更多操作'));
@@ -287,6 +296,7 @@ try {
     await openCommandCenter('Agents');
     await waitFor(() => findCommandRow('Agents'), 'agents command row');
     findCommandRow('Agents')?.click();
+    await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'agents command center auto close');
     await waitFor(() => document.body.innerText.includes('运行中工具'), 'agents page');
     const staticAgentCard = await waitFor(() => document.querySelector('.agentCard.static'), 'static agent cards');
     if (staticAgentCard.tagName.toLowerCase() === 'button') {
@@ -386,7 +396,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

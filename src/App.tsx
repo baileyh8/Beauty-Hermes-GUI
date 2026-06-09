@@ -3764,7 +3764,7 @@ function Workbench({
 
       {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} runtime={runtime} />}
       {activeTab === 'files' && <WorkbenchFiles files={runtime.files} />}
-      {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} onStop={() => void runtime.stopGateway()} />}
+      {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} onStop={runtime.stopGateway} />}
       {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} />}
     </aside>
   );
@@ -3870,20 +3870,36 @@ function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
   );
 }
 
-function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => void }) {
+function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('');
   const renderedLogs = logs.length > 0 ? logs.slice(-12).join('\n') : 'Gateway 日志会在这里显示。';
+  const stopGateway = async () => {
+    try {
+      setBusy(true);
+      setStatus('');
+      await onStop();
+      setStatus('Gateway 停止请求已发送。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`停止失败：${message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <>
       <section className="railSection terminalSection">
         <div className="terminalHeader">
           <strong>Hermes Gateway</strong>
-          <button type="button" onClick={onStop}>
-            <PauseCircle size={15} />
-            停止
+          <button type="button" onClick={() => void stopGateway()} disabled={busy}>
+            {busy ? <RefreshCw className="spinIcon" size={15} /> : <PauseCircle size={15} />}
+            {busy ? '停止中' : '停止'}
           </button>
         </div>
         <pre className="terminalBlock"><code>{renderedLogs}</code></pre>
+        {status && <p className="railStatus" role="status">{status}</p>}
       </section>
       <section className="railSection">
         <h3>退出状态</h3>
@@ -3897,9 +3913,24 @@ function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => voi
 }
 
 function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
+  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
   const previewText = runtime.connection?.baseUrl
     ? `Gateway: ${runtime.connection.baseUrl}`
     : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
+  const refreshPreview = async () => {
+    try {
+      setBusy(true);
+      setStatus('');
+      await runtime.refreshInventory();
+      setStatus(runtime.connection?.baseUrl ? '预览状态已刷新。' : '已刷新，本机 Gateway 暂无可打开地址。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`刷新失败：${message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <>
@@ -3914,7 +3945,9 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
         <h3>预览产物</h3>
         <p>{previewText}</p>
         <div className="workbenchActions">
-          <button type="button" onClick={() => void runtime.refreshInventory()}>刷新</button>
+          <button type="button" onClick={() => void refreshPreview()} disabled={busy}>
+            {busy ? '刷新中' : '刷新'}
+          </button>
           <button
             type="button"
             disabled={!runtime.connection?.baseUrl}
@@ -3927,6 +3960,7 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
             打开 Gateway
           </button>
         </div>
+        {status && <p className="railStatus" role="status">{status}</p>}
       </section>
     </>
   );
@@ -4136,7 +4170,8 @@ function CommandCenter({
     }
 
     action.run();
-  }, []);
+    onClose();
+  }, [onClose]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') {
@@ -4221,7 +4256,15 @@ function CommandCenter({
               >
                 用查询新建任务
               </button>
-              <button type="button" onClick={() => onNavigate('skills')}>打开技能库</button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNavigate('skills');
+                  onClose();
+                }}
+              >
+                打开技能库
+              </button>
             </div>
           </div>
         )}
