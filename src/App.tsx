@@ -544,16 +544,30 @@ function slashOutputText(result: unknown) {
 }
 
 const localSlashCommandNames = new Set([
+  '/activity',
+  '/agents',
   '/approval',
+  '/automation',
+  '/chat',
+  '/cron',
   '/diagnose',
+  '/diagnostics',
+  '/files',
   '/gateway',
   '/help',
+  '/messaging',
   '/models',
+  '/onboarding',
   '/profiles',
+  '/projects',
   '/sessions',
+  '/settings',
   '/skill',
   '/skills',
   '/summary',
+  '/terminal',
+  '/preview',
+  '/workbench',
 ]);
 
 function slashCommandName(text: string) {
@@ -562,6 +576,74 @@ function slashCommandName(text: string) {
 
 function isKnownLocalSlashInput(text: string) {
   return localSlashCommandNames.has(slashCommandName(text));
+}
+
+interface LocalSlashUiTarget {
+  settingsSection?: SettingsSection;
+  surface?: Surface;
+  workbenchTab?: WorkbenchTab;
+}
+
+function settingsSectionFromSlashQuery(query: string): SettingsSection {
+  const normalized = query.trim().toLowerCase();
+  const match = settingsSections.find((section) => (
+    section.id.toLowerCase() === normalized
+    || section.label.toLowerCase() === normalized
+    || section.desc.toLowerCase().includes(normalized)
+  ));
+  return match?.id ?? 'general';
+}
+
+function localSlashUiTarget(command: string): LocalSlashUiTarget | null {
+  const name = slashCommandName(command);
+  const query = command.trim().slice(name.length).trim();
+  const surfaceTargets: Partial<Record<string, Surface>> = {
+    '/agents': 'agents',
+    '/automation': 'cron',
+    '/chat': 'chat',
+    '/cron': 'cron',
+    '/diagnostics': 'diagnostics',
+    '/messaging': 'messaging',
+    '/onboarding': 'onboarding',
+    '/profiles': 'profiles',
+    '/projects': 'projects',
+    '/skills': 'skills',
+  };
+  const workbenchTargets: Partial<Record<string, WorkbenchTab>> = {
+    '/activity': 'activity',
+    '/files': 'files',
+    '/preview': 'preview',
+    '/terminal': 'terminal',
+  };
+
+  if (name === '/settings') {
+    return { settingsSection: settingsSectionFromSlashQuery(query), surface: 'settings' };
+  }
+
+  if (name === '/models') {
+    return { settingsSection: 'models', surface: 'settings' };
+  }
+
+  if (name === '/approval') {
+    return { settingsSection: 'permissions', surface: 'settings' };
+  }
+
+  if (name === '/workbench') {
+    const tab = workbenchTargets[`/${query.toLowerCase()}`] ?? 'activity';
+    return { surface: 'chat', workbenchTab: tab };
+  }
+
+  const surface = surfaceTargets[name];
+  if (surface) {
+    return { surface };
+  }
+
+  const workbenchTab = workbenchTargets[name];
+  if (workbenchTab) {
+    return { surface: 'chat', workbenchTab };
+  }
+
+  return null;
 }
 
 function bulletRows(rows: string[], fallback: string) {
@@ -589,7 +671,29 @@ function buildLocalSlashResponse(command: string, context: LocalSlashContext): L
         '- `/models` 查看本机模型配置',
         '- `/profiles` 查看当前 profile 线索',
         '- `/gateway` 查看连接信息',
+        '',
+        '页面与工作区：',
+        '- `/projects` 打开项目页',
+        '- `/agents` 打开 Agents 队列',
+        '- `/settings [模型|权限|集成|外观|高级]` 打开设置页',
+        '- `/cron` 或 `/automation` 打开自动化页',
+        '- `/messaging` 打开消息网关页',
+        '- `/diagnostics` 打开诊断页',
+        '- `/workbench [activity|files|terminal|preview]` 打开右侧工作区',
       ].join('\n'),
+    };
+  }
+
+  if (['/projects', '/agents', '/settings', '/cron', '/automation', '/messaging', '/diagnostics', '/onboarding', '/chat', '/workbench', '/terminal', '/files', '/preview', '/activity'].includes(name)) {
+    const target = localSlashUiTarget(command);
+    const surfaceLabel = target?.settingsSection
+      ? settingsSections.find((section) => section.id === target.settingsSection)?.label
+      : target?.surface;
+    const workbenchLabel = target?.workbenchTab ? `，并展开 ${target.workbenchTab} 工作区` : '';
+
+    return {
+      title: '界面指令',
+      text: `已处理 \`${name}\`。${surfaceLabel ? `正在打开 ${surfaceLabel}` : '正在更新界面'}${workbenchLabel}。`,
     };
   }
 
@@ -2238,6 +2342,7 @@ function App() {
             runtime={runtime}
             setAttachmentOpen={setAttachmentOpen}
             onOpenApproval={() => setApprovalVariant('risk')}
+            onNavigate={(nextSurface) => setSurface(nextSurface)}
             onOpenProjects={() => setSurface('projects')}
             onOpenSettingsSection={(section) => {
               setSettingsSection(section);
@@ -2677,6 +2782,7 @@ function ChatSurface({
   runtime,
   setAttachmentOpen,
   onOpenApproval,
+  onNavigate,
   onOpenProjects,
   onOpenSettingsSection,
   onOpenWorkbenchTab,
@@ -2686,6 +2792,7 @@ function ChatSurface({
   runtime: HermesRuntime;
   setAttachmentOpen: (open: boolean) => void;
   onOpenApproval: () => void;
+  onNavigate: (surface: Surface) => void;
   onOpenProjects: () => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
@@ -2755,6 +2862,7 @@ function ChatSurface({
         attachmentOpen={attachmentOpen}
         setAttachmentOpen={setAttachmentOpen}
         runtime={runtime}
+        onNavigate={onNavigate}
         onOpenProjects={onOpenProjects}
         onOpenSettingsSection={onOpenSettingsSection}
         onOpenWorkbenchTab={onOpenWorkbenchTab}
@@ -3202,6 +3310,7 @@ function Artifact({
 
 function Composer({
   attachmentOpen,
+  onNavigate,
   onOpenProjects,
   onOpenSettingsSection,
   onOpenWorkbenchTab,
@@ -3209,6 +3318,7 @@ function Composer({
   runtime,
 }: {
   attachmentOpen: boolean;
+  onNavigate: (surface: Surface) => void;
   onOpenProjects: () => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
@@ -3237,6 +3347,10 @@ function Composer({
       { desc: '查看本机模型配置', icon: <Zap size={16} />, insert: '/models', title: '/models' },
       { desc: '查看 Gateway 连接信息', icon: <Network size={16} />, insert: '/gateway', title: '/gateway' },
       { desc: '查看 profile 配置线索', icon: <UsersRound size={16} />, insert: '/profiles', title: '/profiles' },
+      { desc: '打开项目页', icon: <Folder size={16} />, insert: '/projects', title: '/projects' },
+      { desc: '打开 Agents 队列', icon: <Bot size={16} />, insert: '/agents', title: '/agents' },
+      { desc: '打开设置页', icon: <Settings size={16} />, insert: '/settings', title: '/settings' },
+      { desc: '打开右侧工作区', icon: <PanelRightOpen size={16} />, insert: '/workbench terminal', title: '/workbench' },
     ];
     const skills = runtime.inventory?.skills.slice(0, 12).map((skill) => ({
       desc: skill.description || skill.path,
@@ -3303,7 +3417,22 @@ function Composer({
     }
 
     setDraft('');
+    const uiTarget = localSlashUiTarget(text);
     void runtime.submitPrompt(text);
+    if (uiTarget) {
+      window.requestAnimationFrame(() => {
+        if (uiTarget.settingsSection) {
+          onOpenSettingsSection(uiTarget.settingsSection);
+          return;
+        }
+        if (uiTarget.surface) {
+          onNavigate(uiTarget.surface);
+        }
+        if (uiTarget.workbenchTab) {
+          onOpenWorkbenchTab(uiTarget.workbenchTab);
+        }
+      });
+    }
   };
 
   const handleAttachmentPick = async (kind: AttachmentMenuKind) => {

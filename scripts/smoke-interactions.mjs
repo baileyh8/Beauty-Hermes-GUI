@@ -151,18 +151,47 @@ try {
 
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'composer');
 
-    const textarea = document.querySelector('textarea[aria-label="消息"]');
+    let textarea = document.querySelector('textarea[aria-label="消息"]');
     setNativeValue(textarea, '/');
     await waitFor(() => document.querySelector('.slashMenu')?.textContent?.includes('/help'), 'slash menu');
 
     setNativeValue(textarea, '/help');
     await sleep(120);
-    const sendButton = document.querySelector('.sendButton');
+    let sendButton = document.querySelector('.sendButton');
     if (sendButton.disabled) {
       throw new Error('Send button stayed disabled for local /help command.');
     }
     sendButton.click();
     await waitFor(() => document.body.innerText.includes('/skills [关键词]'), 'local slash output');
+
+    setNativeValue(textarea, '/agents');
+    await sleep(120);
+    if (sendButton.disabled) {
+      throw new Error('Send button stayed disabled for /agents command.');
+    }
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Agents'), 'slash agents navigation');
+    findButton('新建任务')?.click();
+    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash agents return to chat');
+    await waitFor(() => document.body.innerText.includes('已处理 /agents'), 'slash agents response');
+    textarea = document.querySelector('textarea[aria-label="消息"]');
+    sendButton = document.querySelector('.sendButton');
+
+    setNativeValue(textarea, '/settings 外观');
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('设置'), 'slash settings navigation');
+    await waitFor(() => document.body.innerText.includes('界面密度'), 'slash settings appearance section');
+    findButton('新建任务')?.click();
+    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash settings return to chat');
+    await waitFor(() => document.body.innerText.includes('已处理 /settings'), 'slash settings response');
+    textarea = document.querySelector('textarea[aria-label="消息"]');
+    sendButton = document.querySelector('.sendButton');
+
+    setNativeValue(textarea, '/workbench terminal');
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('Hermes Gateway'), 'slash workbench terminal navigation');
 
     findButton('添加')?.click();
     await waitFor(() => document.querySelector('.attachmentMenu')?.textContent?.includes('URL...'), 'attachment menu');
@@ -204,7 +233,7 @@ try {
       ['技能库', '读取本机 Hermes skills'],
       ['自动化', '后台调度'],
       ['消息网关', 'Messaging Gateway'],
-      ['设置', '启动行为'],
+      ['设置', '界面密度'],
       ['诊断', '诊断与更新'],
     ];
 
@@ -267,7 +296,7 @@ try {
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'agents new task target');
 
     findButton('设置')?.click();
-    await waitFor(() => document.body.innerText.includes('启动行为'), 'settings general');
+    await waitFor(() => document.querySelector('.settingsSurface'), 'settings surface');
     const settingsSections = [
       ['模型', '默认模型'],
       ['权限', '命令审批'],
@@ -356,6 +385,7 @@ try {
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,
+      slashNavigation: ['/agents', '/settings', '/workbench'],
       uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
