@@ -2475,13 +2475,19 @@ function App() {
         {surface === 'projects' && (
           <ProjectsSurface
             runtime={runtime}
-            onOpenChat={() => setSurface('chat')}
             onOpenDiagnostics={() => setSurface('diagnostics')}
+            onOpenSession={handleSelectSession}
+            onOpenNewTask={handleStartNewTask}
             onOpenProjectMenu={(projectTitle) => {
               setCommandQuery(projectTitle);
               setCommandOpen(true);
             }}
             onOpenSettings={() => setSurface('settings')}
+            onOpenWorkbenchTab={(tab) => {
+              setSurface('chat');
+              setRightOpen(true);
+              setWorkbenchTab(tab);
+            }}
           />
         )}
         {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} onOpenChat={handleStartNewTask} />}
@@ -4846,20 +4852,25 @@ function ApprovalModal({
 
 function ProjectsSurface({
   runtime,
-  onOpenChat,
   onOpenDiagnostics,
+  onOpenNewTask,
   onOpenProjectMenu,
   onOpenSettings,
+  onOpenSession,
+  onOpenWorkbenchTab,
 }: {
   runtime: HermesRuntime;
-  onOpenChat: () => void;
   onOpenDiagnostics: () => void;
+  onOpenNewTask: () => void;
   onOpenProjectMenu: (projectTitle: string) => void;
   onOpenSettings: () => void;
+  onOpenSession: (sessionId: string) => void;
+  onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
 }) {
   const [projectBusy, setProjectBusy] = useState<null | string>(null);
   const [projectStatus, setProjectStatus] = useState('');
   const gatewayReady = runtime.gatewayStatus === 'connected';
+  const firstRecentSession = runtime.recentSessions.find((session) => Boolean(session.id));
   const runProjectAction = async (
     key: string,
     label: string,
@@ -4880,11 +4891,16 @@ function ProjectsSurface({
 
   const projectCards = [
     {
-      action: '打开会话',
+      action: '查看文件',
       icon: <Folder size={20} />,
       key: 'workspace',
       meta: runtime.cwd ? shortenPath(runtime.cwd) : '尚未从会话读取工作目录',
-      onClick: () => runProjectAction('workspace', '本地工作区', onOpenChat, '本地工作区已打开。'),
+      onClick: () => runProjectAction(
+        'workspace',
+        '文件工作区',
+        () => onOpenWorkbenchTab('files'),
+        '文件工作区已打开。',
+      ),
       stats: [runtime.model, `${runtime.contextPercent}% · 1M`],
       title: '本地 Hermes 工作区',
     },
@@ -4903,11 +4919,22 @@ function ProjectsSurface({
       title: 'Hermes Gateway',
     },
     {
-      action: runtime.recentSessions.length > 0 ? '查看最近' : '新建任务',
+      action: firstRecentSession?.id ? '打开最近' : '新建任务',
       icon: <MessageSquare size={20} />,
       key: 'sessions',
       meta: runtime.recentSessions.length > 0 ? `${runtime.recentSessions.length} 个最近会话` : '还没有真实会话记录',
-      onClick: () => runProjectAction('sessions', '会话入口', onOpenChat, '会话入口已打开。'),
+      onClick: () => runProjectAction(
+        'sessions',
+        firstRecentSession?.id ? '最近会话' : '新建任务',
+        () => {
+          if (firstRecentSession?.id) {
+            onOpenSession(firstRecentSession.id);
+            return;
+          }
+          onOpenNewTask();
+        },
+        firstRecentSession?.id ? '最近会话正在打开。' : '新任务已创建。',
+      ),
       stats: runtime.recentSessions.slice(0, 2).map((item) => item.title),
       title: '会话',
     },

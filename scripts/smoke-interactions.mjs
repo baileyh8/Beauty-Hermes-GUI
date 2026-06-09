@@ -140,6 +140,12 @@ try {
       .find((item) => item.textContent?.includes(label) || item.getAttribute('aria-label')?.includes(label));
     const findCommandRow = (title) => Array.from(document.querySelectorAll('.commandRow'))
       .find((item) => item.querySelector('strong')?.textContent?.trim() === title);
+    const findProjectCard = (title) => Array.from(document.querySelectorAll('.projectCard'))
+      .find((item) => item.querySelector('h3')?.textContent?.trim() === title);
+    const findProjectAction = (title, label) => {
+      const card = findProjectCard(title);
+      return card ? Array.from(card.querySelectorAll('button')).find((item) => item.textContent?.includes(label)) : null;
+    };
     const openCommandCenter = async (query = '') => {
       document.querySelector('.searchBox.asButton')?.click();
       await waitFor(() => document.querySelector('[data-testid="command-center"]'), 'command center');
@@ -463,6 +469,24 @@ try {
     );
     document.querySelector('.overlayBackdrop')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'project command center close');
+    const workspaceAction = findProjectAction('本地 Hermes 工作区', '查看文件');
+    if (!workspaceAction) {
+      throw new Error('Missing project workspace file action.');
+    }
+    workspaceAction.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'workspace action opens chat');
+    await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('变更文件'), 'workspace action opens files workbench');
+    findButton('项目')?.click();
+    await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after workspace action');
+    const sessionAction = findProjectAction('会话', '新建任务');
+    if (!sessionAction) {
+      throw new Error('Missing project new task action.');
+    }
+    sessionAction.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'project new task opens chat');
+    await waitFor(() => document.querySelector('[data-testid="message-list"]')?.querySelectorAll('.message').length === 0, 'project new task clears transcript');
+    findButton('项目')?.click();
+    await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after session action');
     findButton('项目设置')?.click();
     await waitFor(() => document.querySelector('.settingsSurface'), 'project settings navigation');
 
@@ -571,7 +595,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/messaging', '/diagnostics', '/profiles', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering', 'empty-prompt-actions'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'project-workspace-routing', 'project-new-task-routing', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering', 'empty-prompt-actions'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
