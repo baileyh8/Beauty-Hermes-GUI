@@ -4772,10 +4772,17 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
         path: `/api/profiles/${encodeURIComponent(name)}/setup-command`,
         timeoutMs: 12000,
       });
-      if (result.command) {
-        await navigator.clipboard?.writeText(result.command);
-        setProfileStatus(`已复制：${result.command}`);
+      const command = result.command?.trim();
+      if (!command) {
+        setProfileStatus(`${name} 没有可复制的 setup 命令。`);
+        return;
       }
+      if (!navigator.clipboard?.writeText) {
+        setProfileStatus('当前环境无法访问剪贴板。');
+        return;
+      }
+      await navigator.clipboard.writeText(command);
+      setProfileStatus(`${name} setup 命令已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setProfileStatus(`复制失败：${message}`);
@@ -4820,7 +4827,10 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
             className={profile.name === activeProfile.name ? 'profileRow active' : 'profileRow'}
             type="button"
             key={profile.name}
-            onClick={() => setSelectedProfile(profile.name)}
+            onClick={() => {
+              setSelectedProfile(profile.name);
+              setProfileStatus(`已选择 ${profile.name}`);
+            }}
             disabled={Boolean(profileBusy)}
           >
             <div className="profileAvatar">{profile.name[0]}</div>
@@ -5284,6 +5294,15 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
       setMessagingBusy('');
     }
   }, [apiRequest]);
+  const openPlatformDocs = useCallback((platform: HermesMessagingPlatformInfo) => {
+    if (!platform.docs_url) {
+      setMessagingStatus(`${platform.name} 没有配置文档链接。`);
+      return;
+    }
+
+    const docsWindow = window.open(platform.docs_url, '_blank', 'noopener,noreferrer');
+    setMessagingStatus(docsWindow ? `${platform.name} 文档已打开。` : `${platform.name} 文档可能被浏览器拦截。`);
+  }, []);
   useEffect(() => {
     void loadPlatforms();
   }, [loadPlatforms]);
@@ -5331,7 +5350,7 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
               <button type="button" onClick={() => void testPlatform(platform)} disabled={Boolean(messagingBusy)}>
                 {messagingBusy === `test:${platform.id}` ? '测试中' : '测试'}
               </button>
-              {platform.docs_url && <button type="button" onClick={() => window.open(platform.docs_url, '_blank', 'noopener,noreferrer')} disabled={Boolean(messagingBusy)}>文档</button>}
+              {platform.docs_url && <button type="button" onClick={() => openPlatformDocs(platform)} disabled={Boolean(messagingBusy)}>文档</button>}
             </div>
           </article>
         )) : (

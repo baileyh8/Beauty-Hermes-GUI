@@ -264,6 +264,31 @@ try {
       throw new Error(failures.join('; '));
     }
 
+    findButton('Profiles')?.click();
+    await waitFor(() => document.body.innerText.includes('工作身份'), 'profiles feedback page');
+    const profileRow = await waitFor(
+      () => Array.from(document.querySelectorAll('.profileRow')).find((item) => !item.disabled),
+      'selectable profile row',
+    );
+    profileRow.click();
+    await waitFor(() => document.querySelector('.panelStatus')?.textContent?.includes('已选择'), 'profile selection feedback');
+    const profileCopyButton = await waitFor(
+      () => Array.from(document.querySelectorAll('.detailActions button'))
+        .find((item) => item.textContent?.includes('复制 setup 命令') && !item.disabled),
+      'profile copy setup action',
+    );
+    profileCopyButton.click();
+    await waitFor(
+      () => {
+        const text = document.querySelector('.panelStatus')?.textContent || '';
+        return text.includes('setup 命令已复制')
+          || text.includes('当前环境无法访问剪贴板')
+          || text.includes('没有可复制的 setup 命令')
+          || text.includes('复制失败');
+      },
+      'profile copy feedback',
+    );
+
     findButton('自动化')?.click();
     await waitFor(() => document.body.innerText.includes('后台调度'), 'automation feedback page');
     const automationRefreshButton = await waitFor(
@@ -419,7 +444,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
