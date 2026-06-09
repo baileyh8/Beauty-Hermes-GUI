@@ -4164,6 +4164,10 @@ function CommandCenter({
     setSelectedIndex(0);
   }, [normalized]);
 
+  useEffect(() => {
+    setSelectedIndex((index) => Math.min(index, Math.max(0, filteredActions.length - 1)));
+  }, [filteredActions.length]);
+
   const runAction = useCallback((action?: CommandCenterAction) => {
     if (!action) {
       return;
@@ -4177,6 +4181,18 @@ function CommandCenter({
     if (event.key === 'Escape') {
       event.preventDefault();
       onClose();
+      return;
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      setSelectedIndex(0);
+      return;
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      setSelectedIndex(Math.max(0, filteredActions.length - 1));
       return;
     }
 
@@ -4197,6 +4213,7 @@ function CommandCenter({
       runAction(filteredActions[selectedIndex]);
     }
   };
+  const selectedActionId = filteredActions.length > 0 ? `command-option-${selectedIndex}` : undefined;
   const groupedActions = filteredActions.reduce<Record<string, CommandCenterAction[]>>((acc, action) => {
     acc[action.group] = acc[action.group] || [];
     acc[action.group].push(action);
@@ -4211,16 +4228,21 @@ function CommandCenter({
           <Search size={18} />
           <input
             autoFocus
+            aria-activedescendant={selectedActionId}
+            aria-controls="command-options"
+            aria-expanded="true"
+            aria-label="搜索命令"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             onKeyDown={handleKeyDown}
+            role="combobox"
             placeholder="搜索命令、会话、文件、设置或 skill"
           />
           <kbd>⌘K</kbd>
         </div>
 
         {filteredActions.length > 0 ? (
-          <div className="commandBody">
+          <div className="commandBody" id="command-options" role="listbox" aria-label="命令结果">
             {Object.entries(groupedActions).map(([group, groupActions]) => (
               <CommandGroup title={group} key={group}>
                 {groupActions.map((action) => {
@@ -4230,6 +4252,7 @@ function CommandCenter({
                       action={action.action}
                       danger={action.danger}
                       desc={action.desc}
+                      id={`command-option-${flatIndex}`}
                       icon={action.icon}
                       key={`${group}-${action.title}-${action.desc}`}
                       selected={flatIndex === selectedIndex}
@@ -4289,6 +4312,7 @@ function CommandGroup({ title, children }: { title: string; children: React.Reac
 }
 
 function CommandRow({
+  id,
   icon,
   title,
   desc,
@@ -4297,6 +4321,7 @@ function CommandRow({
   selected,
   onClick,
 }: {
+  id: string;
   icon: React.ReactNode;
   title: string;
   desc: string;
@@ -4306,7 +4331,14 @@ function CommandRow({
   onClick?: () => void;
 }) {
   return (
-    <button className={`${danger ? 'commandRow danger' : 'commandRow'}${selected ? ' selected' : ''}`} type="button" onClick={onClick}>
+    <button
+      aria-selected={selected}
+      className={`${danger ? 'commandRow danger' : 'commandRow'}${selected ? ' selected' : ''}`}
+      id={id}
+      role="option"
+      type="button"
+      onClick={onClick}
+    >
       <span>{icon}</span>
       <div>
         <strong>{title}</strong>

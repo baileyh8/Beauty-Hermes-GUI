@@ -212,6 +212,34 @@ try {
     document.querySelector('.overlayBackdrop')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'command center close');
 
+    await openCommandCenter('打开终端');
+    let commandInput = document.querySelector('[data-testid="command-center"] input');
+    await waitFor(() => {
+      const activeId = commandInput?.getAttribute('aria-activedescendant');
+      const activeRow = activeId ? document.getElementById(activeId) : null;
+      return activeRow?.getAttribute('aria-selected') === 'true' && activeRow.textContent?.includes('打开终端');
+    }, 'command center aria selected row');
+    commandInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }));
+    await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'command center enter action close');
+    await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('Hermes Gateway'), 'command center enter opens terminal');
+
+    await openCommandCenter();
+    commandInput = document.querySelector('[data-testid="command-center"] input');
+    commandInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'End' }));
+    await waitFor(() => {
+      const activeId = commandInput?.getAttribute('aria-activedescendant');
+      const activeRow = activeId ? document.getElementById(activeId) : null;
+      return activeRow?.getAttribute('aria-selected') === 'true' && activeId !== 'command-option-0';
+    }, 'command center end key selection');
+    commandInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Home' }));
+    await waitFor(() => {
+      const activeId = commandInput?.getAttribute('aria-activedescendant');
+      const activeRow = activeId ? document.getElementById(activeId) : null;
+      return activeId === 'command-option-0' && activeRow?.getAttribute('aria-selected') === 'true';
+    }, 'command center home key selection');
+    document.querySelector('.overlayBackdrop')?.click();
+    await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'command center keyboard test close');
+
     await waitFor(() => document.querySelector('[data-testid="right-workbench"]'), 'right workbench');
     const workbenchChecks = [
       ['文件', '变更文件'],
@@ -444,7 +472,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
