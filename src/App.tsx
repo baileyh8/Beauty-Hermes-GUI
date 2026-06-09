@@ -646,6 +646,32 @@ function localSlashUiTarget(command: string): LocalSlashUiTarget | null {
   return null;
 }
 
+function slashUiTargetLabel(target: LocalSlashUiTarget | null) {
+  if (!target) {
+    return '';
+  }
+
+  if (target.settingsSection) {
+    return settingsSections.find((section) => section.id === target.settingsSection)?.label || '设置';
+  }
+
+  if (target.surface) {
+    return surfaceMeta[target.surface]?.title || target.surface;
+  }
+
+  return '';
+}
+
+function slashWorkbenchLabel(tab?: WorkbenchTab) {
+  const labels: Record<WorkbenchTab, string> = {
+    activity: '活动',
+    files: '文件',
+    preview: '预览',
+    terminal: '终端',
+  };
+  return tab ? labels[tab] : '';
+}
+
 function bulletRows(rows: string[], fallback: string) {
   return rows.length > 0 ? rows.map((row) => `- ${row}`).join('\n') : `- ${fallback}`;
 }
@@ -679,6 +705,10 @@ function buildLocalSlashResponse(command: string, context: LocalSlashContext): L
         '- `/cron` 或 `/automation` 打开自动化页',
         '- `/messaging` 打开消息网关页',
         '- `/diagnostics` 打开诊断页',
+        '- `/profiles` 打开 Profiles 页并显示配置线索',
+        '- `/skills` 打开技能库并搜索本机 skills',
+        '- `/models` 打开模型设置并列出模型配置',
+        '- `/approval` 打开权限设置并查看审批队列',
         '- `/workbench [activity|files|terminal|preview]` 打开右侧工作区',
       ].join('\n'),
     };
@@ -686,10 +716,8 @@ function buildLocalSlashResponse(command: string, context: LocalSlashContext): L
 
   if (['/projects', '/agents', '/settings', '/cron', '/automation', '/messaging', '/diagnostics', '/onboarding', '/chat', '/workbench', '/terminal', '/files', '/preview', '/activity'].includes(name)) {
     const target = localSlashUiTarget(command);
-    const surfaceLabel = target?.settingsSection
-      ? settingsSections.find((section) => section.id === target.settingsSection)?.label
-      : target?.surface;
-    const workbenchLabel = target?.workbenchTab ? `，并展开 ${target.workbenchTab} 工作区` : '';
+    const surfaceLabel = slashUiTargetLabel(target);
+    const workbenchLabel = target?.workbenchTab ? `，并展开${slashWorkbenchLabel(target.workbenchTab)}工作区` : '';
 
     return {
       title: '界面指令',
@@ -3586,7 +3614,14 @@ function Composer({
       { desc: '查看 profile 配置线索', icon: <UsersRound size={16} />, insert: '/profiles', title: '/profiles' },
       { desc: '打开项目页', icon: <Folder size={16} />, insert: '/projects', title: '/projects' },
       { desc: '打开 Agents 队列', icon: <Bot size={16} />, insert: '/agents', title: '/agents' },
+      { desc: '打开自动化任务页', icon: <CalendarClock size={16} />, insert: '/cron', title: '/cron' },
+      { desc: '打开消息网关页', icon: <Network size={16} />, insert: '/messaging', title: '/messaging' },
+      { desc: '打开诊断与更新页', icon: <Wrench size={16} />, insert: '/diagnostics', title: '/diagnostics' },
+      { desc: '打开首次启动向导', icon: <Rocket size={16} />, insert: '/onboarding', title: '/onboarding' },
       { desc: '打开设置页', icon: <Settings size={16} />, insert: '/settings', title: '/settings' },
+      { desc: '打开文件工作区', icon: <File size={16} />, insert: '/files', title: '/files' },
+      { desc: '打开终端工作区', icon: <TerminalSquare size={16} />, insert: '/terminal', title: '/terminal' },
+      { desc: '打开预览工作区', icon: <Eye size={16} />, insert: '/preview', title: '/preview' },
       { desc: '打开右侧工作区', icon: <PanelRightOpen size={16} />, insert: '/workbench terminal', title: '/workbench' },
     ];
     const skills = runtime.inventory?.skills.slice(0, 12).map((skill) => ({

@@ -154,6 +154,8 @@ try {
     let textarea = document.querySelector('textarea[aria-label="消息"]');
     setNativeValue(textarea, '/');
     await waitFor(() => document.querySelector('.slashMenu')?.textContent?.includes('/help'), 'slash menu');
+    setNativeValue(textarea, '/mess');
+    await waitFor(() => document.querySelector('.slashMenu')?.textContent?.includes('/messaging'), 'slash messaging suggestion');
 
     setNativeValue(textarea, '/help');
     await sleep(120);
@@ -195,6 +197,39 @@ try {
     findButton('新建任务')?.click();
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash settings return to chat');
     await waitFor(() => document.body.innerText.includes('已处理 /settings'), 'slash settings response');
+    textarea = document.querySelector('textarea[aria-label="消息"]');
+    sendButton = document.querySelector('.sendButton');
+
+    setNativeValue(textarea, '/messaging');
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('消息网关'), 'slash messaging navigation');
+    await waitFor(() => document.body.innerText.includes('Messaging Gateway'), 'slash messaging content');
+    findButton('新建任务')?.click();
+    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash messaging return to chat');
+    await waitFor(() => document.body.innerText.includes('已处理 /messaging'), 'slash messaging response');
+    textarea = document.querySelector('textarea[aria-label="消息"]');
+    sendButton = document.querySelector('.sendButton');
+
+    setNativeValue(textarea, '/diagnostics');
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('诊断与更新'), 'slash diagnostics navigation');
+    await waitFor(() => document.body.innerText.includes('Desktop shell'), 'slash diagnostics content');
+    findButton('新建任务')?.click();
+    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash diagnostics return to chat');
+    await waitFor(() => document.body.innerText.includes('已处理 /diagnostics'), 'slash diagnostics response');
+    textarea = document.querySelector('textarea[aria-label="消息"]');
+    sendButton = document.querySelector('.sendButton');
+
+    setNativeValue(textarea, '/profiles');
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Profiles'), 'slash profiles navigation');
+    await waitFor(() => document.body.innerText.includes('工作身份'), 'slash profiles content');
+    findButton('新建任务')?.click();
+    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'slash profiles return to chat');
+    await waitFor(() => document.body.innerText.includes('默认模型') && document.body.innerText.includes('Provider'), 'slash profiles response');
     textarea = document.querySelector('textarea[aria-label="消息"]');
     sendButton = document.querySelector('.sendButton');
 
@@ -540,7 +575,7 @@ try {
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,
-      slashNavigation: ['/agents', '/settings', '/workbench'],
+      slashNavigation: ['/agents', '/settings', '/messaging', '/diagnostics', '/profiles', '/workbench'],
       uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering'],
       workbench: workbenchChecks.map(([label]) => label),
     };

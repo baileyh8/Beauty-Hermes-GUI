@@ -42,6 +42,12 @@ const requiredText = [
   'parseMarkdownTableLine',
   'pendingSidebarDeleteKey',
   'pendingCronDeleteId',
+  "insert: '/messaging'",
+  "insert: '/diagnostics'",
+  "insert: '/cron'",
+  "insert: '/terminal'",
+  'slashUiTargetLabel',
+  'slashWorkbenchLabel',
 ];
 
 const requiredStyles = [
