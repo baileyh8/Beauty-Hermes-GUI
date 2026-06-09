@@ -96,6 +96,11 @@ interface SidebarItem {
   title: string;
 }
 
+const preferenceStorageKeys = {
+  density: 'beauty-hermes-ui-density',
+  theme: 'beauty-hermes-ui-theme',
+} as const;
+
 interface ChatArtifactModel {
   kind: 'file' | 'terminal' | 'preview';
   meta: string;
@@ -2289,13 +2294,47 @@ function sidebarItemKey(item: SidebarItem) {
   return item.id || item.title;
 }
 
+function readStoredDensity(): UiDensity {
+  if (typeof window === 'undefined') {
+    return 'comfortable';
+  }
+
+  try {
+    const value = window.localStorage.getItem(preferenceStorageKeys.density);
+    return value === 'compact' || value === 'comfortable' ? value : 'comfortable';
+  } catch {
+    return 'comfortable';
+  }
+}
+
+function readStoredTheme(): UiTheme {
+  if (typeof window === 'undefined') {
+    return 'light';
+  }
+
+  try {
+    const value = window.localStorage.getItem(preferenceStorageKeys.theme);
+    return value === 'soft' || value === 'light' ? value : 'light';
+  } catch {
+    return 'light';
+  }
+}
+
+function writeStoredPreference(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Preference persistence should never block the main desktop workflow.
+  }
+}
+
 function App() {
   const runtime = useHermesRuntime();
   const [surface, setSurface] = useState<Surface>('chat');
   const [rightOpen, setRightOpen] = useState(true);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('activity');
-  const [uiDensity, setUiDensity] = useState<UiDensity>('comfortable');
-  const [uiTheme, setUiTheme] = useState<UiTheme>('light');
+  const [uiDensity, setUiDensity] = useState<UiDensity>(readStoredDensity);
+  const [uiTheme, setUiTheme] = useState<UiTheme>(readStoredTheme);
   const [attachmentOpen, setAttachmentOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
@@ -2306,6 +2345,14 @@ function App() {
   const [pendingSidebarDeleteKey, setPendingSidebarDeleteKey] = useState('');
   const [selectingSessionId, setSelectingSessionId] = useState('');
   const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    writeStoredPreference(preferenceStorageKeys.density, uiDensity);
+  }, [uiDensity]);
+
+  useEffect(() => {
+    writeStoredPreference(preferenceStorageKeys.theme, uiTheme);
+  }, [uiTheme]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

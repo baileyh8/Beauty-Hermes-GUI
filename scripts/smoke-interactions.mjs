@@ -117,6 +117,13 @@ try {
   const wsUrl = await waitForTarget();
   client = createCdpClient(wsUrl);
   await client.send('Runtime.enable');
+  await evaluate(client, `(() => {
+    localStorage.removeItem('beauty-hermes-ui-density');
+    localStorage.removeItem('beauty-hermes-ui-theme');
+    window.setTimeout(() => window.location.reload(), 0);
+    return true;
+  })()`);
+  await wait(1000);
 
   const result = await evaluate(client, `(${async () => {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -179,6 +186,8 @@ try {
     };
 
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'composer');
+    await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-density') === 'comfortable', 'default density after preference reset');
+    await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'light', 'default theme after preference reset');
     await waitFor(() => document.querySelectorAll('.emptyHints button').length === 3, 'empty prompt action buttons');
     if (!Array.from(document.querySelectorAll('.emptyHints button')).every((button) => button.disabled)) {
       throw new Error('Empty prompt action buttons should be disabled while gateway is skipped.');
@@ -546,8 +555,10 @@ try {
     await selectSettingsSection('外观', '界面密度');
     findSettingButton('界面密度', '舒适').click();
     await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-density') === 'compact', 'compact density applied');
+    await waitFor(() => localStorage.getItem('beauty-hermes-ui-density') === 'compact', 'compact density persisted');
     findSettingButton('主题', '浅色').click();
     await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'soft', 'soft theme applied');
+    await waitFor(() => localStorage.getItem('beauty-hermes-ui-theme') === 'soft', 'soft theme persisted');
     await waitFor(() => document.body.innerText.includes('主题已切换为柔和'), 'theme status feedback');
 
     await selectSettingsSection('集成', 'Gateway');

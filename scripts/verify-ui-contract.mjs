@@ -67,6 +67,10 @@ const requiredText = [
   'setPendingClarify(null)',
   'setTools([])',
   'setFiles([])',
+  'preferenceStorageKeys',
+  'readStoredDensity',
+  'readStoredTheme',
+  'writeStoredPreference',
 ];
 
 const requiredStyles = [
