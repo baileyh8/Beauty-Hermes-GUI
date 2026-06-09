@@ -736,6 +736,13 @@ kbd {
   background: transparent;
 }
 
+.approvalInlineActions button:disabled,
+.clarifyInlineActions button:disabled,
+.clarifyInlineActions input:disabled {
+  cursor: default;
+  opacity: 0.56;
+}
+
 .clarifyInlineActions form {
   width: 100%;
   display: grid;
@@ -753,6 +760,14 @@ kbd {
   color: var(--text);
   background: #fff;
   font-size: 13px;
+}
+
+.inlineActionStatus {
+  width: 100%;
+  margin: 2px 0 0;
+  color: #717882;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .checkCard {
@@ -2517,6 +2532,14 @@ kbd {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.modalStatus {
+  margin: 12px 0 0;
+  color: #717882;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
 }
 
 /* Codex visual calibration */

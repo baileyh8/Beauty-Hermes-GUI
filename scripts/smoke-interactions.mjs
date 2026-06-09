@@ -271,6 +271,12 @@ try {
         }
       }
     }
+    findButton('查看审批超时态', document.querySelector('[data-testid="right-workbench"]'))?.click();
+    await waitFor(() => document.querySelector('[data-testid="approval-modal"]')?.textContent?.includes('审批已超时'), 'timeout approval modal');
+    findButton('重新请求审批', document.querySelector('[data-testid="approval-modal"]'))?.click();
+    await waitFor(() => document.querySelector('[data-testid="approval-modal"] .modalStatus')?.textContent?.includes('重新标记'), 'timeout approval feedback');
+    document.querySelector('.overlayBackdrop')?.click();
+    await waitFor(() => !document.querySelector('[data-testid="approval-modal"]'), 'timeout approval close');
     findButton('收起工作区')?.click();
     await waitFor(() => !document.querySelector('[data-testid="right-workbench"]') && document.querySelector('.floatingWorkbenchButton'), 'workbench collapse');
     findButton('展开工作区')?.click();
@@ -484,7 +490,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

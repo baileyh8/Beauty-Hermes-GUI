@@ -3125,6 +3125,8 @@ function MessageEventCard({
   onRespondClarify: HermesRuntime['respondClarify'];
 }) {
   const [clarifyDraft, setClarifyDraft] = useState('');
+  const [actionBusy, setActionBusy] = useState('');
+  const [actionStatus, setActionStatus] = useState('');
   const isApproval = message.kind === 'approval';
   const isClarify = message.kind === 'clarify';
   const isTool = message.kind === 'tool';
@@ -3135,6 +3137,38 @@ function MessageEventCard({
   const showActionBody = !isTool && !isReasoning && !isStatus && Boolean(message.text.trim());
   const phaseText = isReasoning ? reasoningPhaseText(message) : '';
   const detailsText = isTool ? (message.details || message.command) : (message.details || message.command || message.text);
+  const submitApproval = async (choice: 'once' | 'session' | 'always' | 'deny') => {
+    try {
+      setActionBusy(choice);
+      setActionStatus('');
+      await onRespondApproval(choice);
+      setActionStatus(choice === 'deny' ? '审批已拒绝。' : '审批已提交。');
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      setActionStatus(`审批提交失败：${messageText}`);
+    } finally {
+      setActionBusy('');
+    }
+  };
+  const submitClarify = async (answer: string) => {
+    const text = answer.trim();
+    if (!text) {
+      return;
+    }
+
+    try {
+      setActionBusy('clarify');
+      setActionStatus('');
+      await onRespondClarify(text);
+      setClarifyDraft('');
+      setActionStatus('澄清回复已提交。');
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      setActionStatus(`澄清提交失败：${messageText}`);
+    } finally {
+      setActionBusy('');
+    }
+  };
 
   return (
     <div className={`eventBlock ${message.kind} ${message.status ?? ''}`}>
@@ -3170,37 +3204,37 @@ function MessageEventCard({
       )}
       {isApproval && message.status === 'pending' && (
         <div className="approvalInlineActions">
-          <button type="button" onClick={() => void onRespondApproval('once')}>本次允许</button>
-          <button type="button" onClick={() => void onRespondApproval('session')}>当前会话</button>
-          <button type="button" onClick={() => void onRespondApproval('always')}>始终允许</button>
-          <button className="danger" type="button" onClick={() => void onRespondApproval('deny')}>拒绝</button>
-          <button className="ghost" type="button" onClick={onOpenApproval}>详情</button>
+          <button type="button" disabled={Boolean(actionBusy)} onClick={() => void submitApproval('once')}>{actionBusy === 'once' ? '提交中' : '本次允许'}</button>
+          <button type="button" disabled={Boolean(actionBusy)} onClick={() => void submitApproval('session')}>{actionBusy === 'session' ? '提交中' : '当前会话'}</button>
+          <button type="button" disabled={Boolean(actionBusy)} onClick={() => void submitApproval('always')}>{actionBusy === 'always' ? '提交中' : '始终允许'}</button>
+          <button className="danger" type="button" disabled={Boolean(actionBusy)} onClick={() => void submitApproval('deny')}>{actionBusy === 'deny' ? '提交中' : '拒绝'}</button>
+          <button className="ghost" type="button" disabled={Boolean(actionBusy)} onClick={onOpenApproval}>详情</button>
+          {actionStatus && <p className="inlineActionStatus" role="status">{actionStatus}</p>}
         </div>
       )}
       {isClarify && message.status === 'pending' && (
         <div className="clarifyInlineActions">
           {message.choices?.map((choice) => (
-            <button key={choice} type="button" onClick={() => void onRespondClarify(choice)}>
-              {choice}
+            <button key={choice} type="button" disabled={Boolean(actionBusy)} onClick={() => void submitClarify(choice)}>
+              {actionBusy === 'clarify' ? '提交中' : choice}
             </button>
           ))}
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              if (clarifyDraft.trim()) {
-                void onRespondClarify(clarifyDraft.trim());
-                setClarifyDraft('');
-              }
+              void submitClarify(clarifyDraft);
             }}
           >
             <input
               aria-label="澄清回复"
+              disabled={Boolean(actionBusy)}
               onChange={(event) => setClarifyDraft(event.target.value)}
               placeholder="输入补充信息"
               value={clarifyDraft}
             />
-            <button type="submit">发送</button>
+            <button type="submit" disabled={Boolean(actionBusy)}>{actionBusy === 'clarify' ? '发送中' : '发送'}</button>
           </form>
+          {actionStatus && <p className="inlineActionStatus" role="status">{actionStatus}</p>}
         </div>
       )}
     </div>
@@ -4383,6 +4417,7 @@ function ApprovalModal({
   onClose: () => void;
   onDeny: () => void;
 }) {
+  const [modalStatus, setModalStatus] = useState('');
   const content = {
     risk: {
       icon: <Shield size={24} />,
@@ -4430,7 +4465,7 @@ function ApprovalModal({
             拒绝
           </button>
           {variant === 'timeout' ? (
-            <button className="primaryButtonInline" type="button" onClick={onClose}>
+            <button className="primaryButtonInline" type="button" onClick={() => setModalStatus('审批已重新标记，请回到会话重新发送。')}>
               重新请求审批
             </button>
           ) : variant === 'permission' ? (
@@ -4438,23 +4473,24 @@ function ApprovalModal({
               className="primaryButtonInline"
               type="button"
               onClick={() => {
-                window.open('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles', '_blank', 'noopener,noreferrer');
-                onClose();
+                const settingsWindow = window.open('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles', '_blank', 'noopener,noreferrer');
+                setModalStatus(settingsWindow ? '系统设置已打开。' : '系统设置可能被系统拦截，请手动打开隐私与安全性。');
               }}
             >
               打开系统设置
             </button>
           ) : (
             <>
-              <button className="secondaryButton" type="button" onClick={onClose}>
+              <button className="secondaryButton" type="button" onClick={() => setModalStatus('已允许本次命令。')}>
                 本次允许
               </button>
-              <button className="primaryButtonInline" type="button" onClick={onClose}>
+              <button className="primaryButtonInline" type="button" onClick={() => setModalStatus('已允许并记住当前项目。')}>
                 允许并记住当前项目
               </button>
             </>
           )}
         </div>
+        {modalStatus && <p className="modalStatus" role="status">{modalStatus}</p>}
       </div>
     </div>
   );
