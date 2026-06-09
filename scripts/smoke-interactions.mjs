@@ -136,6 +136,18 @@ try {
       setter.call(element, value);
       element.dispatchEvent(new Event('input', { bubbles: true }));
     };
+    const findButton = (label, root = document) => Array.from(root.querySelectorAll('button'))
+      .find((item) => item.textContent?.includes(label) || item.getAttribute('aria-label')?.includes(label));
+    const findCommandRow = (title) => Array.from(document.querySelectorAll('.commandRow'))
+      .find((item) => item.querySelector('strong')?.textContent?.trim() === title);
+    const openCommandCenter = async (query = '') => {
+      document.querySelector('.searchBox.asButton')?.click();
+      await waitFor(() => document.querySelector('[data-testid="command-center"]'), 'command center');
+      const input = document.querySelector('[data-testid="command-center"] input');
+      setNativeValue(input, query);
+      await sleep(120);
+      return document.querySelector('[data-testid="command-center"]');
+    };
 
     await waitFor(() => document.querySelector('[data-testid="composer"]'), 'composer');
 
@@ -152,10 +164,34 @@ try {
     sendButton.click();
     await waitFor(() => document.body.innerText.includes('/skills [关键词]'), 'local slash output');
 
-    document.querySelector('.searchBox.asButton')?.click();
-    await waitFor(() => document.querySelector('[data-testid="command-center"]'), 'command center');
+    findButton('添加')?.click();
+    await waitFor(() => document.querySelector('.attachmentMenu')?.textContent?.includes('URL...'), 'attachment menu');
+    findButton('URL...', document.querySelector('.attachmentMenu'))?.click();
+    await waitFor(() => document.querySelector('.menuUrlForm input'), 'url form');
+    setNativeValue(document.querySelector('.menuUrlForm input'), 'https://example.com/spec');
+    findButton('添加', document.querySelector('.menuUrlForm'))?.click();
+    await waitFor(() => textarea.value.includes('https://example.com/spec'), 'url inserted');
+    setNativeValue(textarea, '');
+
+    await openCommandCenter();
     document.querySelector('.overlayBackdrop')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'command center close');
+
+    await waitFor(() => document.querySelector('[data-testid="right-workbench"]'), 'right workbench');
+    const workbenchChecks = [
+      ['文件', '变更文件'],
+      ['终端', 'Hermes Gateway'],
+      ['预览', '暂无预览产物'],
+      ['活动', '当前任务'],
+    ];
+    for (const [tab, expected] of workbenchChecks) {
+      findButton(tab, document.querySelector('[data-testid="right-workbench"]'))?.click();
+      await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes(expected), `${tab} tab`);
+    }
+    findButton('收起工作区')?.click();
+    await waitFor(() => !document.querySelector('[data-testid="right-workbench"]') && document.querySelector('.floatingWorkbenchButton'), 'workbench collapse');
+    findButton('展开工作区')?.click();
+    await waitFor(() => document.querySelector('[data-testid="right-workbench"]'), 'workbench expand');
 
     const pages = [
       ['Profiles', '工作身份'],
@@ -185,10 +221,50 @@ try {
       throw new Error(failures.join('; '));
     }
 
+    findButton('设置')?.click();
+    await waitFor(() => document.body.innerText.includes('启动行为'), 'settings general');
+    const settingsSections = [
+      ['模型', '默认模型'],
+      ['权限', '命令审批'],
+      ['集成', 'Gateway'],
+      ['外观', '界面密度'],
+      ['高级', 'Hermes Home'],
+      ['通用', '启动行为'],
+    ];
+    for (const [section, expected] of settingsSections) {
+      const button = Array.from(document.querySelectorAll('.settingNavItem')).find((item) => item.textContent?.includes(section));
+      if (!button) {
+        throw new Error(`Missing settings section ${section}`);
+      }
+      button.click();
+      await waitFor(() => document.body.innerText.includes(expected), `${section} settings`);
+    }
+
+    await openCommandCenter('首次启动');
+    await waitFor(() => document.querySelector('[data-testid="command-center"]')?.innerText.includes('首次启动'), 'onboarding command');
+    await waitFor(() => findCommandRow('首次启动'), 'onboarding command row');
+    findCommandRow('首次启动')?.click();
+    await waitFor(() => document.querySelector('.onboardingSurface'), 'onboarding page');
+    document.querySelector('.choiceGrid button:nth-child(2)')?.click();
+    await waitFor(() => document.querySelector('.primaryButtonInline.wide')?.textContent?.includes('配置 Gateway'), 'remote onboarding action');
+    document.querySelector('.primaryButtonInline.wide')?.click();
+    await waitFor(() => document.body.innerText.includes('Hermes Agent 与本地服务') && document.body.innerText.includes('Gateway'), 'remote onboarding target');
+
+    await openCommandCenter('首次启动');
+    await waitFor(() => findCommandRow('首次启动'), 'onboarding command row again');
+    findCommandRow('首次启动')?.click();
+    await waitFor(() => document.querySelector('.onboardingSurface'), 'onboarding page again');
+    document.querySelector('.choiceGrid button:nth-child(3)')?.click();
+    await waitFor(() => document.querySelector('.primaryButtonInline.wide')?.textContent?.includes('查看诊断'), 'status onboarding action');
+    document.querySelector('.primaryButtonInline.wide')?.click();
+    await waitFor(() => document.body.innerText.includes('诊断与更新'), 'status onboarding target');
+
     return {
       commandCenter: true,
       pages: pages.map(([label]) => label),
+      settings: settingsSections.map(([label]) => label),
       slash: true,
+      workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
 

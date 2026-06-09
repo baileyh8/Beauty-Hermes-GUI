@@ -1271,6 +1271,13 @@ kbd {
   background: #fff;
 }
 
+.workbenchActions button:disabled,
+.terminalHeader button:disabled,
+.diagnosticCard button:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
 .recoveryBlock {
   max-width: 650px;
   padding: 14px;
@@ -2171,6 +2178,12 @@ kbd {
 .choiceGrid button:hover {
   border-color: #c8d8ff;
   background: #f7faff;
+}
+
+.choiceGrid button:focus-visible,
+.primaryButtonInline:focus-visible {
+  outline: 2px solid rgba(47, 103, 232, 0.28);
+  outline-offset: 2px;
 }
 
 .choiceGrid svg {

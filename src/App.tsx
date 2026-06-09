@@ -2233,7 +2233,22 @@ function App() {
           <SettingsSurface runtime={runtime} selected={settingsSection} onSelect={setSettingsSection} />
         )}
         {surface === 'diagnostics' && <DiagnosticsSurface runtime={runtime} onOpenPermission={() => setApprovalVariant('permission')} />}
-        {surface === 'onboarding' && <OnboardingSurface onFinish={() => setSurface('chat')} />}
+        {surface === 'onboarding' && (
+          <OnboardingSurface
+            onFinish={(target) => {
+              if (target === 'integrations') {
+                setSettingsSection('integrations');
+                setSurface('settings');
+                return;
+              }
+              if (target === 'diagnostics') {
+                setSurface('diagnostics');
+                return;
+              }
+              setSurface('chat');
+            }}
+          />
+        )}
       </main>
 
       {showWorkbench && (
@@ -3604,7 +3619,7 @@ function WorkbenchFiles({ files }: { files: GatewayFileItem[] }) {
         <pre className="miniCode"><code>{diffSummary}</code></pre>
         <div className="workbenchActions">
           <button type="button" onClick={copySummary}>{copied ? '已复制' : '复制摘要'}</button>
-          <button type="button" onClick={copySummary}>复制路径</button>
+          <button type="button" onClick={copySummary}>复制条目</button>
         </div>
       </section>
     </>
@@ -3658,6 +3673,7 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
           <button type="button" onClick={() => void runtime.refreshInventory()}>刷新</button>
           <button
             type="button"
+            disabled={!runtime.connection?.baseUrl}
             onClick={() => {
               if (runtime.connection?.baseUrl) {
                 window.open(runtime.connection.baseUrl, '_blank', 'noopener,noreferrer');
@@ -3831,19 +3847,26 @@ function CommandCenter({
       })) ?? []),
     ];
 
-    if (query.trim()) {
-      list.unshift({
+    const queryText = query.trim();
+    if (queryText) {
+      const promptAction: CommandCenterAction = {
         action: '发送',
-        desc: `把“${compactLine(query, 48)}”作为新任务发送给 Hermes`,
+        desc: `把“${compactLine(queryText, 48)}”作为新任务发送给 Hermes`,
         group: '常用动作',
         icon: <SendHorizontal />,
-        keywords: `${query} prompt send 发送`,
+        keywords: `${queryText} prompt send 发送`,
         run: () => {
           onClose();
-          void runtime.submitPrompt(query.trim());
+          void runtime.submitPrompt(queryText);
         },
         title: '用当前输入新建任务',
-      });
+      };
+      const exactMatch = list.some((action) => action.title.toLowerCase() === queryText.toLowerCase());
+      if (exactMatch) {
+        list.push(promptAction);
+      } else {
+        list.unshift(promptAction);
+      }
     }
 
     return list;
@@ -5078,13 +5101,14 @@ function DiagnosticCard({
       {icon}
       <strong>{title}</strong>
       <p>{desc}</p>
-      <button type="button" onClick={action}>{state}</button>
+      <button type="button" onClick={action} disabled={!action}>{state}</button>
     </article>
   );
 }
 
-function OnboardingSurface({ onFinish }: { onFinish: () => void }) {
+function OnboardingSurface({ onFinish }: { onFinish: (target: 'chat' | 'diagnostics' | 'integrations') => void }) {
   const [selectedMode, setSelectedMode] = useState<'local' | 'remote' | 'status'>('local');
+  const finishTarget = selectedMode === 'remote' ? 'integrations' : selectedMode === 'status' ? 'diagnostics' : 'chat';
 
   return (
     <section className="onboardingSurface">
@@ -5111,8 +5135,8 @@ function OnboardingSurface({ onFinish }: { onFinish: () => void }) {
             <span>确认 Gateway、会话和审批事件</span>
           </button>
         </div>
-        <button className="primaryButtonInline wide" type="button" onClick={onFinish}>
-          进入工作台
+        <button className="primaryButtonInline wide" type="button" onClick={() => onFinish(finishTarget)}>
+          {selectedMode === 'remote' ? '配置 Gateway' : selectedMode === 'status' ? '查看诊断' : '进入工作台'}
         </button>
       </div>
     </section>
