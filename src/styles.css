@@ -4646,6 +4646,16 @@ kbd {
   color: #9aa0a8;
 }
 
+.sessionRow.loading {
+  background: #eef2f7;
+}
+
+.sessionMain:disabled,
+.rowActions button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
 .utilityRow {
   min-height: 40px;
   padding: 6px 8px;

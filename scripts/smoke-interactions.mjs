@@ -208,6 +208,18 @@ try {
     await waitFor(() => textarea.value.includes('https://example.com/spec'), 'url inserted');
     await waitFor(() => document.querySelector('.composerNotice')?.textContent?.includes('URL 已添加'), 'url inserted feedback');
     setNativeValue(textarea, '');
+
+    const firstSessionButton = document.querySelector('.sessionMain[data-session-id]');
+    if (firstSessionButton) {
+      firstSessionButton.click();
+      await waitFor(
+        () => document.querySelector('.toastNotice')?.textContent?.includes('正在打开')
+          || document.querySelector('.toastNotice')?.textContent?.includes('已打开')
+          || document.querySelector('.toastNotice')?.textContent?.includes('打开会话失败'),
+        'session selection toast feedback',
+      );
+    }
+
     findButton('语音输入')?.click();
     await waitFor(
       () => document.querySelector('.composerNotice')?.textContent?.includes('语音') || document.querySelector('.ghostIcon.active'),
@@ -497,7 +509,7 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/settings', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback'],
+      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback'],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);

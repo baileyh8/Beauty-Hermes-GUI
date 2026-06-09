@@ -2179,6 +2179,7 @@ function App() {
   const [deniedRecovery, setDeniedRecovery] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [hiddenSidebarKeys, setHiddenSidebarKeys] = useState<string[]>([]);
+  const [selectingSessionId, setSelectingSessionId] = useState('');
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
@@ -2266,6 +2267,20 @@ function App() {
         showNotice(`删除失败：${message}`);
       });
   }, [hideSidebarItem, runtime, showNotice]);
+  const handleSelectSession = useCallback((sessionId: string) => {
+    const item = runtime.recentSessions.find((row) => row.id === sessionId);
+    setSurface('chat');
+    setSelectingSessionId(sessionId);
+    showNotice(`正在打开 ${item?.title || '会话'}`);
+
+    void runtime.selectSession(sessionId)
+      .then(() => showNotice(`${item?.title || '会话'} 已打开`))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        showNotice(`打开会话失败：${message}`);
+      })
+      .finally(() => setSelectingSessionId(''));
+  }, [runtime, showNotice]);
 
   return (
     <div
@@ -2281,10 +2296,7 @@ function App() {
         model={runtime.model}
         onSurfaceChange={setSurface}
         onOpenCommand={() => setCommandOpen(true)}
-        onSelectSession={(sessionId) => {
-          setSurface('chat');
-          void runtime.selectSession(sessionId);
-        }}
+        onSelectSession={handleSelectSession}
         onArchiveItem={handleArchiveItem}
         onDeleteItem={handleDeleteItem}
         onMoreItem={(item) => {
@@ -2294,6 +2306,7 @@ function App() {
         recentItems={visibleRecentItems}
         projectItems={visibleProjectItems}
         selectedStoredSessionId={runtime.selectedStoredSessionId}
+        selectingSessionId={selectingSessionId}
         statusText={runtime.connectionLabel}
       />
 
@@ -2483,6 +2496,7 @@ function Sidebar({
   projectItems,
   recentItems,
   selectedStoredSessionId,
+  selectingSessionId,
   statusText,
 }: {
   activeSessionId: null | string;
@@ -2498,6 +2512,7 @@ function Sidebar({
   projectItems: SidebarItem[];
   recentItems: SidebarItem[];
   selectedStoredSessionId: null | string;
+  selectingSessionId: string;
   statusText: string;
 }) {
   const utilityItems: Array<{ id: Surface; label: string; meta: string; icon: React.ReactNode }> = [
@@ -2543,6 +2558,7 @@ function Sidebar({
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
+          selectingSessionId={selectingSessionId}
         />
         <ProjectSection
           items={projectItems}
@@ -2562,6 +2578,7 @@ function Sidebar({
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
+          selectingSessionId={selectingSessionId}
         />
 
         <section className="navSection">
@@ -2625,6 +2642,7 @@ function SidebarSection({
   onMoreItem,
   onSelectSession,
   selectedSessionId,
+  selectingSessionId,
 }: {
   title: string;
   muted?: boolean;
@@ -2636,6 +2654,7 @@ function SidebarSection({
   onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
   selectedSessionId: null | string;
+  selectingSessionId: string;
 }) {
   const orderedItems = useMemo(() => {
     if (!selectedSessionId) {
@@ -2660,6 +2679,7 @@ function SidebarSection({
           item={item}
           muted={muted}
           active={item.id ? item.id === selectedSessionId : !selectedSessionId && !muted && index === 0}
+          busy={Boolean(item.id && item.id === selectingSessionId)}
           onSelect={() => {
             onOpenChat();
             if (item.id) {
@@ -2714,6 +2734,7 @@ function ProjectSection({
 function SessionRow({
   item,
   active,
+  busy,
   muted,
   onArchive,
   onDelete,
@@ -2722,6 +2743,7 @@ function SessionRow({
 }: {
   item: SidebarItem;
   active?: boolean;
+  busy?: boolean;
   muted?: boolean;
   onArchive?: () => void;
   onDelete?: () => void;
@@ -2729,12 +2751,12 @@ function SessionRow({
   onSelect: () => void;
 }) {
   return (
-    <div className={active ? 'sessionRow active' : 'sessionRow'}>
-      <button className="sessionMain" data-session-id={item.id} type="button" onClick={onSelect}>
+    <div className={`${active ? 'sessionRow active' : 'sessionRow'}${busy ? ' loading' : ''}`}>
+      <button className="sessionMain" data-session-id={item.id} type="button" disabled={busy} onClick={onSelect}>
         <span className={`statusDot ${item.color ?? (muted ? 'gray' : 'blue')}`} />
         <span className="sessionText">
           <strong>{item.title}</strong>
-          <span>{item.meta}</span>
+          <span>{busy ? '打开中...' : item.meta}</span>
         </span>
       </button>
       <div className="rowActions" aria-label="会话操作">
@@ -2742,6 +2764,7 @@ function SessionRow({
           type="button"
           aria-label="归档"
           title="归档"
+          disabled={busy}
           onClick={(event) => {
             event.stopPropagation();
             onArchive?.();
@@ -2753,6 +2776,7 @@ function SessionRow({
           type="button"
           aria-label="删除"
           title="删除"
+          disabled={busy}
           onClick={(event) => {
             event.stopPropagation();
             onDelete?.();
@@ -2764,6 +2788,7 @@ function SessionRow({
           type="button"
           aria-label="更多"
           title="更多"
+          disabled={busy}
           onClick={(event) => {
             event.stopPropagation();
             onMore?.();
