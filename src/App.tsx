@@ -935,6 +935,33 @@ function useHermesRuntime(): HermesRuntime {
     [],
   );
 
+  const resumeRuntimeSession = useCallback(
+    async (
+      client: JsonRpcGatewayClient,
+      storedSessionId: string,
+      options: { replaceTranscript?: boolean } = {},
+    ) => {
+      const resumed = await client.request<SessionCreateResponse>(
+        'session.resume',
+        { cols: 96, session_id: storedSessionId },
+        60000,
+      );
+      const runtimeSessionId = resumed.session_id || storedSessionId;
+      setActiveSessionId(runtimeSessionId);
+      activeSessionIdRef.current = runtimeSessionId;
+      patchRuntimeInfo(resumed.info);
+
+      const resumedTranscript = messagesFromStoredTranscript(resumed.messages ?? [], runtimeSessionId);
+      if (options.replaceTranscript && resumedTranscript.length > 0) {
+        setMessages(resumedTranscript);
+      }
+
+      setStatusText('就绪');
+      return runtimeSessionId;
+    },
+    [patchRuntimeInfo],
+  );
+
   const handleGatewayEvent = useCallback(
     (event: GatewayEvent) => {
       const payload = payloadRecord(event);
@@ -1217,46 +1244,64 @@ function useHermesRuntime(): HermesRuntime {
 
     setGatewayStatus('starting');
     setStatusText('正在启动 Hermes Gateway');
+    const desktop = window.hermesDesktop;
 
     try {
-      const nextConnection = await window.hermesDesktop.startHermes();
+      const nextConnection = await desktop.startHermes();
       setConnection(nextConnection);
       setLogs(nextConnection.logs ?? []);
-      setGatewayStatus(nextConnection.status === 'skipped' ? 'skipped' : 'connected');
-      setStatusText(nextConnection.status === 'skipped' ? 'Gateway smoke 模式' : '正在连接 WebSocket');
-
-      const [sessionsResponse, statusResponse] = await Promise.allSettled([
-        window.hermesDesktop.api<SessionListResponse>({
-          path: '/api/sessions?limit=20&offset=0&min_messages=1&archived=exclude&order=recent',
-          timeoutMs: 60000,
-        }),
-        window.hermesDesktop.api<Record<string, unknown>>({ path: '/api/status' }),
-      ]);
-
-      if (sessionsResponse.status === 'fulfilled') {
-        const nextItems = sessionsToSidebarItems(sessionsResponse.value);
-        if (nextItems.length > 0) {
-          setRecentSessionItems(nextItems);
-        }
-      }
-
-      if (statusResponse.status === 'fulfilled') {
-        const version = typeof statusResponse.value.version === 'string' ? statusResponse.value.version : '';
-        setLogs((current) => [`Hermes status OK${version ? ` · ${version}` : ''}`, ...current].slice(0, 120));
-      }
 
       if (nextConnection.status === 'skipped') {
+        setGatewayStatus('skipped');
+        setStatusText('Gateway smoke 模式');
         return;
       }
 
-      const wsUrl = await window.hermesDesktop.getGatewayWsUrl();
+      setStatusText('正在连接 Hermes Gateway');
+      const wsUrl = await desktop.getGatewayWsUrl();
       const client = new JsonRpcGatewayClient();
       clientRef.current?.close();
       clientRef.current = client;
       client.onAny(handleGatewayEvent);
       client.onState(setSocketState);
       await client.connect(wsUrl);
+      setGatewayStatus('connected');
       setStatusText('就绪');
+
+      const selectedSessionId = selectedStoredSessionIdRef.current;
+      if (selectedSessionId && !activeSessionIdRef.current) {
+        void resumeRuntimeSession(client, selectedSessionId).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setStatusText('历史会话恢复失败');
+          setLogs((current) => [`Session resume error: ${message}`, ...current].slice(0, 120));
+        });
+      }
+
+      void (async () => {
+        const [sessionsResponse, statusResponse] = await Promise.allSettled([
+          desktop.api<SessionListResponse>({
+            path: '/api/sessions?limit=20&offset=0&min_messages=1&archived=exclude&order=recent',
+            timeoutMs: 12000,
+          }),
+          desktop.api<Record<string, unknown>>({ path: '/api/status', timeoutMs: 12000 }),
+        ]);
+
+        if (sessionsResponse.status === 'fulfilled') {
+          const nextItems = sessionsToSidebarItems(sessionsResponse.value);
+          if (nextItems.length > 0) {
+            setRecentSessionItems(nextItems);
+          }
+        } else {
+          setLogs((current) => [`Session list error: ${sessionsResponse.reason}`, ...current].slice(0, 120));
+        }
+
+        if (statusResponse.status === 'fulfilled') {
+          const version = typeof statusResponse.value.version === 'string' ? statusResponse.value.version : '';
+          setLogs((current) => [`Hermes status OK${version ? ` · ${version}` : ''}`, ...current].slice(0, 120));
+        } else {
+          setLogs((current) => [`Hermes status error: ${statusResponse.reason}`, ...current].slice(0, 120));
+        }
+      })();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setGatewayStatus('error');
@@ -1271,7 +1316,7 @@ function useHermesRuntime(): HermesRuntime {
         title: '无法连接 Hermes Gateway',
       });
     }
-  }, [handleGatewayEvent, upsertMessage]);
+  }, [handleGatewayEvent, resumeRuntimeSession, upsertMessage]);
 
   useEffect(() => {
     void connectGateway();
@@ -1299,6 +1344,16 @@ function useHermesRuntime(): HermesRuntime {
       statusMessageIdRef.current = null;
       toolDigestMessageIdRef.current = null;
       setStatusText('正在加载会话');
+      setMessages([
+        {
+          id: makeId('session-loading'),
+          kind: 'status',
+          sessionId: storedSessionId,
+          status: 'running',
+          text: '正在打开历史会话。',
+          title: '打开会话',
+        },
+      ]);
 
       if (!window.hermesDesktop) {
         setMessages([
@@ -1353,33 +1408,14 @@ function useHermesRuntime(): HermesRuntime {
 
       const client = clientRef.current;
       if (!client || client.connectionState !== 'open') {
-        setActiveSessionId(storedSessionId);
-        activeSessionIdRef.current = storedSessionId;
-        setStatusText('已打开历史会话');
+        setStatusText('已打开历史会话，等待 Gateway 连接');
         return;
       }
 
       try {
-        const resumed = await client.request<SessionCreateResponse>(
-          'session.resume',
-          { cols: 96, session_id: storedSessionId },
-          60000,
-        );
-        const runtimeSessionId = resumed.session_id || storedSessionId;
-        setActiveSessionId(runtimeSessionId);
-        activeSessionIdRef.current = runtimeSessionId;
-        patchRuntimeInfo(resumed.info);
-
-        const resumedTranscript = messagesFromStoredTranscript(resumed.messages ?? [], runtimeSessionId);
-        if (!paintedTranscript && resumedTranscript.length > 0) {
-          setMessages(resumedTranscript);
-        }
-
-        setStatusText('就绪');
+        await resumeRuntimeSession(client, storedSessionId, { replaceTranscript: !paintedTranscript });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        setActiveSessionId(storedSessionId);
-        activeSessionIdRef.current = storedSessionId;
         setStatusText('历史会话已打开，运行时恢复失败');
         upsertMessage({
           id: makeId('session-resume-error'),
@@ -1391,7 +1427,7 @@ function useHermesRuntime(): HermesRuntime {
         });
       }
     },
-    [patchRuntimeInfo, upsertMessage],
+    [resumeRuntimeSession, upsertMessage],
   );
 
   const submitPrompt = useCallback(
@@ -2396,7 +2432,7 @@ function eventLineLabel(message: ChatMessageModel) {
 
 function reasoningPhaseText(message: ChatMessageModel) {
   if (message.status === 'running') {
-    return '正在梳理上下文、命令输出和下一步。';
+    return '正在梳理命令输出和下一步。';
   }
 
   return '';
@@ -2466,7 +2502,7 @@ function Composer({
 
   return (
     <div className="composerWrap" data-testid="composer">
-      <div className="composerMeta" aria-label="任务上下文">
+      <div className="composerMeta" aria-label="任务状态">
         <button className="permission" type="button" title="完全访问">
           <Shield size={17} />
           完全访问
@@ -2480,9 +2516,9 @@ function Composer({
           <span className="workdirLabel">工作目录</span>
           <span className="workdirPath">{shortenPath(runtime.cwd)}</span>
         </button>
-        <button className="contextMeter" type="button" title={`上下文 ${runtime.contextPercent}%`}>
+        <button className="contextMeter" type="button" title={`${runtime.contextPercent}% · 1M`}>
           <span className="contextTrack"><span style={{ width: `${Math.max(5, runtime.contextPercent)}%` }} /></span>
-          上下文 {runtime.contextPercent}% · 1M
+          {runtime.contextPercent}% · 1M
         </button>
       </div>
 
@@ -2910,7 +2946,7 @@ function ApprovalModal({
     timeout: {
       icon: <Clock size={24} />,
       title: '审批已超时',
-      desc: '原命令的上下文已经变化，需要重新计算风险和工作目录后再请求确认。',
+      desc: '原命令的运行环境已经变化，需要重新计算风险和工作目录后再请求确认。',
       code: 'npm run test:desktop -- --approval-ui --update-snapshots',
       details: ['过期: 6 分钟前', '状态: 未执行', '建议: 重新请求审批', '恢复: 返回线程'],
     },

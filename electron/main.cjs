@@ -106,6 +106,7 @@ function createWindow() {
 
     if (process.env.BEAUTY_HERMES_CAPTURE_PATH && !smokeCaptureWritten) {
       smokeCaptureWritten = true;
+      const captureDelayMs = Number(process.env.BEAUTY_HERMES_CAPTURE_DELAY_MS || 300);
       setTimeout(() => {
         win.webContents.capturePage()
           .then((image) => {
@@ -115,7 +116,7 @@ function createWindow() {
           .catch((error) => {
             console.error(`[beauty-hermes] capture-failed ${error instanceof Error ? error.message : String(error)}`);
           });
-      }, 300);
+      }, Number.isFinite(captureDelayMs) ? Math.max(0, captureDelayMs) : 300);
     }
   };
 

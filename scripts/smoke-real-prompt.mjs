@@ -189,6 +189,10 @@ try {
       throw new Error('Prompt completed without assistant text');
     }
 
+    if (/api call failed|http 5\d\d|error code:\s*5\d\d|provider error/i.test(result.text)) {
+      throw new Error(`Prompt completed with provider error: ${result.text.slice(0, 500)}`);
+    }
+
     console.log(
       [
         'Real prompt smoke passed.',
