@@ -2256,6 +2256,7 @@ function App() {
             theme={uiTheme}
             onDensityChange={setUiDensity}
             onOpenPermission={() => setApprovalVariant('permission')}
+            onOpenSurface={setSurface}
             onSelect={setSettingsSection}
             onThemeChange={setUiTheme}
           />
@@ -4979,6 +4980,7 @@ function SettingsSurface({
   theme,
   onDensityChange,
   onOpenPermission,
+  onOpenSurface,
   onSelect,
   onThemeChange,
 }: {
@@ -4988,6 +4990,7 @@ function SettingsSurface({
   theme: UiTheme;
   onDensityChange: (density: UiDensity) => void;
   onOpenPermission: () => void;
+  onOpenSurface: (surface: Surface) => void;
   onSelect: (section: SettingsSection) => void;
   onThemeChange: (theme: UiTheme) => void;
 }) {
@@ -5013,6 +5016,7 @@ function SettingsSurface({
         theme={theme}
         onDensityChange={onDensityChange}
         onOpenPermission={onOpenPermission}
+        onOpenSurface={onOpenSurface}
         onSelect={onSelect}
         onThemeChange={onThemeChange}
       />
@@ -5027,6 +5031,7 @@ function SettingsPanel({
   theme,
   onDensityChange,
   onOpenPermission,
+  onOpenSurface,
   onSelect,
   onThemeChange,
 }: {
@@ -5036,21 +5041,62 @@ function SettingsPanel({
   theme: UiTheme;
   onDensityChange: (density: UiDensity) => void;
   onOpenPermission: () => void;
+  onOpenSurface: (surface: Surface) => void;
   onSelect: (section: SettingsSection) => void;
   onThemeChange: (theme: UiTheme) => void;
 }) {
   const title = settingsSections.find((item) => item.id === selected)!;
   const config = runtime.inventory?.config;
-  const copyText = (value: string) => {
-    if (value) {
-      void navigator.clipboard?.writeText(value);
+  const [settingsBusy, setSettingsBusy] = useState('');
+  const [settingsStatus, setSettingsStatus] = useState('');
+  const runSettingAction = async (key: string, label: string, action: () => Promise<void>) => {
+    try {
+      setSettingsBusy(key);
+      setSettingsStatus('');
+      await action();
+      setSettingsStatus(`${label} 已完成`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSettingsStatus(`${label} 失败：${message}`);
+    } finally {
+      setSettingsBusy('');
     }
+  };
+  const copyText = async (value: string, label: string) => {
+    if (!value) {
+      setSettingsStatus(`${label} 暂无可复制内容。`);
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setSettingsStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    try {
+      setSettingsBusy(`copy:${label}`);
+      await navigator.clipboard.writeText(value);
+      setSettingsStatus(`${label} 已复制`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSettingsStatus(`${label} 复制失败：${message}`);
+    } finally {
+      setSettingsBusy('');
+    }
+  };
+  const refreshSettings = (key: string, label: string) => {
+    void runSettingAction(key, label, runtime.refreshInventory);
+  };
+  const restartGateway = () => {
+    void runSettingAction('gateway:restart', 'Gateway 重启', runtime.restartGateway);
+  };
+  const stopGateway = () => {
+    void runSettingAction('gateway:stop', 'Gateway 停止', runtime.stopGateway);
   };
   const rowsBySection: Record<SettingsSection, Array<{ desc: string; icon: React.ReactNode; title: string; control: React.ReactNode }>> = {
     advanced: [
-      { icon: <HardDrive size={18} />, title: 'Hermes Home', desc: runtime.inventory?.diagnostics.hermesHome || '浏览器预览不可用', control: <button className="selectButton" type="button" onClick={() => copyText(runtime.inventory?.diagnostics.hermesHome || '')}>复制</button> },
-      { icon: <TerminalSquare size={18} />, title: 'Gateway PID', desc: String(runtime.inventory?.diagnostics.gatewayPid ?? '-'), control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>{runtime.gatewayStatus}</button> },
-      { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
+      { icon: <HardDrive size={18} />, title: 'Hermes Home', desc: runtime.inventory?.diagnostics.hermesHome || '浏览器预览不可用', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => void copyText(runtime.inventory?.diagnostics.hermesHome || '', 'Hermes Home')}>{settingsBusy === 'copy:Hermes Home' ? '复制中' : '复制'}</button> },
+      { icon: <TerminalSquare size={18} />, title: 'Gateway PID', desc: String(runtime.inventory?.diagnostics.gatewayPid ?? '-'), control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('advanced:pid', 'Gateway 状态')}>{settingsBusy === 'advanced:pid' ? '刷新中' : runtime.gatewayStatus}</button> },
+      { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('advanced:refresh', '本机状态刷新')}>{settingsBusy === 'advanced:refresh' ? '刷新中' : '刷新'}</button> },
     ],
     appearance: [
       {
@@ -5061,7 +5107,12 @@ function SettingsPanel({
           <button
             className="selectButton"
             type="button"
-            onClick={() => onDensityChange(density === 'comfortable' ? 'compact' : 'comfortable')}
+            disabled={Boolean(settingsBusy)}
+            onClick={() => {
+              const nextDensity = density === 'comfortable' ? 'compact' : 'comfortable';
+              onDensityChange(nextDensity);
+              setSettingsStatus(`界面密度已切换为${nextDensity === 'compact' ? '紧凑' : '舒适'}`);
+            }}
           >
             {density === 'compact' ? '紧凑' : '舒适'}
           </button>
@@ -5075,7 +5126,12 @@ function SettingsPanel({
           <button
             className="selectButton"
             type="button"
-            onClick={() => onThemeChange(theme === 'light' ? 'soft' : 'light')}
+            disabled={Boolean(settingsBusy)}
+            onClick={() => {
+              const nextTheme = theme === 'light' ? 'soft' : 'light';
+              onThemeChange(nextTheme);
+              setSettingsStatus(`主题已切换为${nextTheme === 'soft' ? '柔和' : '浅色'}`);
+            }}
           >
             {theme === 'soft' ? '柔和' : '浅色'}
           </button>
@@ -5083,21 +5139,21 @@ function SettingsPanel({
       },
     ],
     general: [
-      { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" onClick={() => void (runtime.gatewayStatus === 'connected' ? runtime.stopGateway() : runtime.restartGateway())}>{runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
-      { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
+      { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => runtime.gatewayStatus === 'connected' ? stopGateway() : restartGateway()}>{settingsBusy === 'gateway:stop' || settingsBusy === 'gateway:restart' ? '处理中' : runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
+      { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('general:sessions', '会话列表刷新')}>{settingsBusy === 'general:sessions' ? '刷新中' : '刷新'}</button> },
     ],
     integrations: [
-      { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <div className="settingInlineActions"><button className="selectButton" type="button" onClick={() => void runtime.restartGateway()}>重启</button><button className="selectButton" type="button" onClick={() => void runtime.stopGateway()}>停止</button></div> },
-      { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
-      { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" onClick={() => onSelect('integrations')}>查看</button> },
+      { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={restartGateway}>{settingsBusy === 'gateway:restart' ? '重启中' : '重启'}</button><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={stopGateway}>{settingsBusy === 'gateway:stop' ? '停止中' : '停止'}</button></div> },
+      { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('integrations:messaging', '消息平台刷新')}>{settingsBusy === 'integrations:messaging' ? '刷新中' : '刷新'}</button><button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => onOpenSurface('messaging')}>管理</button></div> },
+      { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => onOpenSurface('skills')}>查看</button> },
     ],
     models: [
-      { icon: <Zap size={18} />, title: '默认模型', desc: `${config?.defaultModel || runtime.model} · ${config?.provider || 'provider 未设置'}`, control: <button className="selectButton" type="button" onClick={() => copyText(config?.defaultModel || runtime.model)}>复制</button> },
-      { icon: <Database size={18} />, title: '模型库', desc: `${runtime.inventory?.models.length ?? 0} 个本机模型配置`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
+      { icon: <Zap size={18} />, title: '默认模型', desc: `${config?.defaultModel || runtime.model} · ${config?.provider || 'provider 未设置'}`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => void copyText(config?.defaultModel || runtime.model, '默认模型')}>{settingsBusy === 'copy:默认模型' ? '复制中' : '复制'}</button> },
+      { icon: <Database size={18} />, title: '模型库', desc: `${runtime.inventory?.models.length ?? 0} 个本机模型配置`, control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => refreshSettings('models:refresh', '模型库刷新')}>{settingsBusy === 'models:refresh' ? '刷新中' : '刷新'}</button> },
     ],
     permissions: [
-      { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" onClick={onOpenPermission}>手动确认</button> },
-      { icon: <KeyRound size={18} />, title: 'Toolsets', desc: config?.toolsets.join(', ') || '未配置 toolset', control: <button className="selectButton" type="button" onClick={() => copyText(config?.toolsets.join(', ') || '')}>复制</button> },
+      { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={onOpenPermission}>手动确认</button> },
+      { icon: <KeyRound size={18} />, title: 'Toolsets', desc: config?.toolsets.join(', ') || '未配置 toolset', control: <button className="selectButton" type="button" disabled={Boolean(settingsBusy)} onClick={() => void copyText(config?.toolsets.join(', ') || '', 'Toolsets')}>{settingsBusy === 'copy:Toolsets' ? '复制中' : '复制'}</button> },
     ],
   };
   const rows = rowsBySection[selected];
@@ -5119,6 +5175,7 @@ function SettingsPanel({
           <SettingRow key={row.title} icon={row.icon} title={row.title} desc={row.desc} control={row.control} />
         ))}
       </div>
+      {settingsStatus && <p className="surfaceStatus settingsStatus" role="status">{settingsStatus}</p>}
     </div>
   );
 }

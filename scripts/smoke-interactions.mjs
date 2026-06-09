@@ -267,17 +267,37 @@ try {
       await waitFor(() => document.body.innerText.includes(expected), `${section} settings`);
     };
     const settingRow = (label) => Array.from(document.querySelectorAll('.settingRow')).find((row) => row.textContent?.includes(label));
+    const findSettingButton = (rowLabel, buttonLabel) => {
+      const row = settingRow(rowLabel);
+      if (!row) {
+        throw new Error(`Missing setting row ${rowLabel}`);
+      }
+      const button = findButton(buttonLabel, row);
+      if (!button) {
+        throw new Error(`Missing setting ${rowLabel} button ${buttonLabel}`);
+      }
+      return button;
+    };
 
     await selectSettingsSection('外观', '界面密度');
-    const densityRow = settingRow('界面密度');
-    findButton('舒适', densityRow)?.click();
+    findSettingButton('界面密度', '舒适').click();
     await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-density') === 'compact', 'compact density applied');
-    const themeRow = settingRow('主题');
-    findButton('浅色', themeRow)?.click();
+    findSettingButton('主题', '浅色').click();
     await waitFor(() => document.querySelector('[data-testid="app-shell"]')?.getAttribute('data-theme') === 'soft', 'soft theme applied');
+    await waitFor(() => document.body.innerText.includes('主题已切换为柔和'), 'theme status feedback');
+
+    await selectSettingsSection('集成', 'Gateway');
+    findSettingButton('Plugins', '查看').click();
+    await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'plugins settings navigation');
+    findButton('设置')?.click();
+    await waitFor(() => document.body.innerText.includes('Gateway'), 'settings integrations return');
+    findSettingButton('消息平台', '管理').click();
+    await waitFor(() => document.body.innerText.includes('Messaging Gateway'), 'messaging settings navigation');
+    findButton('设置')?.click();
+    await waitFor(() => document.body.innerText.includes('Gateway'), 'settings integrations return again');
 
     await selectSettingsSection('权限', '命令审批');
-    findButton('手动确认', settingRow('命令审批'))?.click();
+    findSettingButton('命令审批', '手动确认').click();
     await waitFor(() => document.querySelector('[data-testid="approval-modal"]')?.textContent?.includes('缺少 macOS 系统权限'), 'permission approval modal');
     document.querySelector('.overlayBackdrop')?.click();
     await waitFor(() => !document.querySelector('[data-testid="approval-modal"]'), 'permission approval close');
@@ -306,6 +326,7 @@ try {
       pages: pages.map(([label]) => label),
       projectAgents: ['项目', 'Agents'],
       preferences: ['density', 'theme', 'permission-modal'],
+      settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,
       workbench: workbenchChecks.map(([label]) => label),
