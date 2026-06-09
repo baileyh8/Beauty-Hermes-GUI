@@ -5495,3 +5495,95 @@ textarea {
   font-size: 12px;
   font-weight: 560;
 }
+
+.inlineCreateForm,
+.cronCreateForm {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 12px;
+}
+
+.inlineCreateForm {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.cronCreateForm {
+  grid-template-columns: minmax(110px, 0.8fr) minmax(112px, 0.7fr) minmax(220px, 1.6fr) auto;
+  align-items: center;
+}
+
+.inlineCreateForm input,
+.cronCreateForm input {
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dfe4ea;
+  border-radius: 11px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.86);
+  color: #20242a;
+  font-size: 12px;
+}
+
+.inlineCreateForm input:focus,
+.cronCreateForm input:focus {
+  border-color: #b9c8f7;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(47, 103, 232, 0.08);
+}
+
+.inlineCreateForm button,
+.cronCreateForm button,
+.detailActions button,
+.cardActions button,
+.settingInlineActions button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid #dfe4ea;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #20242a;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.detailActions,
+.cardActions,
+.settingInlineActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+
+.detailActions {
+  margin-top: 16px;
+}
+
+.cardActions {
+  margin-top: 13px;
+}
+
+.panelStatus,
+.surfaceStatus {
+  margin: 8px 0 14px;
+  color: #717882;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.panelStatus {
+  padding: 0 7px;
+}
+
+.gatewayCard .cardActions button,
+.skillCard button,
+.automationRow button {
+  cursor: pointer;
+}
+
+@media (max-width: 920px) {
+  .cronCreateForm {
+    grid-template-columns: 1fr;
+  }
+}

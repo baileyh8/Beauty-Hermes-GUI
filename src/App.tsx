@@ -168,6 +168,7 @@ interface PendingClarify {
 
 interface HermesRuntime {
   activeSessionId: null | string;
+  apiRequest: <T = unknown>(request: HermesApiRequest) => Promise<T>;
   archiveSession: (item: SidebarItem) => Promise<void>;
   connection: HermesGatewayConnection | null;
   connectionLabel: string;
@@ -185,6 +186,7 @@ interface HermesRuntime {
   pendingClarify: null | PendingClarify;
   recentSessions: SidebarItem[];
   refreshInventory: () => Promise<void>;
+  restartGateway: () => Promise<void>;
   selectedStoredSessionId: null | string;
   socketState: GatewayConnectionState;
   statusText: string;
@@ -246,6 +248,52 @@ interface SessionRuntimeInfo {
   provider?: string;
   running?: boolean;
   usage?: { context_percent?: number };
+}
+
+interface HermesProfileInfo {
+  description?: string;
+  gateway_running?: boolean;
+  has_alias?: boolean;
+  has_env?: boolean;
+  is_default?: boolean;
+  model?: null | string;
+  name: string;
+  path?: string;
+  provider?: null | string;
+  skill_count?: number;
+}
+
+interface HermesSkillInfo {
+  description?: string;
+  enabled?: boolean;
+  name: string;
+  path?: string;
+  source?: string;
+}
+
+interface HermesCronJobInfo {
+  id?: string;
+  name?: string;
+  paused?: boolean;
+  prompt?: string;
+  schedule?: string;
+  profile?: string;
+  enabled?: boolean;
+  next_run?: string;
+}
+
+interface HermesMessagingPlatformInfo {
+  configured?: boolean;
+  description?: string;
+  docs_url?: string;
+  enabled?: boolean;
+  error_message?: string;
+  gateway_running?: boolean;
+  id: string;
+  name: string;
+  state?: string;
+  updated_at?: string;
+  env_vars?: Array<{ is_set?: boolean; key: string; required?: boolean }>;
 }
 
 const pinnedSessions: SidebarItem[] = [];
@@ -798,12 +846,16 @@ function useHermesRuntime(): HermesRuntime {
     }
   }, []);
 
-  const refreshSessionList = useCallback(async () => {
+  const apiRequest = useCallback(async <T = unknown,>(request: HermesApiRequest) => {
     if (!window.hermesDesktop?.api) {
-      return;
+      throw new Error('Desktop IPC bridge is unavailable.');
     }
 
-    const response = await window.hermesDesktop.api<SessionListResponse>({
+    return window.hermesDesktop.api<T>(request);
+  }, []);
+
+  const refreshSessionList = useCallback(async () => {
+    const response = await apiRequest<SessionListResponse>({
       path: '/api/sessions?limit=40&offset=0&min_messages=1&archived=exclude&order=recent',
       timeoutMs: 12000,
     });
@@ -811,7 +863,7 @@ function useHermesRuntime(): HermesRuntime {
     if (nextItems.length > 0) {
       setRecentSessionItems(nextItems);
     }
-  }, []);
+  }, [apiRequest]);
 
   const upsertMessage = useCallback((message: ChatMessageModel, options: { beforeId?: null | string; moveToEnd?: boolean } = {}) => {
     setMessages((current) => {
@@ -1657,6 +1709,18 @@ function useHermesRuntime(): HermesRuntime {
     void refreshInventory();
   }, [refreshInventory]);
 
+  const restartGateway = useCallback(async () => {
+    clientRef.current?.close();
+    clientRef.current = null;
+    setSocketState('closed');
+    if (window.hermesDesktop?.stopHermes) {
+      await window.hermesDesktop.stopHermes().catch(() => null);
+    }
+    setGatewayStatus('starting');
+    setStatusText('正在重启 Hermes Gateway');
+    await connectGateway();
+  }, [connectGateway]);
+
   const connectionLabel = useMemo(() => {
     if (gatewayStatus === 'browser') {
       return '浏览器预览';
@@ -1687,6 +1751,7 @@ function useHermesRuntime(): HermesRuntime {
 
   return {
     activeSessionId,
+    apiRequest,
     archiveSession,
     connection,
     connectionLabel,
@@ -1704,6 +1769,7 @@ function useHermesRuntime(): HermesRuntime {
     pendingClarify,
     recentSessions: recentSessionItems,
     refreshInventory,
+    restartGateway,
     selectedStoredSessionId,
     selectSession,
     stopGateway,
@@ -3945,59 +4011,165 @@ function AgentCard({
 
 function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
   const config = runtime.inventory?.config;
-  const profiles = [
+  const fallbackProfiles: HermesProfileInfo[] = [
     {
-      meta: `${config?.provider || 'provider 未设置'} · ${config?.toolsets?.join(', ') || '无 toolset'}`,
-      name: '默认 Hermes Profile',
-      status: '当前',
-    },
-    {
-      meta: `${runtime.model} · ${runtime.connectionLabel}`,
-      name: '当前会话',
-      status: runtime.activeSessionId ? '运行中' : '待启动',
+      description: runtime.connectionLabel,
+      gateway_running: runtime.gatewayStatus === 'connected',
+      is_default: true,
+      model: config?.defaultModel || runtime.model,
+      name: 'default',
+      provider: config?.provider || '',
+      skill_count: runtime.inventory?.skills.length ?? 0,
     },
   ];
-  const [selectedProfile, setSelectedProfile] = useState(profiles[0].name);
-  const activeProfile = profiles.find((profile) => profile.name === selectedProfile) || profiles[0];
+  const [profiles, setProfiles] = useState<HermesProfileInfo[]>([]);
+  const [activeName, setActiveName] = useState('default');
+  const [selectedProfile, setSelectedProfile] = useState('default');
+  const [newProfileName, setNewProfileName] = useState('');
+  const [profileStatus, setProfileStatus] = useState('');
+  const apiRequest = runtime.apiRequest;
+  const refreshInventory = runtime.refreshInventory;
+  const visibleProfiles = profiles.length > 0 ? profiles : fallbackProfiles;
+  const activeProfile = visibleProfiles.find((profile) => profile.name === selectedProfile) || visibleProfiles[0];
+  const loadProfiles = useCallback(async () => {
+    try {
+      const [list, active] = await Promise.all([
+        apiRequest<{ profiles?: HermesProfileInfo[] }>({ path: '/api/profiles', timeoutMs: 12000 }),
+        apiRequest<{ active?: string; current?: string }>({ path: '/api/profiles/active', timeoutMs: 12000 }),
+      ]);
+      const rows = Array.isArray(list.profiles) ? list.profiles : [];
+      setProfiles(rows);
+      setActiveName(active.active || active.current || 'default');
+      setSelectedProfile((current) => rows.some((profile) => profile.name === current) ? current : active.active || rows[0]?.name || 'default');
+      setProfileStatus(rows.length > 0 ? 'Profiles 已同步' : '暂无自定义 profile');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`读取 profiles 失败：${message}`);
+    }
+  }, [apiRequest]);
+  const createProfile = useCallback(async () => {
+    const name = newProfileName.trim();
+    if (!name) {
+      setProfileStatus('请输入 profile 名称。');
+      return;
+    }
+
+    try {
+      await apiRequest({
+        body: { clone_from_default: true, name },
+        method: 'POST',
+        path: '/api/profiles',
+        timeoutMs: 60000,
+      });
+      setNewProfileName('');
+      setProfileStatus(`${name} 已创建`);
+      await loadProfiles();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`创建失败：${message}`);
+    }
+  }, [apiRequest, loadProfiles, newProfileName, refreshInventory]);
+  const activateProfile = useCallback(async (name: string) => {
+    try {
+      await apiRequest({
+        body: { name },
+        method: 'POST',
+        path: '/api/profiles/active',
+        timeoutMs: 20000,
+      });
+      setActiveName(name);
+      setProfileStatus(`${name} 已设为默认 profile`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`切换失败：${message}`);
+    }
+  }, [apiRequest]);
+  const copySetupCommand = useCallback(async (name: string) => {
+    try {
+      const result = await apiRequest<{ command?: string }>({
+        path: `/api/profiles/${encodeURIComponent(name)}/setup-command`,
+        timeoutMs: 12000,
+      });
+      if (result.command) {
+        await navigator.clipboard?.writeText(result.command);
+        setProfileStatus(`已复制：${result.command}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`复制失败：${message}`);
+    }
+  }, [apiRequest]);
+
+  useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles]);
 
   return (
     <section className="pageSurface twoColumnPage">
       <div className="listPanel">
         <div className="panelTitle">
           <h2>工作身份</h2>
-          <button type="button" onClick={() => void runtime.refreshInventory()}>
-            <Plus size={15} />
+          <button type="button" onClick={() => void loadProfiles()} aria-label="刷新 profiles">
+            <RefreshCw size={15} />
           </button>
         </div>
-        {profiles.map(({ name, meta, status }) => (
+        <form
+          className="inlineCreateForm"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void createProfile();
+          }}
+        >
+          <input
+            aria-label="新 profile 名称"
+            onChange={(event) => setNewProfileName(event.target.value)}
+            placeholder="新 profile"
+            value={newProfileName}
+          />
+          <button type="submit">创建</button>
+        </form>
+        {visibleProfiles.map((profile) => (
           <button
-            className={name === activeProfile.name ? 'profileRow active' : 'profileRow'}
+            className={profile.name === activeProfile.name ? 'profileRow active' : 'profileRow'}
             type="button"
-            key={name}
-            onClick={() => setSelectedProfile(name)}
+            key={profile.name}
+            onClick={() => setSelectedProfile(profile.name)}
           >
-            <div className="profileAvatar">{name[0]}</div>
+            <div className="profileAvatar">{profile.name[0]}</div>
             <div>
-              <strong>{name}</strong>
-              <span>{meta}</span>
+              <strong>{profile.name}</strong>
+              <span>{profile.description || `${profile.provider || 'provider 未设置'} · ${profile.model || 'model 未设置'}`}</span>
             </div>
-            <em>{status}</em>
+            <em>{profile.name === activeName ? '默认' : profile.gateway_running ? '运行中' : '可用'}</em>
           </button>
         ))}
+        {profileStatus && <p className="panelStatus">{profileStatus}</p>}
       </div>
       <div className="detailPanel">
         <div className="detailHero">
           <UsersRound size={26} />
           <div>
             <h2>{activeProfile.name}</h2>
-            <p>{activeProfile.meta}</p>
+            <p>{activeProfile.path || activeProfile.description || '本机 Hermes profile'}</p>
           </div>
         </div>
         <div className="policyGrid">
-          <PolicyCard icon={<Zap />} title="模型" desc={`${config?.defaultModel || runtime.model} · ${config?.provider || 'provider 未设置'}`} />
-          <PolicyCard icon={<Puzzle />} title="技能" desc={`${runtime.inventory?.skills.length ?? 0} skills · ${runtime.inventory?.plugins.length ?? 0} plugins`} />
-          <PolicyCard icon={<Shield />} title="权限" desc="高风险命令进入审批队列" />
+          <PolicyCard icon={<Zap />} title="模型" desc={`${activeProfile.provider || config?.provider || 'provider 未设置'} · ${activeProfile.model || config?.defaultModel || runtime.model}`} />
+          <PolicyCard icon={<Puzzle />} title="技能" desc={`${activeProfile.skill_count ?? runtime.inventory?.skills.length ?? 0} skills · ${runtime.inventory?.plugins.length ?? 0} plugins`} />
+          <PolicyCard icon={<Shield />} title="环境" desc={activeProfile.has_env ? '已配置 .env' : '未检测到 .env'} />
           <PolicyCard icon={<Database />} title="运行策略" desc={`max turns ${config?.maxTurns ?? '未设置'} · timeout ${config?.gatewayTimeout ?? '未设置'}s`} />
+        </div>
+        <div className="detailActions">
+          <button type="button" onClick={() => void activateProfile(activeProfile.name)}>
+            设为默认
+          </button>
+          <button type="button" onClick={() => void copySetupCommand(activeProfile.name)}>
+            复制 setup 命令
+          </button>
+          <button type="button" onClick={() => void loadProfiles()}>
+            刷新
+          </button>
         </div>
       </div>
     </section>
@@ -4016,23 +4188,60 @@ function PolicyCard({ icon, title, desc }: { icon: React.ReactNode; title: strin
 
 function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
   const [query, setQuery] = useState('');
-  const skillRows = [
+  const [skillRows, setSkillRows] = useState<HermesSkillInfo[]>([]);
+  const [skillStatus, setSkillStatus] = useState('');
+  const apiRequest = runtime.apiRequest;
+  const refreshInventory = runtime.refreshInventory;
+  const loadSkills = useCallback(async () => {
+    try {
+      const rows = await apiRequest<HermesSkillInfo[]>({ path: '/api/skills', timeoutMs: 12000 });
+      setSkillRows(Array.isArray(rows) ? rows : []);
+      setSkillStatus(Array.isArray(rows) ? `已同步 ${rows.length} 个 skills` : 'skills 返回为空');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`读取 skills 失败：${message}`);
+    }
+  }, [apiRequest]);
+  const toggleSkill = useCallback(async (skill: HermesSkillInfo) => {
+    const nextEnabled = !(skill.enabled ?? true);
+    try {
+      await apiRequest({
+        body: { enabled: nextEnabled, name: skill.name },
+        method: 'PUT',
+        path: '/api/skills/toggle',
+        timeoutMs: 20000,
+      });
+      setSkillRows((current) => current.map((row) => row.name === skill.name ? { ...row, enabled: nextEnabled } : row));
+      setSkillStatus(`${skill.name} 已${nextEnabled ? '启用' : '停用'}`);
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`更新失败：${message}`);
+    }
+  }, [apiRequest, refreshInventory]);
+  useEffect(() => {
+    void loadSkills();
+  }, [loadSkills]);
+  const fallbackRows: HermesSkillInfo[] = [
     ...(runtime.inventory?.skills.map((skill) => ({
-      desc: skill.description || skill.path,
+      description: skill.description || skill.path,
+      enabled: true,
       name: skill.name,
+      path: skill.path,
       source: skill.source,
-      status: '可用',
     })) ?? []),
     ...(runtime.inventory?.plugins.map((plugin) => ({
-      desc: plugin.path,
+      description: plugin.path,
+      enabled: true,
       name: plugin.name,
+      path: plugin.path,
       source: 'plugin',
-      status: '已安装',
     })) ?? []),
   ];
-  const filteredSkills = skillRows
+  const rows = skillRows.length > 0 ? skillRows : fallbackRows;
+  const filteredSkills = rows
     .filter((skill) => {
-      const haystack = `${skill.name} ${skill.desc} ${skill.source}`.toLowerCase();
+      const haystack = `${skill.name} ${skill.description || ''} ${skill.path || ''} ${skill.source || ''}`.toLowerCase();
       return !query.trim() || haystack.includes(query.trim().toLowerCase());
     })
     .slice(0, 36);
@@ -4048,18 +4257,26 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
           <Search size={15} />
           <input placeholder="搜索 skill" value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
+        <button className="lightButton" type="button" onClick={() => void loadSkills()}>
+          <RefreshCw size={16} />
+          刷新
+        </button>
       </div>
+      {skillStatus && <p className="surfaceStatus">{skillStatus}</p>}
       <div className="skillGrid">
-        {filteredSkills.length > 0 ? filteredSkills.map(({ name, desc, status, source }) => (
-          <article className="skillCard" key={name}>
+        {filteredSkills.length > 0 ? filteredSkills.map((skill) => (
+          <article className="skillCard" key={skill.name}>
             <div className="skillIcon">
               <Puzzle size={20} />
             </div>
-            <strong>{name}</strong>
-            <p>{desc}</p>
+            <strong>{skill.name}</strong>
+            <p>{skill.description || skill.path || '暂无描述'}</p>
             <div>
-              <span className={status === '可用' ? 'pill green' : 'pill'}>{source}</span>
-              <button type="button" onClick={() => void navigator.clipboard?.writeText(desc)}>{status}</button>
+              <span className={(skill.enabled ?? true) ? 'pill green' : 'pill amber'}>{skill.source || ((skill.enabled ?? true) ? 'enabled' : 'disabled')}</span>
+              <button type="button" onClick={() => void toggleSkill(skill)}>
+                {(skill.enabled ?? true) ? '停用' : '启用'}
+              </button>
+              <button type="button" onClick={() => void navigator.clipboard?.writeText(skill.path || skill.description || skill.name)}>复制</button>
             </div>
           </article>
         )) : (
@@ -4079,6 +4296,85 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
 function CronSurface({ runtime }: { runtime: HermesRuntime }) {
   const config = runtime.inventory?.config;
   const sourceRows = Object.entries(runtime.inventory?.sessions.sources ?? {});
+  const [cronJobs, setCronJobs] = useState<HermesCronJobInfo[]>([]);
+  const [cronStatus, setCronStatus] = useState('');
+  const [newJobName, setNewJobName] = useState('');
+  const [newJobSchedule, setNewJobSchedule] = useState('daily@09:00');
+  const [newJobPrompt, setNewJobPrompt] = useState('');
+  const apiRequest = runtime.apiRequest;
+  const refreshInventory = runtime.refreshInventory;
+  const loadCronJobs = useCallback(async () => {
+    try {
+      const rows = await apiRequest<HermesCronJobInfo[]>({ path: '/api/cron/jobs', timeoutMs: 20000 });
+      setCronJobs(Array.isArray(rows) ? rows : []);
+      setCronStatus(Array.isArray(rows) ? `已同步 ${rows.length} 个自动化任务` : 'Cron 返回为空');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCronStatus(`读取 cron 失败：${message}`);
+    }
+  }, [apiRequest]);
+  const cronJobPath = (job: HermesCronJobInfo, action?: string) => {
+    const id = job.id || job.name || '';
+    const suffix = action ? `/${action}` : '';
+    const profile = job.profile ? `?profile=${encodeURIComponent(job.profile)}` : '';
+    return `/api/cron/jobs/${encodeURIComponent(id)}${suffix}${profile}`;
+  };
+  const runCronAction = useCallback(async (job: HermesCronJobInfo, action: 'delete' | 'pause' | 'resume' | 'trigger') => {
+    const id = job.id || job.name;
+    if (!id) {
+      setCronStatus('这个任务缺少 id，无法操作。');
+      return;
+    }
+    if (action === 'delete' && !window.confirm(`删除自动化任务 ${job.name || id}？`)) {
+      return;
+    }
+
+    try {
+      await apiRequest({
+        method: action === 'delete' ? 'DELETE' : 'POST',
+        path: cronJobPath(job, action === 'delete' ? undefined : action),
+        timeoutMs: action === 'trigger' ? 120000 : 30000,
+      });
+      setCronStatus(`${job.name || id} 已${action === 'pause' ? '暂停' : action === 'resume' ? '恢复' : action === 'trigger' ? '触发' : '删除'}`);
+      await loadCronJobs();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCronStatus(`操作失败：${message}`);
+    }
+  }, [apiRequest, loadCronJobs, refreshInventory]);
+  const createCronJob = useCallback(async () => {
+    const prompt = newJobPrompt.trim();
+    if (!prompt) {
+      setCronStatus('请输入自动化 prompt。');
+      return;
+    }
+
+    try {
+      await apiRequest({
+        body: {
+          deliver: 'local',
+          name: newJobName.trim(),
+          prompt,
+          schedule: newJobSchedule.trim() || 'daily@09:00',
+        },
+        method: 'POST',
+        path: '/api/cron/jobs?profile=default',
+        timeoutMs: 30000,
+      });
+      setNewJobName('');
+      setNewJobPrompt('');
+      setCronStatus('自动化任务已创建');
+      await loadCronJobs();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCronStatus(`创建失败：${message}`);
+    }
+  }, [apiRequest, loadCronJobs, newJobName, newJobPrompt, newJobSchedule, refreshInventory]);
+  useEffect(() => {
+    void loadCronJobs();
+  }, [loadCronJobs]);
   const jobs = [
     ['Gateway 超时保护', `${config?.gatewayTimeout ?? '未设置'}s · agent.gateway_timeout`, config?.gatewayTimeout ? '启用' : '未设置'],
     ['最大回合数', `${config?.maxTurns ?? '未设置'} · agent.max_turns`, config?.maxTurns ? '启用' : '未设置'],
@@ -4097,7 +4393,43 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
           刷新状态
         </button>
       </div>
+      <form
+        className="cronCreateForm"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void createCronJob();
+        }}
+      >
+        <input aria-label="任务名称" placeholder="任务名称" value={newJobName} onChange={(event) => setNewJobName(event.target.value)} />
+        <input aria-label="计划表达式" placeholder="daily@09:00" value={newJobSchedule} onChange={(event) => setNewJobSchedule(event.target.value)} />
+        <input aria-label="自动化 prompt" placeholder="让 Hermes 做什么..." value={newJobPrompt} onChange={(event) => setNewJobPrompt(event.target.value)} />
+        <button type="submit">新建</button>
+      </form>
+      {cronStatus && <p className="surfaceStatus">{cronStatus}</p>}
       <div className="automationList">
+        {cronJobs.map((job) => {
+          const id = job.id || job.name || 'cron-job';
+          const paused = Boolean(job.paused) || job.enabled === false;
+          return (
+            <article className="automationRow" key={id}>
+              <CalendarClock size={18} />
+              <div>
+                <strong>{job.name || id}</strong>
+                <span>{job.schedule || '未设置 schedule'} · {compactLine(job.prompt || '', 64) || '无 prompt 预览'}</span>
+              </div>
+              <span className={paused ? 'pill amber' : 'pill green'}>{paused ? '已暂停' : '启用'}</span>
+              <button type="button" onClick={() => void runCronAction(job, paused ? 'resume' : 'pause')}>
+                {paused ? <Play size={16} /> : <PauseCircle size={16} />}
+              </button>
+              <button type="button" onClick={() => void runCronAction(job, 'trigger')}>
+                <Zap size={16} />
+              </button>
+              <button type="button" onClick={() => void runCronAction(job, 'delete')}>
+                <Trash2 size={16} />
+              </button>
+            </article>
+          );
+        })}
         {jobs.map(([title, meta, status]) => (
           <article className="automationRow" key={title}>
             <CalendarClock size={18} />
@@ -4131,7 +4463,63 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
 
 function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
   const messaging = runtime.inventory?.messaging;
-  const platforms = messaging?.platforms.length ? messaging.platforms : [];
+  const [platformsState, setPlatformsState] = useState<HermesMessagingPlatformInfo[]>([]);
+  const [messagingStatus, setMessagingStatus] = useState('');
+  const apiRequest = runtime.apiRequest;
+  const refreshInventory = runtime.refreshInventory;
+  const loadPlatforms = useCallback(async () => {
+    try {
+      const response = await apiRequest<{ platforms?: HermesMessagingPlatformInfo[] }>({ path: '/api/messaging/platforms', timeoutMs: 12000 });
+      const rows = Array.isArray(response.platforms) ? response.platforms : [];
+      setPlatformsState(rows);
+      setMessagingStatus(rows.length > 0 ? `已同步 ${rows.length} 个平台` : '暂无平台配置');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`读取平台失败：${message}`);
+    }
+  }, [apiRequest]);
+  const togglePlatform = useCallback(async (platform: HermesMessagingPlatformInfo) => {
+    try {
+      const nextEnabled = !platform.enabled;
+      await apiRequest({
+        body: { enabled: nextEnabled },
+        method: 'PUT',
+        path: `/api/messaging/platforms/${encodeURIComponent(platform.id)}`,
+        timeoutMs: 20000,
+      });
+      setMessagingStatus(`${platform.name} 已${nextEnabled ? '启用' : '停用'}，重启 Gateway 后生效`);
+      await loadPlatforms();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`更新失败：${message}`);
+    }
+  }, [apiRequest, loadPlatforms, refreshInventory]);
+  const testPlatform = useCallback(async (platform: HermesMessagingPlatformInfo) => {
+    try {
+      const result = await apiRequest<{ message?: string; ok?: boolean; state?: string }>({
+        method: 'POST',
+        path: `/api/messaging/platforms/${encodeURIComponent(platform.id)}/test`,
+        timeoutMs: 20000,
+      });
+      setMessagingStatus(`${platform.name}: ${result.message || result.state || (result.ok ? '连接正常' : '需要检查')}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`测试失败：${message}`);
+    }
+  }, [apiRequest]);
+  useEffect(() => {
+    void loadPlatforms();
+  }, [loadPlatforms]);
+  const platforms: HermesMessagingPlatformInfo[] = platformsState.length > 0
+    ? platformsState
+    : messaging?.platforms.map((platform) => ({
+      enabled: platform.state !== 'disabled',
+      id: platform.name,
+      name: platform.name,
+      state: platform.state,
+      updated_at: platform.updatedAt,
+    })) ?? [];
   const channelRows = Object.entries(messaging?.channelCounts ?? {}).filter(([, count]) => count > 0);
   const pairingRows = [
     ['Feishu', messaging?.pairings.feishuApproved ?? 0, messaging?.pairings.feishuPending ?? 0],
@@ -4145,19 +4533,27 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
           <h2>Messaging Gateway</h2>
           <p>读取 Hermes Gateway 平台状态、频道目录和用户配对。</p>
         </div>
-        <button className="lightButton" type="button" onClick={() => void runtime.refreshInventory()}>
+        <button className="lightButton" type="button" onClick={() => void loadPlatforms()}>
           <Network size={16} />
-          测试连接
+          刷新平台
         </button>
       </div>
+      {messagingStatus && <p className="surfaceStatus">{messagingStatus}</p>}
       <div className="gatewayGrid">
         {platforms.length > 0 ? platforms.map((platform) => (
-          <GatewayCard
-            key={platform.name}
-            title={platform.name}
-            status={platform.state === 'connected' ? '已连接' : platform.state}
-            desc={`${messaging?.channelCounts[platform.name] ?? 0} 个频道 · ${platform.updatedAt || '未记录更新时间'}`}
-          />
+          <article className="gatewayCard" key={platform.id}>
+            <div>
+              <Network size={20} />
+              <span className={platform.state === 'connected' ? 'pill green' : platform.enabled ? 'pill amber' : 'pill'}>{platform.state === 'connected' ? '已连接' : platform.state || (platform.enabled ? '待连接' : '已停用')}</span>
+            </div>
+            <strong>{platform.name}</strong>
+            <p>{platform.description || `${messaging?.channelCounts[platform.id] ?? 0} 个频道 · ${platform.updated_at || '未记录更新时间'}`}</p>
+            <div className="cardActions">
+              <button type="button" onClick={() => void togglePlatform(platform)}>{platform.enabled ? '停用' : '启用'}</button>
+              <button type="button" onClick={() => void testPlatform(platform)}>测试</button>
+              {platform.docs_url && <button type="button" onClick={() => window.open(platform.docs_url, '_blank', 'noopener,noreferrer')}>文档</button>}
+            </div>
+          </article>
         )) : (
           <GatewayCard title="Gateway" status={runtime.connectionLabel} desc={runtime.inventoryError || '等待本机 Gateway 状态。'} />
         )}
@@ -4257,11 +4653,11 @@ function SettingsPanel({
       { icon: <Monitor size={18} />, title: '主题', desc: '当前使用浅色工作台。', control: <button className="selectButton" type="button" onClick={() => setTheme((value) => value === '浅色' ? '系统' : '浅色')}>{theme}</button> },
     ],
     general: [
-      { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <Toggle on={runtime.gatewayStatus === 'connected'} onClick={() => void runtime.refreshInventory()} /> },
+      { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" onClick={() => void (runtime.gatewayStatus === 'connected' ? runtime.stopGateway() : runtime.restartGateway())}>{runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
       { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
     ],
     integrations: [
-      { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>{runtime.gatewayStatus}</button> },
+      { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <div className="settingInlineActions"><button className="selectButton" type="button" onClick={() => void runtime.restartGateway()}>重启</button><button className="selectButton" type="button" onClick={() => void runtime.stopGateway()}>停止</button></div> },
       { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <button className="selectButton" type="button" onClick={() => void runtime.refreshInventory()}>刷新</button> },
       { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" onClick={() => onSelect('integrations')}>查看</button> },
     ],
@@ -4338,6 +4734,7 @@ function DiagnosticsSurface({
           title="Gateway"
           desc={`${runtime.connectionLabel} · ${diagnostics?.gatewayState || runtime.gatewayStatus} · pid ${diagnostics?.gatewayPid ?? '-'}`}
           state={runtime.gatewayStatus === 'connected' ? '正常' : '检查'}
+          action={runtime.gatewayStatus === 'connected' ? undefined : () => void runtime.restartGateway()}
         />
       </div>
       <section className="logPanel">
