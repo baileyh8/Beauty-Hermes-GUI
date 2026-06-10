@@ -5392,12 +5392,28 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
   const [activeName, setActiveName] = useState('default');
   const [selectedProfile, setSelectedProfile] = useState('default');
   const [newProfileName, setNewProfileName] = useState('');
+  const [profileDraftName, setProfileDraftName] = useState('');
+  const [profileDescriptionDraft, setProfileDescriptionDraft] = useState('');
+  const [profileModelDraft, setProfileModelDraft] = useState('');
+  const [profileProviderDraft, setProfileProviderDraft] = useState('');
+  const [profileSoulDraft, setProfileSoulDraft] = useState('');
+  const [profileSoulLoadedName, setProfileSoulLoadedName] = useState('');
+  const [pendingProfileDeleteName, setPendingProfileDeleteName] = useState('');
   const [profileStatus, setProfileStatus] = useState('');
   const [profileBusy, setProfileBusy] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const visibleProfiles = profiles.length > 0 ? profiles : fallbackProfiles;
   const activeProfile = visibleProfiles.find((profile) => profile.name === selectedProfile) || visibleProfiles[0];
+  useEffect(() => {
+    setProfileDraftName(activeProfile?.name || '');
+    setProfileDescriptionDraft(activeProfile?.description || '');
+    setProfileModelDraft(activeProfile?.model || config?.defaultModel || runtime.model || '');
+    setProfileProviderDraft(activeProfile?.provider || config?.provider || '');
+    setProfileSoulDraft('');
+    setProfileSoulLoadedName('');
+    setPendingProfileDeleteName('');
+  }, [activeProfile?.description, activeProfile?.model, activeProfile?.name, activeProfile?.provider, config?.defaultModel, config?.provider, runtime.model]);
   const loadProfiles = useCallback(async () => {
     try {
       setProfileBusy('load');
@@ -5486,6 +5502,163 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
       setProfileBusy('');
     }
   }, [apiRequest]);
+  const renameProfile = useCallback(async () => {
+    const currentName = activeProfile.name;
+    const nextName = profileDraftName.trim();
+    if (!nextName || nextName === currentName) {
+      setProfileStatus('请输入新的 profile 名称。');
+      return;
+    }
+    if (activeProfile.is_default || currentName === 'default') {
+      setProfileStatus('default profile 不能重命名。');
+      return;
+    }
+
+    try {
+      setProfileBusy(`rename:${currentName}`);
+      await apiRequest({
+        body: { new_name: nextName },
+        method: 'PATCH',
+        path: `/api/profiles/${encodeURIComponent(currentName)}`,
+        timeoutMs: 30000,
+      });
+      setSelectedProfile(nextName);
+      setProfileStatus(`${currentName} 已重命名为 ${nextName}`);
+      await loadProfiles();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`重命名失败：${message}`);
+    } finally {
+      setProfileBusy('');
+    }
+  }, [activeProfile.is_default, activeProfile.name, apiRequest, loadProfiles, profileDraftName, refreshInventory]);
+  const saveProfileDescription = useCallback(async () => {
+    try {
+      setProfileBusy(`description:${activeProfile.name}`);
+      await apiRequest({
+        body: { description: profileDescriptionDraft },
+        method: 'PUT',
+        path: `/api/profiles/${encodeURIComponent(activeProfile.name)}/description`,
+        timeoutMs: 20000,
+      });
+      setProfileStatus(`${activeProfile.name} 描述已保存`);
+      await loadProfiles();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`描述保存失败：${message}`);
+    } finally {
+      setProfileBusy('');
+    }
+  }, [activeProfile.name, apiRequest, loadProfiles, profileDescriptionDraft, refreshInventory]);
+  const saveProfileModel = useCallback(async () => {
+    const provider = profileProviderDraft.trim();
+    const model = profileModelDraft.trim();
+    if (!provider || !model) {
+      setProfileStatus('请输入 provider 和 model。');
+      return;
+    }
+
+    try {
+      setProfileBusy(`model:${activeProfile.name}`);
+      await apiRequest({
+        body: { model, provider },
+        method: 'PUT',
+        path: `/api/profiles/${encodeURIComponent(activeProfile.name)}/model`,
+        timeoutMs: 30000,
+      });
+      setProfileStatus(`${activeProfile.name} 模型已保存`);
+      await loadProfiles();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`模型保存失败：${message}`);
+    } finally {
+      setProfileBusy('');
+    }
+  }, [activeProfile.name, apiRequest, loadProfiles, profileModelDraft, profileProviderDraft, refreshInventory]);
+  const loadProfileSoul = useCallback(async () => {
+    try {
+      setProfileBusy(`soul:load:${activeProfile.name}`);
+      const result = await apiRequest<{ content?: string; exists?: boolean }>({
+        path: `/api/profiles/${encodeURIComponent(activeProfile.name)}/soul`,
+        timeoutMs: 20000,
+      });
+      setProfileSoulDraft(result.content || '');
+      setProfileSoulLoadedName(activeProfile.name);
+      setProfileStatus(result.exists ? `${activeProfile.name} SOUL 已读取` : `${activeProfile.name} 暂无 SOUL.md，可直接创建。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`SOUL 读取失败：${message}`);
+    } finally {
+      setProfileBusy('');
+    }
+  }, [activeProfile.name, apiRequest]);
+  const saveProfileSoul = useCallback(async () => {
+    try {
+      setProfileBusy(`soul:save:${activeProfile.name}`);
+      await apiRequest({
+        body: { content: profileSoulDraft },
+        method: 'PUT',
+        path: `/api/profiles/${encodeURIComponent(activeProfile.name)}/soul`,
+        timeoutMs: 20000,
+      });
+      setProfileSoulLoadedName(activeProfile.name);
+      setProfileStatus(`${activeProfile.name} SOUL 已保存`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`SOUL 保存失败：${message}`);
+    } finally {
+      setProfileBusy('');
+    }
+  }, [activeProfile.name, apiRequest, profileSoulDraft]);
+  const openProfileTerminal = useCallback(async () => {
+    try {
+      setProfileBusy(`terminal:${activeProfile.name}`);
+      const result = await apiRequest<{ command?: string }>({
+        method: 'POST',
+        path: `/api/profiles/${encodeURIComponent(activeProfile.name)}/open-terminal`,
+        timeoutMs: 20000,
+      });
+      setProfileStatus(`${activeProfile.name} 终端已打开：${result.command || 'setup'}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`打开终端失败：${message}`);
+    } finally {
+      setProfileBusy('');
+    }
+  }, [activeProfile.name, apiRequest]);
+  const deleteProfile = useCallback(async () => {
+    if (activeProfile.is_default || activeProfile.name === 'default') {
+      setProfileStatus('default profile 不能删除。');
+      return;
+    }
+    if (pendingProfileDeleteName !== activeProfile.name) {
+      setPendingProfileDeleteName(activeProfile.name);
+      setProfileStatus(`再次点击删除 ${activeProfile.name}，操作不可恢复。`);
+      return;
+    }
+
+    try {
+      setProfileBusy(`delete:${activeProfile.name}`);
+      await apiRequest({
+        method: 'DELETE',
+        path: `/api/profiles/${encodeURIComponent(activeProfile.name)}`,
+        timeoutMs: 30000,
+      });
+      setSelectedProfile('default');
+      setPendingProfileDeleteName('');
+      setProfileStatus(`${activeProfile.name} 已删除`);
+      await loadProfiles();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfileStatus(`删除失败：${message}`);
+    } finally {
+      setProfileBusy('');
+    }
+  }, [activeProfile.is_default, activeProfile.name, apiRequest, loadProfiles, pendingProfileDeleteName, refreshInventory]);
 
   useEffect(() => {
     void loadProfiles();
@@ -5563,6 +5736,104 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
           <button type="button" onClick={() => void loadProfiles()} disabled={Boolean(profileBusy)}>
             {profileBusy === 'load' ? '刷新中' : '刷新'}
           </button>
+        </div>
+        <div className="profileEditGrid">
+          <section className="profileEditBlock">
+            <div className="blockTitle">
+              <strong>基础信息</strong>
+              <span>名称与描述会写回 profile meta。</span>
+            </div>
+            <div className="profileInlineForm">
+              <input
+                aria-label="Profile 名称"
+                className="settingInput"
+                disabled={Boolean(profileBusy) || activeProfile.name === 'default' || activeProfile.is_default}
+                value={profileDraftName}
+                onChange={(event) => setProfileDraftName(event.target.value)}
+              />
+              <button type="button" onClick={() => void renameProfile()} disabled={Boolean(profileBusy) || activeProfile.name === 'default' || activeProfile.is_default}>
+                {profileBusy === `rename:${activeProfile.name}` ? '保存中' : '重命名'}
+              </button>
+            </div>
+            <textarea
+              aria-label="Profile 描述"
+              disabled={Boolean(profileBusy)}
+              value={profileDescriptionDraft}
+              onChange={(event) => setProfileDescriptionDraft(event.target.value)}
+              placeholder="这个 profile 的职责、路由偏好或使用场景"
+            />
+            <button type="button" onClick={() => void saveProfileDescription()} disabled={Boolean(profileBusy)}>
+              {profileBusy === `description:${activeProfile.name}` ? '保存中' : '保存描述'}
+            </button>
+          </section>
+          <section className="profileEditBlock">
+            <div className="blockTitle">
+              <strong>模型</strong>
+              <span>只影响当前 profile 的 model.default/provider。</span>
+            </div>
+            <div className="profileInlineForm">
+              <input
+                aria-label="Profile provider"
+                className="settingInput"
+                disabled={Boolean(profileBusy)}
+                placeholder="provider"
+                value={profileProviderDraft}
+                onChange={(event) => setProfileProviderDraft(event.target.value)}
+              />
+              <input
+                aria-label="Profile model"
+                className="settingInput"
+                disabled={Boolean(profileBusy)}
+                placeholder="model"
+                value={profileModelDraft}
+                onChange={(event) => setProfileModelDraft(event.target.value)}
+              />
+              <button type="button" onClick={() => void saveProfileModel()} disabled={Boolean(profileBusy)}>
+                {profileBusy === `model:${activeProfile.name}` ? '保存中' : '保存模型'}
+              </button>
+            </div>
+          </section>
+          <section className="profileEditBlock full">
+            <div className="blockTitle">
+              <strong>SOUL.md</strong>
+              <span>{profileSoulLoadedName === activeProfile.name ? '已读取，可编辑后保存。' : '读取后编辑 profile 的长期身份规则。'}</span>
+            </div>
+            <div className="profileInlineForm">
+              <button type="button" onClick={() => void loadProfileSoul()} disabled={Boolean(profileBusy)}>
+                {profileBusy === `soul:load:${activeProfile.name}` ? '读取中' : '读取 SOUL'}
+              </button>
+              <button type="button" onClick={() => void saveProfileSoul()} disabled={Boolean(profileBusy) || profileSoulLoadedName !== activeProfile.name}>
+                {profileBusy === `soul:save:${activeProfile.name}` ? '保存中' : '保存 SOUL'}
+              </button>
+            </div>
+            <textarea
+              aria-label="Profile SOUL"
+              className="soulEditor"
+              disabled={Boolean(profileBusy) || profileSoulLoadedName !== activeProfile.name}
+              value={profileSoulDraft}
+              onChange={(event) => setProfileSoulDraft(event.target.value)}
+              placeholder="读取 SOUL 后在这里编辑..."
+            />
+          </section>
+          <section className="profileEditBlock dangerZone">
+            <div className="blockTitle">
+              <strong>操作</strong>
+              <span>打开 setup 终端，或删除非 default profile。</span>
+            </div>
+            <div className="profileInlineForm">
+              <button type="button" onClick={() => void openProfileTerminal()} disabled={Boolean(profileBusy)}>
+                {profileBusy === `terminal:${activeProfile.name}` ? '打开中' : '打开终端'}
+              </button>
+              <button
+                className={pendingProfileDeleteName === activeProfile.name ? 'danger confirm' : 'danger'}
+                type="button"
+                onClick={() => void deleteProfile()}
+                disabled={Boolean(profileBusy) || activeProfile.name === 'default' || activeProfile.is_default}
+              >
+                {pendingProfileDeleteName === activeProfile.name ? '确认删除' : '删除'}
+              </button>
+            </div>
+          </section>
         </div>
       </div>
     </section>

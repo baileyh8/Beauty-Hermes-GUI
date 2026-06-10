@@ -428,6 +428,27 @@ try {
     );
     profileRow.click();
     await waitFor(() => document.querySelector('.panelStatus')?.textContent?.includes('已选择'), 'profile selection feedback');
+    const profileEditor = await waitFor(() => document.querySelector('.profileEditGrid'), 'profile edit controls');
+    const profileNameInput = profileEditor.querySelector('input[aria-label="Profile 名称"]');
+    const profileDescriptionInput = profileEditor.querySelector('textarea[aria-label="Profile 描述"]');
+    const profileProviderInput = profileEditor.querySelector('input[aria-label="Profile provider"]');
+    const profileModelInput = profileEditor.querySelector('input[aria-label="Profile model"]');
+    const profileSoulInput = profileEditor.querySelector('textarea[aria-label="Profile SOUL"]');
+    if (!profileNameInput || !profileDescriptionInput || !profileProviderInput || !profileModelInput || !profileSoulInput) {
+      throw new Error('Profiles editor should expose name, description, model, provider, and SOUL controls.');
+    }
+    if (profileDescriptionInput.disabled || profileProviderInput.disabled || profileModelInput.disabled) {
+      throw new Error('Profiles editor description/model controls should be editable.');
+    }
+    if (!findButton('保存描述', profileEditor) || !findButton('保存模型', profileEditor) || !findButton('读取 SOUL', profileEditor) || !findButton('保存 SOUL', profileEditor)) {
+      throw new Error('Profiles editor should expose save/read actions.');
+    }
+    if (!findButton('打开终端', profileEditor) || !findButton('删除', profileEditor)) {
+      throw new Error('Profiles editor should expose terminal and delete actions.');
+    }
+    if (profileNameInput.value === 'default' && !findButton('删除', profileEditor)?.disabled) {
+      throw new Error('Default profile delete action should be disabled.');
+    }
     const profileCopyButton = await waitFor(
       () => Array.from(document.querySelectorAll('.detailActions button'))
         .find((item) => item.textContent?.includes('复制 setup 命令') && !item.disabled),

@@ -422,6 +422,107 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "active": profiles_mod.
     };
   }
 
+  const profileMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)$/);
+  if (method === 'PATCH' && profileMatch) {
+    const name = decodeURIComponent(profileMatch[1]);
+    return runHermesPython(`${profileToDict}
+name = str(payload.get("name") or "").strip()
+new_name = str(payload.get("new_name") or "").strip()
+path = profiles_mod.rename_profile(name, new_name)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": new_name, "path": str(path), "source": "desktop-local-bridge"}))
+`, { name, new_name: body?.new_name || '' }, 30000);
+  }
+
+  const soulMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)\/soul$/);
+  if (method === 'GET' && soulMatch) {
+    const name = decodeURIComponent(soulMatch[1]);
+    return runHermesPython(`${profileToDict}
+from pathlib import Path
+name = str(payload.get("name") or "").strip()
+profile_dir = profiles_mod.get_profile_dir(name)
+soul_path = Path(profile_dir) / "SOUL.md"
+if soul_path.exists():
+    content = soul_path.read_text(encoding="utf-8")
+    exists = True
+else:
+    content = ""
+    exists = False
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"content": content, "exists": exists, "source": "desktop-local-bridge"}))
+`, { name }, 20000);
+  }
+
+  if (method === 'PUT' && soulMatch) {
+    const name = decodeURIComponent(soulMatch[1]);
+    return runHermesPython(`${profileToDict}
+from pathlib import Path
+name = str(payload.get("name") or "").strip()
+content = str(payload.get("content") or "")
+profile_dir = profiles_mod.get_profile_dir(name)
+soul_path = Path(profile_dir) / "SOUL.md"
+soul_path.write_text(content, encoding="utf-8")
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "exists": True, "source": "desktop-local-bridge"}))
+`, { name, content: body?.content || '' }, 20000);
+  }
+
+  const descriptionMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)\/description$/);
+  if (method === 'PUT' && descriptionMatch) {
+    const name = decodeURIComponent(descriptionMatch[1]);
+    return runHermesPython(`${profileToDict}
+name = str(payload.get("name") or "").strip()
+description = str(payload.get("description") or "").strip()
+profile_dir = profiles_mod.get_profile_dir(name)
+profiles_mod.write_profile_meta(profile_dir, description=description, description_auto=False)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "description": description, "description_auto": False, "source": "desktop-local-bridge"}))
+`, { name, description: body?.description || '' }, 20000);
+  }
+
+  const modelMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)\/model$/);
+  if (method === 'PUT' && modelMatch) {
+    const name = decodeURIComponent(modelMatch[1]);
+    return runHermesPython(`${profileToDict}
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_cli.config import load_config, save_config
+name = str(payload.get("name") or "").strip()
+provider = str(payload.get("provider") or "").strip()
+model = str(payload.get("model") or "").strip()
+if not provider or not model:
+    raise SystemExit("provider and model are required")
+profile_dir = profiles_mod.get_profile_dir(name)
+token = set_hermes_home_override(str(profile_dir))
+try:
+    cfg = load_config()
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    model_cfg["provider"] = provider
+    model_cfg["default"] = model
+    model_cfg["name"] = model
+    cfg["model"] = model_cfg
+    save_config(cfg)
+finally:
+    reset_hermes_home_override(token)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "provider": provider, "model": model, "source": "desktop-local-bridge"}))
+`, { name, model: body?.model || '', provider: body?.provider || '' }, 20000);
+  }
+
+  const terminalMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)\/open-terminal$/);
+  if (method === 'POST' && terminalMatch) {
+    const name = decodeURIComponent(terminalMatch[1]);
+    return runHermesPython(`${profileToDict}
+import subprocess, sys
+name = str(payload.get("name") or "").strip()
+profiles_mod.get_profile_dir(name)
+command = "hermes setup" if name == "default" else f"{name} setup"
+if sys.platform == "darwin":
+    escaped = command.replace("\\\\", "\\\\\\\\").replace('"', '\\\\"')
+    applescript = 'tell application "Terminal"\\nactivate\\ndo script "' + escaped + '"\\nend tell'
+    subprocess.Popen(["osascript", "-e", applescript])
+else:
+    raise SystemExit("Opening a profile terminal is currently implemented for macOS only")
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "command": command, "source": "desktop-local-bridge"}))
+`, { name }, 20000);
+  }
+
   const deleteMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)$/);
   if (method === 'DELETE' && deleteMatch) {
     const name = decodeURIComponent(deleteMatch[1]);

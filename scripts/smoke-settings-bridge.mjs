@@ -195,6 +195,72 @@ try {
       timeoutMs: 30000,
     });
 
+    const profileName = 'smoke-bridge-profile';
+    const renamedProfileName = 'smoke-bridge-profile-renamed';
+    const createdProfile = await api({
+      body: { clone_from_default: true, name: profileName },
+      method: 'POST',
+      path: '/api/profiles',
+      timeoutMs: 60000,
+    });
+    if (createdProfile.name !== profileName) {
+      throw new Error('Profile create returned wrong name');
+    }
+    await api({
+      body: { description: 'Bridge smoke editable profile' },
+      method: 'PUT',
+      path: '/api/profiles/' + encodeURIComponent(profileName) + '/description',
+      timeoutMs: 30000,
+    });
+    await api({
+      body: { model: 'profile-smoke-model', provider: 'profile-smoke-provider' },
+      method: 'PUT',
+      path: '/api/profiles/' + encodeURIComponent(profileName) + '/model',
+      timeoutMs: 30000,
+    });
+    await api({
+      body: { content: '# Smoke SOUL\\nKeep profile edits writable.\\n' },
+      method: 'PUT',
+      path: '/api/profiles/' + encodeURIComponent(profileName) + '/soul',
+      timeoutMs: 30000,
+    });
+    const soul = await api({
+      path: '/api/profiles/' + encodeURIComponent(profileName) + '/soul',
+      timeoutMs: 30000,
+    });
+    if (!soul.content?.includes('Keep profile edits writable')) {
+      throw new Error('Profile SOUL save/read did not persist');
+    }
+    const profileList = await api({ path: '/api/profiles', timeoutMs: 30000 });
+    const savedProfile = profileList.profiles?.find((profile) => profile.name === profileName);
+    if (
+      !savedProfile
+      || savedProfile.description !== 'Bridge smoke editable profile'
+      || savedProfile.provider !== 'profile-smoke-provider'
+      || savedProfile.model !== 'profile-smoke-model'
+    ) {
+      throw new Error('Profile description/model edits did not persist');
+    }
+    await api({
+      body: { new_name: renamedProfileName },
+      method: 'PATCH',
+      path: '/api/profiles/' + encodeURIComponent(profileName),
+      timeoutMs: 30000,
+    });
+    const profileListAfterRename = await api({ path: '/api/profiles', timeoutMs: 30000 });
+    if (!profileListAfterRename.profiles?.some((profile) => profile.name === renamedProfileName)) {
+      throw new Error('Profile rename did not persist');
+    }
+    await api({
+      method: 'DELETE',
+      path: '/api/profiles/' + encodeURIComponent(renamedProfileName),
+      timeoutMs: 30000,
+    });
+    const profileListAfterDelete = await api({ path: '/api/profiles', timeoutMs: 30000 });
+    if (profileListAfterDelete.profiles?.some((profile) => profile.name === renamedProfileName)) {
+      throw new Error('Profile delete did not persist');
+    }
+
     const created = await api({
       body: {
         args: ['-c', "print('smoke')"],
@@ -232,6 +298,7 @@ try {
     return {
       mcp: 'create-toggle-delete',
       model: 'saved',
+      profiles: 'create-edit-soul-rename-delete',
       toolset: firstToolset.name,
       toolsetConfig: 'provider-env',
     };
