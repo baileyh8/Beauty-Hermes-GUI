@@ -1110,6 +1110,38 @@ try {
       }
       return button;
     };
+    const findRuntimePolicySurface = () => {
+      const explicitSurface = document.querySelector(
+        '[data-testid="runtime-policy-settings"], [data-testid="runtime-policy-controls"], .runtimePolicySettings, .runtimePolicyControls',
+      );
+      if (explicitSurface) {
+        return explicitSurface;
+      }
+      const policyPattern = /runtime policy|tool use|environment probe|image input|运行时策略|运行策略|高级运行参数|工具使用策略|环境探测|图片输入/i;
+      return Array.from(document.querySelectorAll('.settingRow')).find((row) => policyPattern.test(row.textContent || ''));
+    };
+    const assertRuntimePolicyControls = async () => {
+      const runtimePolicySurface = await waitFor(
+        () => findRuntimePolicySurface(),
+        'runtime policy settings controls',
+        15000,
+      );
+      const controls = Array.from(runtimePolicySurface.querySelectorAll('select,input,button,textarea'));
+      if (!controls.length) {
+        throw new Error('Runtime policy settings should expose at least one control.');
+      }
+      const accessibleText = controls
+        .map((control) => [
+          control.getAttribute('aria-label'),
+          control.getAttribute('name'),
+          control.getAttribute('title'),
+          control.textContent,
+        ].filter(Boolean).join(' '))
+        .join(' ');
+      if (!/runtime|policy|approval|sandbox|network|策略|审批|沙盒|网络/i.test(`${runtimePolicySurface.textContent || ''} ${accessibleText}`)) {
+        throw new Error('Runtime policy controls should be discoverable by label or visible text.');
+      }
+    };
 
     await selectSettingsSection('模型', '默认模型');
     const modelProviderSelect = await waitFor(
@@ -1132,6 +1164,12 @@ try {
     }
 
     await selectSettingsSection('权限', 'Toolsets');
+    await assertRuntimePolicyControls();
+    for (const label of ['审批模式', '审批等待秒数', 'Gateway 审批等待秒数', 'Cron 审批模式', '命令允许列表']) {
+      if (!document.querySelector(`[aria-label="${label}"]`)) {
+        throw new Error(`Missing approval policy control: ${label}`);
+      }
+    }
     const toolsetToggle = await waitFor(
       () => Array.from(document.querySelectorAll('.settingRow .toggle')).find((item) => item.getAttribute('aria-label')?.includes('toolset') || item.getAttribute('aria-label')),
       'toolset toggle controls',
@@ -1309,6 +1347,8 @@ try {
       pages: pages.map(([label]) => label),
       projectAgents: ['项目', 'Agents'],
       preferences: ['density', 'theme', 'permission-modal'],
+      runtimePolicy: 'controls-present',
+      approvalPolicy: 'controls-present',
       settingsEditable: ['models', 'toolsets', 'gateway', 'mcp'],
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),

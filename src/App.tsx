@@ -539,6 +539,33 @@ interface HermesModelOptionsInfo {
   source?: string;
 }
 
+type RuntimeToolPolicy = 'always' | 'auto' | 'custom' | 'off';
+type ImageInputMode = 'auto' | 'native' | 'text';
+type ApprovalMode = 'manual' | 'smart' | 'off';
+type ApprovalCronMode = 'deny' | 'approve';
+
+interface HermesRuntimePolicyInfo {
+  clarify_timeout?: null | number;
+  environment_probe?: boolean;
+  gateway_timeout?: null | number;
+  gateway_timeout_warning?: null | number;
+  image_input_mode?: ImageInputMode | string;
+  max_turns?: null | number;
+  source?: string;
+  task_completion_guidance?: boolean;
+  tool_use_enforcement?: RuntimeToolPolicy | string;
+  tool_use_enforcement_custom?: boolean;
+}
+
+interface HermesApprovalPolicyInfo {
+  command_allowlist?: string[];
+  cron_mode?: ApprovalCronMode | string;
+  gateway_timeout?: null | number;
+  mode?: ApprovalMode | string;
+  source?: string;
+  timeout?: null | number;
+}
+
 interface HermesToolsetInfo {
   available?: boolean;
   configured?: boolean;
@@ -9430,6 +9457,24 @@ function SettingsPanel({
   const [gatewayRemoteUrlDraft, setGatewayRemoteUrlDraft] = useState('');
   const [gatewayRemoteTokenDraft, setGatewayRemoteTokenDraft] = useState('');
   const [gatewayAutoStartDraft, setGatewayAutoStartDraft] = useState(true);
+  const [runtimePolicy, setRuntimePolicy] = useState<HermesRuntimePolicyInfo | null>(null);
+  const [runtimePolicyLoaded, setRuntimePolicyLoaded] = useState(false);
+  const [policyMaxTurnsDraft, setPolicyMaxTurnsDraft] = useState('');
+  const [policyGatewayTimeoutDraft, setPolicyGatewayTimeoutDraft] = useState('');
+  const [policyGatewayWarningDraft, setPolicyGatewayWarningDraft] = useState('');
+  const [policyClarifyTimeoutDraft, setPolicyClarifyTimeoutDraft] = useState('');
+  const [policyToolUseDraft, setPolicyToolUseDraft] = useState<RuntimeToolPolicy>('auto');
+  const [policyTaskGuidanceDraft, setPolicyTaskGuidanceDraft] = useState(true);
+  const [policyEnvironmentProbeDraft, setPolicyEnvironmentProbeDraft] = useState(true);
+  const [policyImageInputDraft, setPolicyImageInputDraft] = useState<ImageInputMode>('auto');
+  const [approvalPolicy, setApprovalPolicy] = useState<HermesApprovalPolicyInfo | null>(null);
+  const [approvalPolicyLoaded, setApprovalPolicyLoaded] = useState(false);
+  const [approvalModeDraft, setApprovalModeDraft] = useState<ApprovalMode>('manual');
+  const [approvalTimeoutDraft, setApprovalTimeoutDraft] = useState('');
+  const [approvalGatewayTimeoutDraft, setApprovalGatewayTimeoutDraft] = useState('');
+  const [approvalCronModeDraft, setApprovalCronModeDraft] = useState<ApprovalCronMode>('deny');
+  const [approvalAllowlistDraft, setApprovalAllowlistDraft] = useState('');
+  const [approvalOffConfirmed, setApprovalOffConfirmed] = useState(false);
   const selectedRef = useRef(selected);
   useEffect(() => {
     selectedRef.current = selected;
@@ -9548,6 +9593,151 @@ function SettingsPanel({
       return result;
     });
   }, [apiRequest, gatewayAutoStartDraft, gatewayModeDraft, gatewayRemoteTokenDraft, gatewayRemoteUrlDraft, runGatewayConfigAction, runtime]);
+  const applyRuntimePolicy = useCallback((result: HermesRuntimePolicyInfo) => {
+    const toolPolicy = ['auto', 'always', 'off', 'custom'].includes(String(result.tool_use_enforcement || ''))
+      ? String(result.tool_use_enforcement) as RuntimeToolPolicy
+      : 'custom';
+    const imageMode = ['auto', 'native', 'text'].includes(String(result.image_input_mode || ''))
+      ? String(result.image_input_mode) as ImageInputMode
+      : 'auto';
+    setRuntimePolicy(result);
+    setRuntimePolicyLoaded(true);
+    setPolicyMaxTurnsDraft(String(result.max_turns ?? config?.maxTurns ?? 90));
+    setPolicyGatewayTimeoutDraft(String(result.gateway_timeout ?? config?.gatewayTimeout ?? 1800));
+    setPolicyGatewayWarningDraft(String(result.gateway_timeout_warning ?? config?.gatewayTimeoutWarning ?? 900));
+    setPolicyClarifyTimeoutDraft(String(result.clarify_timeout ?? config?.clarifyTimeout ?? 600));
+    setPolicyToolUseDraft(toolPolicy);
+    setPolicyTaskGuidanceDraft(result.task_completion_guidance !== false);
+    setPolicyEnvironmentProbeDraft(result.environment_probe !== false);
+    setPolicyImageInputDraft(imageMode);
+  }, [config?.clarifyTimeout, config?.gatewayTimeout, config?.gatewayTimeoutWarning, config?.maxTurns]);
+  const loadRuntimePolicy = useCallback(async () => {
+    try {
+      setSettingsBusy('policy:runtime:load');
+      const result = await apiRequest<HermesRuntimePolicyInfo>({ path: '/api/settings/runtime-policy', timeoutMs: 20000 });
+      applyRuntimePolicy(result);
+      if (['advanced', 'general', 'permissions'].includes(selectedRef.current)) {
+        setSettingsStatus('运行策略已同步');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (['advanced', 'general', 'permissions'].includes(selectedRef.current)) {
+        setSettingsStatus(`运行策略读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest, applyRuntimePolicy]);
+  const saveRuntimePolicy = useCallback(async (scope: 'advanced' | 'general' | 'permissions') => {
+    const timeout = Number(policyGatewayTimeoutDraft);
+    const warning = Number(policyGatewayWarningDraft);
+    if (timeout > 0 && warning > timeout) {
+      setSettingsStatus('超时预警不能大于 Gateway 空闲超时；设为 0 可关闭预警。');
+      return;
+    }
+
+    await runSettingAction(`policy:runtime:${scope}`, '运行策略保存', async () => {
+      const result = await apiRequest<HermesRuntimePolicyInfo>({
+        body: {
+          clarify_timeout: policyClarifyTimeoutDraft.trim(),
+          environment_probe: policyEnvironmentProbeDraft,
+          gateway_timeout: policyGatewayTimeoutDraft.trim(),
+          gateway_timeout_warning: policyGatewayWarningDraft.trim(),
+          image_input_mode: policyImageInputDraft,
+          max_turns: policyMaxTurnsDraft.trim(),
+          task_completion_guidance: policyTaskGuidanceDraft,
+          tool_use_enforcement: policyToolUseDraft,
+        },
+        method: 'PUT',
+        path: '/api/settings/runtime-policy',
+        timeoutMs: 30000,
+      });
+      applyRuntimePolicy(result);
+      await runtime.refreshInventory();
+      setSettingsStatus('运行策略已保存，新的会话/重启后的 Gateway 会使用这些值。');
+    });
+  }, [
+    apiRequest,
+    applyRuntimePolicy,
+    policyClarifyTimeoutDraft,
+    policyEnvironmentProbeDraft,
+    policyGatewayTimeoutDraft,
+    policyGatewayWarningDraft,
+    policyImageInputDraft,
+    policyMaxTurnsDraft,
+    policyTaskGuidanceDraft,
+    policyToolUseDraft,
+    runtime,
+  ]);
+  const applyApprovalPolicy = useCallback((result: HermesApprovalPolicyInfo) => {
+    const mode = ['manual', 'smart', 'off'].includes(String(result.mode || ''))
+      ? String(result.mode) as ApprovalMode
+      : 'manual';
+    const cronMode = ['deny', 'approve'].includes(String(result.cron_mode || ''))
+      ? String(result.cron_mode) as ApprovalCronMode
+      : 'deny';
+    const allowlist = Array.isArray(result.command_allowlist) ? result.command_allowlist : [];
+    setApprovalPolicy(result);
+    setApprovalPolicyLoaded(true);
+    setApprovalModeDraft(mode);
+    setApprovalTimeoutDraft(String(result.timeout ?? 60));
+    setApprovalGatewayTimeoutDraft(String(result.gateway_timeout ?? 300));
+    setApprovalCronModeDraft(cronMode);
+    setApprovalAllowlistDraft(allowlist.join('\n'));
+    setApprovalOffConfirmed(false);
+  }, []);
+  const loadApprovalPolicy = useCallback(async () => {
+    try {
+      setSettingsBusy('policy:approval:load');
+      const result = await apiRequest<HermesApprovalPolicyInfo>({ path: '/api/settings/approval-policy', timeoutMs: 20000 });
+      applyApprovalPolicy(result);
+      if (selectedRef.current === 'permissions') {
+        setSettingsStatus('审批策略已同步');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (selectedRef.current === 'permissions') {
+        setSettingsStatus(`审批策略读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest, applyApprovalPolicy]);
+  const saveApprovalPolicy = useCallback(async () => {
+    if (approvalModeDraft === 'off' && !approvalOffConfirmed) {
+      setSettingsStatus('关闭审批会跳过安全提示，请先勾选确认。');
+      return;
+    }
+
+    await runSettingAction('policy:approval:save', '审批策略保存', async () => {
+      const result = await apiRequest<HermesApprovalPolicyInfo>({
+        body: {
+          command_allowlist: approvalAllowlistDraft,
+          cron_mode: approvalCronModeDraft,
+          gateway_timeout: approvalGatewayTimeoutDraft.trim(),
+          mode: approvalModeDraft,
+          mode_off_confirmed: approvalOffConfirmed,
+          timeout: approvalTimeoutDraft.trim(),
+        },
+        method: 'PUT',
+        path: '/api/settings/approval-policy',
+        timeoutMs: 30000,
+      });
+      applyApprovalPolicy(result);
+      await runtime.refreshInventory();
+      setSettingsStatus('审批策略与命令允许列表已保存。');
+    });
+  }, [
+    apiRequest,
+    applyApprovalPolicy,
+    approvalAllowlistDraft,
+    approvalCronModeDraft,
+    approvalGatewayTimeoutDraft,
+    approvalModeDraft,
+    approvalOffConfirmed,
+    approvalTimeoutDraft,
+    runtime,
+  ]);
   const inventoryModelOptions = useMemo<HermesModelOptionsInfo | null>(() => {
     const defaultModel = config?.defaultModel || runtime.model || '';
     const currentProvider = config?.provider
@@ -9863,6 +10053,12 @@ function SettingsPanel({
     });
   }, [apiRequest]);
   useEffect(() => {
+    if (['advanced', 'general', 'permissions'].includes(selected) && !runtimePolicyLoaded && !settingsBusy) {
+      void loadRuntimePolicy();
+    }
+    if (selected === 'permissions' && !approvalPolicyLoaded && !settingsBusy) {
+      void loadApprovalPolicy();
+    }
     if (selected === 'models' && !modelOptionsLoaded && !settingsBusy) {
       void loadModelSettings();
     }
@@ -9875,7 +10071,22 @@ function SettingsPanel({
     if (selected === 'integrations' && !mcpServersLoaded && !settingsBusy) {
       void loadMcpServers();
     }
-  }, [gatewayConfigLoaded, loadGatewayConfig, loadMcpServers, loadModelSettings, loadToolsets, mcpServersLoaded, modelOptionsLoaded, selected, settingsBusy, toolsetsLoaded]);
+  }, [
+    approvalPolicyLoaded,
+    gatewayConfigLoaded,
+    loadApprovalPolicy,
+    loadGatewayConfig,
+    loadMcpServers,
+    loadModelSettings,
+    loadRuntimePolicy,
+    loadToolsets,
+    mcpServersLoaded,
+    modelOptionsLoaded,
+    runtimePolicyLoaded,
+    selected,
+    settingsBusy,
+    toolsetsLoaded,
+  ]);
   const enabledToolsetCount = toolsets.filter((item) => item.enabled).length;
   const enabledMcpCount = mcpServers.filter((item) => item.enabled !== false).length;
   const settingsControlLocked = Boolean(settingsBusy && !settingsBusy.endsWith(':load'));
@@ -9883,6 +10094,47 @@ function SettingsPanel({
     advanced: [
       { icon: <HardDrive size={18} />, title: 'Hermes Home', desc: runtime.inventory?.diagnostics.hermesHome || '浏览器预览不可用', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void copyText(runtime.inventory?.diagnostics.hermesHome || '', 'Hermes Home')}>{settingsBusy === 'copy:Hermes Home' ? '复制中' : '复制'}</button> },
       { icon: <TerminalSquare size={18} />, title: 'Gateway PID', desc: String(runtime.inventory?.diagnostics.gatewayPid ?? '-'), control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('advanced:pid', 'Gateway 状态')}>{settingsBusy === 'advanced:pid' ? '刷新中' : runtime.gatewayStatus}</button> },
+      {
+        icon: <SlidersHorizontal size={18} />,
+        title: '高级运行参数',
+        desc: `clarify ${policyClarifyTimeoutDraft || runtimePolicy?.clarify_timeout || '未设置'}s · image ${policyImageInputDraft}`,
+        control: (
+          <form
+            className="settingControlStack wide policyForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveRuntimePolicy('advanced');
+            }}
+          >
+            <input
+              aria-label="Clarify 等待秒数"
+              className="settingInput short"
+              disabled={settingsControlLocked}
+              inputMode="numeric"
+              placeholder="clarify s"
+              value={policyClarifyTimeoutDraft}
+              onChange={(event) => setPolicyClarifyTimeoutDraft(event.target.value)}
+            />
+            <select
+              aria-label="图片输入模式"
+              className="settingSelect short"
+              disabled={settingsControlLocked}
+              value={policyImageInputDraft}
+              onChange={(event) => setPolicyImageInputDraft(event.target.value as ImageInputMode)}
+            >
+              <option value="auto">图片自动</option>
+              <option value="native">原生视觉</option>
+              <option value="text">转文本</option>
+            </select>
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadRuntimePolicy()}>
+              {settingsBusy === 'policy:runtime:load' ? '同步中' : '同步'}
+            </button>
+            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
+              {settingsBusy === 'policy:runtime:advanced' ? '保存中' : '保存'}
+            </button>
+          </form>
+        ),
+      },
       { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('advanced:refresh', '本机状态刷新')}>{settingsBusy === 'advanced:refresh' ? '刷新中' : '刷新'}</button> },
     ],
     appearance: [
@@ -9927,6 +10179,54 @@ function SettingsPanel({
     ],
     general: [
       { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => runtime.gatewayStatus === 'connected' ? stopGateway() : restartGateway()}>{settingsBusy === 'gateway:stop' || settingsBusy === 'gateway:restart' ? '处理中' : runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
+      {
+        icon: <Clock size={18} />,
+        title: '运行策略',
+        desc: `max turns ${policyMaxTurnsDraft || config?.maxTurns || '未设置'} · timeout ${policyGatewayTimeoutDraft || config?.gatewayTimeout || '未设置'}s`,
+        control: (
+          <form
+            className="settingControlStack wide policyForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveRuntimePolicy('general');
+            }}
+          >
+            <input
+              aria-label="最大回合数"
+              className="settingInput short"
+              disabled={settingsControlLocked}
+              inputMode="numeric"
+              placeholder="turns"
+              value={policyMaxTurnsDraft}
+              onChange={(event) => setPolicyMaxTurnsDraft(event.target.value)}
+            />
+            <input
+              aria-label="Gateway 空闲超时秒数"
+              className="settingInput short"
+              disabled={settingsControlLocked}
+              inputMode="numeric"
+              placeholder="timeout s"
+              value={policyGatewayTimeoutDraft}
+              onChange={(event) => setPolicyGatewayTimeoutDraft(event.target.value)}
+            />
+            <input
+              aria-label="Gateway 超时预警秒数"
+              className="settingInput short"
+              disabled={settingsControlLocked}
+              inputMode="numeric"
+              placeholder="warn s"
+              value={policyGatewayWarningDraft}
+              onChange={(event) => setPolicyGatewayWarningDraft(event.target.value)}
+            />
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadRuntimePolicy()}>
+              {settingsBusy === 'policy:runtime:load' ? '同步中' : '同步'}
+            </button>
+            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
+              {settingsBusy === 'policy:runtime:general' ? '保存中' : '保存'}
+            </button>
+          </form>
+        ),
+      },
       { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('general:sessions', '会话列表刷新')}>{settingsBusy === 'general:sessions' ? '刷新中' : '刷新'}</button> },
     ],
     integrations: [
@@ -10127,6 +10427,152 @@ function SettingsPanel({
     ],
     permissions: [
       { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={onOpenPermission}>手动确认</button> },
+      {
+        icon: <Shield size={18} />,
+        title: '审批策略',
+        desc: `${approvalModeDraft} · 等待 ${approvalTimeoutDraft || approvalPolicy?.timeout || 60}s · Gateway ${approvalGatewayTimeoutDraft || approvalPolicy?.gateway_timeout || 300}s`,
+        control: (
+          <form
+            className="settingControlStack wide policyForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveApprovalPolicy();
+            }}
+          >
+            <select
+              aria-label="审批模式"
+              className="settingSelect short"
+              disabled={settingsControlLocked}
+              value={approvalModeDraft}
+              onChange={(event) => setApprovalModeDraft(event.target.value as ApprovalMode)}
+            >
+              <option value="manual">手动</option>
+              <option value="smart">智能</option>
+              <option value="off">关闭</option>
+            </select>
+            <input
+              aria-label="审批等待秒数"
+              className="settingInput short"
+              disabled={settingsControlLocked}
+              inputMode="numeric"
+              placeholder="wait s"
+              value={approvalTimeoutDraft}
+              onChange={(event) => setApprovalTimeoutDraft(event.target.value)}
+            />
+            <input
+              aria-label="Gateway 审批等待秒数"
+              className="settingInput short"
+              disabled={settingsControlLocked}
+              inputMode="numeric"
+              placeholder="gateway s"
+              value={approvalGatewayTimeoutDraft}
+              onChange={(event) => setApprovalGatewayTimeoutDraft(event.target.value)}
+            />
+            <select
+              aria-label="Cron 审批模式"
+              className="settingSelect short"
+              disabled={settingsControlLocked}
+              value={approvalCronModeDraft}
+              onChange={(event) => setApprovalCronModeDraft(event.target.value as ApprovalCronMode)}
+            >
+              <option value="deny">Cron 拒绝</option>
+              <option value="approve">Cron 允许</option>
+            </select>
+            {approvalModeDraft === 'off' && (
+              <label className="settingCheckbox compact">
+                <input
+                  checked={approvalOffConfirmed}
+                  disabled={settingsControlLocked}
+                  type="checkbox"
+                  onChange={(event) => setApprovalOffConfirmed(event.target.checked)}
+                />
+                <span>确认关闭</span>
+              </label>
+            )}
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadApprovalPolicy()}>
+              {settingsBusy === 'policy:approval:load' ? '同步中' : '同步'}
+            </button>
+            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
+              {settingsBusy === 'policy:approval:save' ? '保存中' : '保存'}
+            </button>
+          </form>
+        ),
+      },
+      {
+        icon: <KeyRound size={18} />,
+        title: '命令允许列表',
+        desc: `${approvalPolicy?.command_allowlist?.length ?? 0} 条永久允许模式；每行一条。`,
+        control: (
+          <form
+            className="settingControlStack wide policyForm allowlistForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveApprovalPolicy();
+            }}
+          >
+            <textarea
+              aria-label="命令允许列表"
+              className="settingTextarea"
+              disabled={settingsControlLocked}
+              placeholder="例如：npm test"
+              rows={3}
+              value={approvalAllowlistDraft}
+              onChange={(event) => setApprovalAllowlistDraft(event.target.value)}
+            />
+            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
+              {settingsBusy === 'policy:approval:save' ? '保存中' : '保存'}
+            </button>
+          </form>
+        ),
+      },
+      {
+        icon: <Wrench size={18} />,
+        title: '工具使用策略',
+        desc: `${policyToolUseDraft === 'custom' ? '自定义配置保留' : policyToolUseDraft} · guidance ${policyTaskGuidanceDraft ? 'on' : 'off'} · env probe ${policyEnvironmentProbeDraft ? 'on' : 'off'}`,
+        control: (
+          <form
+            className="settingControlStack wide policyForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveRuntimePolicy('permissions');
+            }}
+          >
+            <select
+              aria-label="工具使用强制策略"
+              className="settingSelect"
+              disabled={settingsControlLocked}
+              value={policyToolUseDraft}
+              onChange={(event) => setPolicyToolUseDraft(event.target.value as RuntimeToolPolicy)}
+            >
+              <option value="auto">自动强制</option>
+              <option value="always">始终强制</option>
+              <option value="off">关闭强制</option>
+              {policyToolUseDraft === 'custom' && <option value="custom">自定义保留</option>}
+            </select>
+            <label className="settingCheckbox compact">
+              <input
+                checked={policyTaskGuidanceDraft}
+                disabled={settingsControlLocked}
+                type="checkbox"
+                onChange={(event) => setPolicyTaskGuidanceDraft(event.target.checked)}
+              />
+              <span>完成指导</span>
+            </label>
+            <label className="settingCheckbox compact">
+              <input
+                checked={policyEnvironmentProbeDraft}
+                disabled={settingsControlLocked}
+                type="checkbox"
+                onChange={(event) => setPolicyEnvironmentProbeDraft(event.target.checked)}
+              />
+              <span>环境探测</span>
+            </label>
+            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
+              {settingsBusy === 'policy:runtime:permissions' ? '保存中' : '保存'}
+            </button>
+          </form>
+        ),
+      },
       { icon: <KeyRound size={18} />, title: 'Toolsets', desc: `${enabledToolsetCount}/${toolsets.length || config?.toolsets.length || 0} 已启用，写入 platform_toolsets.cli。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadToolsets()}>{settingsBusy === 'toolsets:load' ? '同步中' : '同步'}</button> },
       ...toolsets.flatMap((toolset) => {
         const label = toolset.label || toolset.name;

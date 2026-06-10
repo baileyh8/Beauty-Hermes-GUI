@@ -181,10 +181,171 @@ try {
     };
     await waitFor(() => window.hermesDesktop?.api, 'desktop api');
     const api = (request) => window.hermesDesktop.api(request);
+    const runtimePolicyPath = '/api/settings/runtime-policy';
+    const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
+    const runtimePolicyWritableKeys = [
+      'clarify_timeout',
+      'environment_probe',
+      'gateway_timeout',
+      'gateway_timeout_warning',
+      'image_input_mode',
+      'max_turns',
+      'task_completion_guidance',
+      'tool_use_enforcement',
+    ];
+    const approvalPolicyPath = '/api/settings/approval-policy';
+    const approvalPolicyWritableKeys = [
+      'command_allowlist',
+      'cron_mode',
+      'gateway_timeout',
+      'mode',
+      'timeout',
+    ];
+    const extractRuntimePolicy = (response) => {
+      const directPolicy = response?.policy || response?.runtime_policy || response?.runtimePolicy || response?.settings;
+      const rawPolicy = directPolicy && typeof directPolicy === 'object' && !Array.isArray(directPolicy)
+        ? directPolicy
+        : response;
+      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) {
+        throw new Error('Runtime policy response did not return an object');
+      }
+      const policy = Object.fromEntries(runtimePolicyWritableKeys
+        .filter((key) => hasOwn(rawPolicy, key) && rawPolicy[key] !== null && rawPolicy[key] !== undefined)
+        .map((key) => [key, rawPolicy[key]]));
+      if (!Object.keys(policy).length) {
+        throw new Error('Runtime policy response did not expose writable fields');
+      }
+      return policy;
+    };
+    const buildTemporaryRuntimePolicy = (readResponse) => {
+      const originalPolicy = extractRuntimePolicy(readResponse);
+      const temporaryPolicy = {
+        ...originalPolicy,
+        clarify_timeout: 90,
+        environment_probe: false,
+        gateway_timeout: 120,
+        gateway_timeout_warning: 60,
+        image_input_mode: 'text',
+        max_turns: 91,
+        task_completion_guidance: true,
+      };
+      if (originalPolicy.tool_use_enforcement !== 'custom') {
+        temporaryPolicy.tool_use_enforcement = 'auto';
+      }
+      return { originalPolicy, temporaryPolicy };
+    };
+    const assertRuntimePolicyContains = (actualPolicy, expectedPolicy, label) => {
+      const comparableEntries = Object.entries(expectedPolicy)
+        .filter(([, value]) => value !== null && value !== undefined && ['boolean', 'number', 'string'].includes(typeof value));
+      if (!comparableEntries.length) {
+        throw new Error(`Runtime policy ${label} had no comparable primitive fields`);
+      }
+      for (const [key, expectedValue] of comparableEntries) {
+        const actualValue = actualPolicy[key];
+        if (String(actualValue) !== String(expectedValue)) {
+          throw new Error(`Runtime policy ${label} mismatch for ${key}: expected ${String(expectedValue)}, got ${String(actualValue)}`);
+        }
+      }
+    };
+    const putRuntimePolicy = async (policy, label) => {
+      try {
+        const response = await api({
+          body: policy,
+          method: 'PUT',
+          path: runtimePolicyPath,
+          timeoutMs: 30000,
+        });
+        return { response, submittedPolicy: policy };
+      } catch (error) {
+        throw new Error(`Runtime policy ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    const extractApprovalPolicy = (response) => {
+      const directPolicy = response?.policy || response?.approval_policy || response?.approvalPolicy || response?.settings;
+      const rawPolicy = directPolicy && typeof directPolicy === 'object' && !Array.isArray(directPolicy)
+        ? directPolicy
+        : response;
+      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) {
+        throw new Error('Approval policy response did not return an object');
+      }
+      const policy = Object.fromEntries(approvalPolicyWritableKeys
+        .filter((key) => hasOwn(rawPolicy, key) && rawPolicy[key] !== null && rawPolicy[key] !== undefined)
+        .map((key) => [key, rawPolicy[key]]));
+      if (!Object.keys(policy).length) {
+        throw new Error('Approval policy response did not expose writable fields');
+      }
+      return policy;
+    };
+    const assertApprovalPolicyContains = (actualPolicy, expectedPolicy, label) => {
+      for (const [key, expectedValue] of Object.entries(expectedPolicy)) {
+        const actualValue = actualPolicy[key];
+        if (Array.isArray(expectedValue)) {
+          const actualList = Array.isArray(actualValue) ? actualValue : [];
+          if (actualList.join('\n') !== expectedValue.join('\n')) {
+            throw new Error(`Approval policy ${label} mismatch for ${key}`);
+          }
+        } else if (String(actualValue) !== String(expectedValue)) {
+          throw new Error(`Approval policy ${label} mismatch for ${key}: expected ${String(expectedValue)}, got ${String(actualValue)}`);
+        }
+      }
+    };
+    const putApprovalPolicy = async (policy, label) => {
+      try {
+        const response = await api({
+          body: {
+            ...policy,
+            mode_off_confirmed: policy.mode === 'off',
+          },
+          method: 'PUT',
+          path: approvalPolicyPath,
+          timeoutMs: 30000,
+        });
+        return { response, submittedPolicy: policy };
+      } catch (error) {
+        throw new Error(`Approval policy ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
 
     const status = await api({ path: '/api/status', timeoutMs: 30000 });
     if (!status.hermes_home || !status.config_path || status.source !== 'desktop-local-bridge') {
       throw new Error('Local status fallback did not return desktop diagnostics');
+    }
+    const runtimePolicyBefore = await api({ path: runtimePolicyPath, timeoutMs: 30000 });
+    const { originalPolicy, temporaryPolicy } = buildTemporaryRuntimePolicy(runtimePolicyBefore);
+    let runtimePolicyRestoreStatus = 'pending';
+    try {
+      const savedRuntimePolicy = await putRuntimePolicy(temporaryPolicy, 'temporary save');
+      assertRuntimePolicyContains(extractRuntimePolicy(savedRuntimePolicy.response), savedRuntimePolicy.submittedPolicy, 'temporary save response');
+      const runtimePolicyAfterSave = await api({ path: runtimePolicyPath, timeoutMs: 30000 });
+      assertRuntimePolicyContains(extractRuntimePolicy(runtimePolicyAfterSave), savedRuntimePolicy.submittedPolicy, 'temporary save readback');
+    } finally {
+      const restoredRuntimePolicy = await putRuntimePolicy(originalPolicy, 'restore original');
+      assertRuntimePolicyContains(extractRuntimePolicy(restoredRuntimePolicy.response), restoredRuntimePolicy.submittedPolicy, 'restore response');
+      const runtimePolicyAfterRestore = await api({ path: runtimePolicyPath, timeoutMs: 30000 });
+      assertRuntimePolicyContains(extractRuntimePolicy(runtimePolicyAfterRestore), restoredRuntimePolicy.submittedPolicy, 'restore readback');
+      runtimePolicyRestoreStatus = 'restored';
+    }
+    const approvalPolicyBefore = await api({ path: approvalPolicyPath, timeoutMs: 30000 });
+    const originalApprovalPolicy = extractApprovalPolicy(approvalPolicyBefore);
+    const temporaryApprovalPolicy = {
+      command_allowlist: ['echo bridge-approval-smoke', 'npm run smoke:ui'],
+      cron_mode: 'deny',
+      gateway_timeout: 45,
+      mode: 'smart',
+      timeout: 15,
+    };
+    let approvalPolicyRestoreStatus = 'pending';
+    try {
+      const savedApprovalPolicy = await putApprovalPolicy(temporaryApprovalPolicy, 'temporary save');
+      assertApprovalPolicyContains(extractApprovalPolicy(savedApprovalPolicy.response), savedApprovalPolicy.submittedPolicy, 'temporary save response');
+      const approvalPolicyAfterSave = await api({ path: approvalPolicyPath, timeoutMs: 30000 });
+      assertApprovalPolicyContains(extractApprovalPolicy(approvalPolicyAfterSave), savedApprovalPolicy.submittedPolicy, 'temporary save readback');
+    } finally {
+      const restoredApprovalPolicy = await putApprovalPolicy(originalApprovalPolicy, 'restore original');
+      assertApprovalPolicyContains(extractApprovalPolicy(restoredApprovalPolicy.response), restoredApprovalPolicy.submittedPolicy, 'restore response');
+      const approvalPolicyAfterRestore = await api({ path: approvalPolicyPath, timeoutMs: 30000 });
+      assertApprovalPolicyContains(extractApprovalPolicy(approvalPolicyAfterRestore), restoredApprovalPolicy.submittedPolicy, 'restore readback');
+      approvalPolicyRestoreStatus = 'restored';
     }
     const gatewayStart = await api({ method: 'POST', path: '/api/gateway/start', timeoutMs: 30000 });
     if (!gatewayStart.name || !['gateway-start', 'gateway-restart'].includes(gatewayStart.name)) {
@@ -596,6 +757,8 @@ try {
       onboarding: 'read-save-check',
       preview: 'file-read',
       profiles: 'create-edit-soul-rename-delete',
+      approvalPolicy: `read-save-${approvalPolicyRestoreStatus}`,
+      runtimePolicy: `read-save-${runtimePolicyRestoreStatus}`,
       sessions: 'list-search-rename-archive-export-clean-delete',
       system: 'status-gateway-update-check',
       cron: 'create-update-runs-delete',

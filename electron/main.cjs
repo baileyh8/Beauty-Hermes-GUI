@@ -1580,6 +1580,196 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"provider": provider, "model": mode
 }
 
 async function localSettingsApi(method, url, body) {
+  if (url.pathname === '/api/settings/runtime-policy' && (method === 'GET' || method === 'PUT')) {
+    return runHermesPython(`
+import json, sys
+from hermes_cli.config import load_config, save_config
+
+payload = json.loads(sys.stdin.read() or "{}")
+cfg = load_config()
+agent = cfg.get("agent")
+if not isinstance(agent, dict):
+    agent = {}
+    cfg["agent"] = agent
+
+def _to_int(value, name, minimum, maximum):
+    if value is None or value == "":
+        raise SystemExit(f"{name} is required")
+    try:
+        parsed = int(value)
+    except Exception:
+        raise SystemExit(f"{name} must be an integer")
+    if parsed < minimum or parsed > maximum:
+        raise SystemExit(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+def _to_bool(value, name):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+    raise SystemExit(f"{name} must be a boolean")
+
+def _tool_policy(value):
+    if value is True:
+        return "always"
+    if value is False:
+        return "off"
+    if value == "auto":
+        return "auto"
+    return "custom"
+
+def _current_policy():
+    raw_tool_policy = agent.get("tool_use_enforcement", "auto")
+    return {
+        "max_turns": agent.get("max_turns"),
+        "gateway_timeout": agent.get("gateway_timeout"),
+        "gateway_timeout_warning": agent.get("gateway_timeout_warning"),
+        "clarify_timeout": agent.get("clarify_timeout"),
+        "tool_use_enforcement": _tool_policy(raw_tool_policy),
+        "tool_use_enforcement_custom": _tool_policy(raw_tool_policy) == "custom",
+        "task_completion_guidance": bool(agent.get("task_completion_guidance", True)),
+        "environment_probe": bool(agent.get("environment_probe", True)),
+        "image_input_mode": agent.get("image_input_mode", "auto"),
+        "source": "desktop-local-bridge",
+    }
+
+if "${method}" == "PUT":
+    numbers = {
+        "max_turns": (1, 500),
+        "gateway_timeout": (0, 7200),
+        "gateway_timeout_warning": (0, 7200),
+        "clarify_timeout": (30, 7200),
+    }
+    for key, bounds in numbers.items():
+        if key in payload:
+            agent[key] = _to_int(payload.get(key), key, bounds[0], bounds[1])
+    timeout = int(agent.get("gateway_timeout") or 0)
+    warning = int(agent.get("gateway_timeout_warning") or 0)
+    if timeout > 0 and warning > timeout:
+        raise SystemExit("gateway_timeout_warning must be <= gateway_timeout, or set gateway_timeout to 0")
+
+    if "tool_use_enforcement" in payload:
+        value = str(payload.get("tool_use_enforcement") or "").strip().lower()
+        if value == "auto":
+            agent["tool_use_enforcement"] = "auto"
+        elif value == "always":
+            agent["tool_use_enforcement"] = True
+        elif value == "off":
+            agent["tool_use_enforcement"] = False
+        elif value == "custom":
+            pass
+        else:
+            raise SystemExit("tool_use_enforcement must be auto, always, off, or custom")
+
+    for key in ("task_completion_guidance", "environment_probe"):
+        if key in payload:
+            agent[key] = _to_bool(payload.get(key), key)
+
+    if "image_input_mode" in payload:
+        value = str(payload.get("image_input_mode") or "").strip().lower()
+        if value not in ("auto", "native", "text"):
+            raise SystemExit("image_input_mode must be auto, native, or text")
+        agent["image_input_mode"] = value
+
+    save_config(cfg)
+
+print("__BEAUTY_HERMES_JSON__" + json.dumps(_current_policy()))
+`, body || {}, 20000);
+  }
+
+  if (url.pathname === '/api/settings/approval-policy' && (method === 'GET' || method === 'PUT')) {
+    return runHermesPython(`
+import json, sys
+from hermes_cli.config import load_config, save_config
+
+payload = json.loads(sys.stdin.read() or "{}")
+cfg = load_config()
+approvals = cfg.get("approvals")
+if not isinstance(approvals, dict):
+    approvals = {}
+    cfg["approvals"] = approvals
+
+def _to_int(value, name, minimum, maximum):
+    if value is None or value == "":
+        raise SystemExit(f"{name} is required")
+    try:
+        parsed = int(value)
+    except Exception:
+        raise SystemExit(f"{name} must be an integer")
+    if parsed < minimum or parsed > maximum:
+        raise SystemExit(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+def _allowlist(value):
+    if isinstance(value, str):
+        rows = value.splitlines()
+    elif isinstance(value, list):
+        rows = value
+    else:
+        raise SystemExit("command_allowlist must be a list or newline-delimited string")
+    result = []
+    seen = set()
+    for item in rows:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if len(text) > 500:
+            raise SystemExit("command_allowlist entries must be <= 500 characters")
+        if text not in seen:
+            result.append(text)
+            seen.add(text)
+    if len(result) > 200:
+        raise SystemExit("command_allowlist can contain at most 200 entries")
+    return result
+
+def _current_policy():
+    raw_allowlist = cfg.get("command_allowlist") or []
+    if not isinstance(raw_allowlist, list):
+        raw_allowlist = []
+    return {
+        "mode": str(approvals.get("mode", "manual") or "manual"),
+        "timeout": approvals.get("timeout", 60),
+        "gateway_timeout": approvals.get("gateway_timeout", 300),
+        "cron_mode": str(approvals.get("cron_mode", "deny") or "deny"),
+        "command_allowlist": [str(item) for item in raw_allowlist],
+        "source": "desktop-local-bridge",
+    }
+
+if "${method}" == "PUT":
+    if "mode" in payload:
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode not in ("manual", "smart", "off"):
+            raise SystemExit("mode must be manual, smart, or off")
+        if mode == "off" and not bool(payload.get("mode_off_confirmed")):
+            raise SystemExit("mode=off requires explicit confirmation")
+        approvals["mode"] = mode
+
+    if "timeout" in payload:
+        approvals["timeout"] = _to_int(payload.get("timeout"), "timeout", 5, 600)
+
+    if "gateway_timeout" in payload:
+        approvals["gateway_timeout"] = _to_int(payload.get("gateway_timeout"), "gateway_timeout", 30, 3600)
+
+    if "cron_mode" in payload:
+        cron_mode = str(payload.get("cron_mode") or "").strip().lower()
+        if cron_mode not in ("deny", "approve"):
+            raise SystemExit("cron_mode must be deny or approve")
+        approvals["cron_mode"] = cron_mode
+
+    if "command_allowlist" in payload:
+        cfg["command_allowlist"] = _allowlist(payload.get("command_allowlist"))
+
+    save_config(cfg)
+
+print("__BEAUTY_HERMES_JSON__" + json.dumps(_current_policy()))
+`, body || {}, 20000);
+  }
+
   if (method === 'GET' && url.pathname === '/api/model/options') {
     return runHermesPython(`
 import json
@@ -1778,6 +1968,26 @@ for key, value in env_payload.items():
 status = {key: bool(get_env_value(key)) for key in allowed}
 print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status, "source": "desktop-local-bridge"}))
 `, { name, env: body?.env || {} }, 20000);
+  }
+
+  const toolsetPostSetupMatch = url.pathname.match(/^\/api\/tools\/toolsets\/([^/]+)\/post-setup$/);
+  if (method === 'POST' && toolsetPostSetupMatch) {
+    const name = decodeURIComponent(toolsetPostSetupMatch[1]);
+    const key = String(body?.key || '').trim();
+    await runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.tools_config import _get_effective_configurable_toolsets, valid_post_setup_keys
+name = str(payload.get("name") or "").strip()
+key = str(payload.get("key") or "").strip()
+valid_toolsets = {item[0] for item in _get_effective_configurable_toolsets()}
+if name not in valid_toolsets:
+    raise SystemExit(f"Unknown toolset: {name}")
+if key not in valid_post_setup_keys():
+    raise SystemExit(f"Unknown post-setup key: {key}")
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "key": key, "source": "desktop-local-bridge"}))
+`, { name, key }, 20000);
+    return spawnLocalHermesAction(['tools', 'post-setup', key], 'tools-post-setup');
   }
 
   if (method === 'GET' && url.pathname === '/api/mcp/servers') {
@@ -2141,10 +2351,16 @@ function readHermesInventory() {
 
   return {
     config: {
+      clarifyTimeout: Number(yamlNestedValue(configText, 'agent', 'clarify_timeout')) || null,
       defaultModel: yamlNestedValue(configText, 'model', 'default'),
+      environmentProbe: yamlNestedValue(configText, 'agent', 'environment_probe'),
       gatewayTimeout: Number(yamlNestedValue(configText, 'agent', 'gateway_timeout')) || null,
+      gatewayTimeoutWarning: Number(yamlNestedValue(configText, 'agent', 'gateway_timeout_warning')) || null,
+      imageInputMode: yamlNestedValue(configText, 'agent', 'image_input_mode'),
       maxTurns: Number(yamlNestedValue(configText, 'agent', 'max_turns')) || null,
       provider: yamlNestedValue(configText, 'model', 'provider'),
+      taskCompletionGuidance: yamlNestedValue(configText, 'agent', 'task_completion_guidance'),
+      toolUseEnforcement: yamlNestedValue(configText, 'agent', 'tool_use_enforcement'),
       toolsets: yamlList(configText, 'toolsets'),
     },
     diagnostics: {
@@ -2766,6 +2982,7 @@ async function desktopApi(request) {
     '/api/messaging/platforms',
     '/api/messaging/telegram/onboarding',
     '/api/onboarding',
+    '/api/settings',
     '/api/model',
     '/api/tools/toolsets',
     '/api/mcp/servers',

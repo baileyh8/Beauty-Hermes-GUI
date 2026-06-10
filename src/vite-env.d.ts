@@ -23,9 +23,15 @@ interface HermesGatewayConnection {
 interface HermesLocalInventory {
   config: {
     defaultModel: string;
+    clarifyTimeout?: null | number;
+    environmentProbe?: string;
     gatewayTimeout: null | number;
+    gatewayTimeoutWarning?: null | number;
+    imageInputMode?: string;
     maxTurns: null | number;
     provider: string;
+    taskCompletionGuidance?: string;
+    toolUseEnforcement?: string;
     toolsets: string[];
   };
   diagnostics: {

@@ -6972,6 +6972,18 @@ textarea {
   width: 100%;
 }
 
+.policyForm {
+  grid-column: 2 / 4;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+}
+
+.allowlistForm {
+  align-items: flex-start;
+}
+
 .settingCheckbox.compact {
   height: 32px;
   display: inline-flex;
@@ -7041,6 +7053,22 @@ textarea {
   font-size: 12px;
 }
 
+.settingTextarea {
+  min-width: min(520px, 100%);
+  flex: 1 1 360px;
+  min-height: 78px;
+  padding: 9px 10px;
+  border: 1px solid #dfe4ea;
+  border-radius: 12px;
+  outline: none;
+  resize: vertical;
+  background: rgba(255, 255, 255, 0.92);
+  color: #20242a;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settingInput.short,
 .settingSelect.short {
   min-width: 96px;
@@ -7067,12 +7095,14 @@ textarea {
 }
 
 .settingInput:focus,
-.settingSelect:focus {
+.settingSelect:focus,
+.settingTextarea:focus {
   border-color: #b9c8f7;
   box-shadow: 0 0 0 3px rgba(47, 103, 232, 0.08);
 }
 
-.settingInput:disabled {
+.settingInput:disabled,
+.settingTextarea:disabled {
   color: #939aa4;
   background: #f4f6f8;
 }
