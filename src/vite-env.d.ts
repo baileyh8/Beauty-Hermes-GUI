@@ -89,6 +89,7 @@ interface HermesDesktopBridge {
 }
 
 interface Window {
+  __beautyHermesInjectGatewayEvent?: (event: import('./gateway').GatewayEvent) => void;
   hermesDesktop?: HermesDesktopBridge;
 }
 

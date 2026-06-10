@@ -1235,6 +1235,21 @@ function toolEventKey(payload: Record<string, unknown>, name: string, display: T
   return `${name}:${display.label}:${firstDetail || display.summary}`;
 }
 
+function firstExistingMessageIndex(messages: ChatMessageModel[], ids: Array<null | string | undefined>) {
+  for (const id of ids) {
+    if (!id) {
+      continue;
+    }
+
+    const index = messages.findIndex((message) => message.id === id);
+    if (index >= 0) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
 function toolGroupMessage(
   group: Array<{ id: string; info: ToolDisplayInfo; name?: string }>,
   sessionId?: null | string,
@@ -1652,8 +1667,7 @@ function useHermesRuntime(): HermesRuntime {
           toolName,
         };
         const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
-        const beforeId = assistantMessageIdRef.current;
-        const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+        const beforeIndex = firstExistingMessageIndex(next, [statusMessageIdRef.current, assistantMessageIdRef.current]);
         next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
         return next;
       });
@@ -1798,13 +1812,17 @@ function useHermesRuntime(): HermesRuntime {
         case 'message.complete': {
           const finalText = coerceGatewayText(payload);
           const id = assistantMessageIdRef.current || makeId('assistant');
+          const statusId = statusMessageIdRef.current;
 
           setMessages((current) => {
-            const index = current.findIndex((item) => item.id === id);
+            const withoutActiveStatus = statusId
+              ? current.filter((item) => item.id !== statusId)
+              : current;
+            const index = withoutActiveStatus.findIndex((item) => item.id === id);
             if (index === -1) {
               return finalText
                 ? [
-                    ...current,
+                    ...withoutActiveStatus,
                     {
                       id,
                       kind: 'assistant',
@@ -1814,10 +1832,10 @@ function useHermesRuntime(): HermesRuntime {
                       title: '最终结果',
                     },
                   ]
-                : current;
+                : withoutActiveStatus;
             }
 
-            const next = [...current];
+            const next = [...withoutActiveStatus];
             next[index] = {
               ...next[index],
               status: payload.status === 'error' ? 'error' : 'done',
@@ -1830,6 +1848,7 @@ function useHermesRuntime(): HermesRuntime {
           });
 
           assistantMessageIdRef.current = null;
+          statusMessageIdRef.current = null;
           setStatusText(payload.status === 'error' ? '回复中断' : '就绪');
           break;
         }
@@ -1837,7 +1856,11 @@ function useHermesRuntime(): HermesRuntime {
         case 'status.update': {
           const text = normalizeStatusText(coerceGatewayText(payload) || textFromUnknown(payload.kind));
           if (text) {
-            setStatusText(text);
+            if (text === '正在思考') {
+              updateStatusMessage(text, 'running');
+            } else {
+              setStatusText(text);
+            }
           }
           break;
         }
@@ -1850,6 +1873,8 @@ function useHermesRuntime(): HermesRuntime {
 
           const id = reasoningMessageIdRef.current || makeId('reasoning');
           reasoningMessageIdRef.current = id;
+
+          updateStatusMessage('正在思考', 'running');
 
           if (event.type === 'reasoning.available') {
             setMessages((current) => {
@@ -1865,8 +1890,11 @@ function useHermesRuntime(): HermesRuntime {
                 title: '推理过程',
               };
               const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
-              const beforeId = assistantMessageIdRef.current;
-              const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+              const beforeIndex = firstExistingMessageIndex(next, [
+                toolDigestMessageIdRef.current,
+                statusMessageIdRef.current,
+                assistantMessageIdRef.current,
+              ]);
               next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
               return next;
             });
@@ -1881,13 +1909,16 @@ function useHermesRuntime(): HermesRuntime {
               id,
               kind: 'reasoning',
               sessionId,
-              status: 'running',
-              text: existing?.text ?? '',
+              status: 'done',
+              text: compactDuplicateReasoning(existing?.text ?? '', delta),
               title: '推理过程',
             };
             const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
-            const beforeId = assistantMessageIdRef.current;
-            const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+            const beforeIndex = firstExistingMessageIndex(next, [
+              toolDigestMessageIdRef.current,
+              statusMessageIdRef.current,
+              assistantMessageIdRef.current,
+            ]);
             next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
             return next;
           });
@@ -2000,8 +2031,20 @@ function useHermesRuntime(): HermesRuntime {
           break;
       }
     },
-    [appendToMessage, appendToolDigest, patchRuntimeInfo, upsertMessage],
+    [appendToMessage, appendToolDigest, patchRuntimeInfo, updateStatusMessage, upsertMessage],
   );
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('smoke') && gatewayStatus !== 'skipped' && gatewayStatus !== 'browser') {
+      return undefined;
+    }
+
+    window.__beautyHermesInjectGatewayEvent = handleGatewayEvent;
+    return () => {
+      delete window.__beautyHermesInjectGatewayEvent;
+    };
+  }, [gatewayStatus, handleGatewayEvent]);
 
   const connectGateway = useCallback(async () => {
     if (!window.hermesDesktop) {
@@ -3879,8 +3922,13 @@ function MessageEventCard({
   const eventLabel = eventLineLabel(message);
   const showStatusBody = isStatus && shouldShowEventBody(message);
   const showActionBody = !isTool && !isReasoning && !isStatus && Boolean(message.text.trim());
-  const phaseText = isReasoning ? reasoningPhaseText(message) : '';
-  const detailsText = isTool ? (message.details || message.command) : (message.details || message.command || message.text);
+  const reasoningText = isReasoning ? cleanDisplayText(message.text).trim() : '';
+  const phaseText = isReasoning ? reasoningText || reasoningPhaseText(message) : '';
+  const detailsText = isTool
+    ? (message.details || message.command)
+    : isReasoning
+      ? (message.details && message.details !== reasoningText ? message.details : '')
+      : (message.details || message.command || message.text);
   const submitApproval = async (choice: 'once' | 'session' | 'always' | 'deny') => {
     try {
       setActionBusy(choice);

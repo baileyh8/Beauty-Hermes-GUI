@@ -193,6 +193,39 @@ try {
       throw new Error('Empty prompt action buttons should be disabled while gateway is skipped.');
     }
 
+    await waitFor(() => window.__beautyHermesInjectGatewayEvent, 'gateway event smoke injector');
+    window.__beautyHermesInjectGatewayEvent({
+      payload: { session_id: 'smoke-order' },
+      type: 'message.start',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: { reasoning: '阶段思考输出：先确认目标，再执行命令。', session_id: 'smoke-order' },
+      type: 'reasoning.delta',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        command: 'pwd 2>&1',
+        duration_s: 0.2,
+        output: '/tmp/beauty-hermes',
+        session_id: 'smoke-order',
+        tool_id: 'smoke-tool-order',
+      },
+      type: 'tool.complete',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: { text: 'pondering', session_id: 'smoke-order' },
+      type: 'thinking.delta',
+    });
+    await waitFor(() => document.querySelector('[data-testid="message-list"]')?.innerText.includes('阶段思考输出'), 'reasoning delta visible body');
+    const transcriptNodes = Array.from(document.querySelectorAll('[data-testid="message-list"] .message'));
+    const reasoningIndex = transcriptNodes.findIndex((item) => item.textContent?.includes('阶段思考输出'));
+    const toolIndex = transcriptNodes.findIndex((item) => item.textContent?.includes('已运行命令'));
+    const thinkingIndex = transcriptNodes.findIndex((item) => item.textContent?.includes('正在思考'));
+    if (!(reasoningIndex >= 0 && toolIndex >= 0 && thinkingIndex >= 0 && reasoningIndex < toolIndex && toolIndex < thinkingIndex)) {
+      throw new Error(`Transcript event order should be reasoning -> tool -> thinking, got ${JSON.stringify({ reasoningIndex, toolIndex, thinkingIndex })}`);
+    }
+    await startNewTaskFromPage('transcript ordering');
+
     let textarea = document.querySelector('textarea[aria-label="消息"]');
     setNativeValue(textarea, '/');
     await waitFor(() => document.querySelector('.slashMenu')?.textContent?.includes('/help'), 'slash menu');

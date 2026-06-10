@@ -7130,6 +7130,35 @@ textarea {
   background: #f4f6f8;
 }
 
+/* Final runtime layout guardrails: keep the transcript order readable and the right rail uncropped. */
+.appShell.workbenchOpen {
+  grid-template-columns: 268px minmax(0, 1fr) clamp(400px, 24vw, 456px);
+}
+
+.appShell[data-density="compact"].workbenchOpen {
+  grid-template-columns: 252px minmax(0, 1fr) clamp(372px, 23vw, 428px);
+}
+
+.workbench {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding-right: 22px;
+  overflow-x: hidden;
+}
+
+.workbenchHeader {
+  min-width: 0;
+}
+
+.workbenchHeader .tabs {
+  min-width: 0;
+}
+
+.workbenchHeader .iconButton.compact {
+  flex: 0 0 auto;
+}
+
 @media (max-width: 920px) {
   .cronCreateForm {
     grid-template-columns: 1fr;
