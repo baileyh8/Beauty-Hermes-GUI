@@ -7733,6 +7733,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
 
 function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
   const messaging = runtime.inventory?.messaging;
+  const [messagingQuery, setMessagingQuery] = useState('');
   const [platformsState, setPlatformsState] = useState<HermesMessagingPlatformInfo[]>([]);
   const [messagingStatus, setMessagingStatus] = useState('');
   const [messagingBusy, setMessagingBusy] = useState('');
@@ -7802,6 +7803,51 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     const docsWindow = window.open(platform.docs_url, '_blank', 'noopener,noreferrer');
     setMessagingStatus(docsWindow ? `${platform.name} 文档已打开。` : `${platform.name} 文档可能被浏览器拦截。`);
   }, []);
+  const copyPlatformSummary = useCallback(async (platform: HermesMessagingPlatformInfo, kind: 'docs' | 'summary') => {
+    const value = kind === 'docs'
+      ? platform.docs_url || ''
+      : [
+        `Platform: ${platform.name}`,
+        `State: ${platform.state || (platform.enabled ? 'enabled' : 'disabled')}`,
+        `Configured: ${platform.configured ? 'yes' : 'no'}`,
+        `Enabled: ${platform.enabled ? 'yes' : 'no'}`,
+        platform.docs_url ? `Docs: ${platform.docs_url}` : '',
+        platform.error_message ? `Error: ${platform.error_message}` : '',
+        platform.env_vars?.length ? `Env: ${platform.env_vars.map((env) => `${env.key}${env.is_set ? '=set' : '=unset'}`).join(', ')}` : '',
+      ].filter(Boolean).join('\n');
+    if (!value) {
+      setMessagingStatus(`${platform.name} 没有可复制内容。`);
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setMessagingStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    try {
+      setMessagingBusy(`copy:${kind}:${platform.id}`);
+      await navigator.clipboard.writeText(value);
+      setMessagingStatus(`${platform.name} ${kind === 'docs' ? '文档链接' : '摘要'}已复制。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`复制失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, []);
+  const restartMessagingGateway = useCallback(async () => {
+    try {
+      setMessagingBusy('gateway:restart');
+      await runtime.restartGateway();
+      setMessagingStatus('Gateway 重启请求已发送，消息平台配置将重新加载。');
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`重启 Gateway 失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, [refreshInventory, runtime]);
   const togglePlatformConfig = useCallback((platform: HermesMessagingPlatformInfo) => {
     if (selectedMessagingPlatformId === platform.id) {
       setSelectedMessagingPlatformId('');
@@ -7997,6 +8043,21 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
       state: platform.state,
       updated_at: platform.updatedAt,
     })) ?? [];
+  const filteredPlatforms = platforms.filter((platform) => {
+    const search = messagingQuery.trim().toLowerCase();
+    if (!search) {
+      return true;
+    }
+    const haystack = [
+      platform.id,
+      platform.name,
+      platform.state,
+      platform.description,
+      platform.docs_url,
+      platform.env_vars?.map((env) => `${env.key} ${env.description || ''} ${env.prompt || ''}`).join(' '),
+    ].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(search);
+  });
   const channelRows = Object.entries(messaging?.channelCounts ?? {}).filter(([, count]) => count > 0);
   const pairingRows = [
     ['Feishu', messaging?.pairings.feishuApproved ?? 0, messaging?.pairings.feishuPending ?? 0],
@@ -8010,14 +8071,24 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
           <h2>消息网关</h2>
           <p>管理 Hermes Gateway 平台状态、凭据配置、连接测试和用户配对。</p>
         </div>
-        <button className="lightButton" type="button" onClick={() => void loadPlatforms()} disabled={Boolean(messagingBusy)}>
-          <RefreshCw className={messagingBusy === 'load' ? 'spinIcon' : undefined} size={16} />
-          {messagingBusy === 'load' ? '刷新中' : '刷新平台'}
-        </button>
+        <div className="pageIntroActions">
+          <label className="inlineSearch">
+            <Search size={15} />
+            <input aria-label="搜索消息平台" placeholder="搜索平台、凭据或状态" value={messagingQuery} onChange={(event) => setMessagingQuery(event.target.value)} />
+          </label>
+          <button className="lightButton" type="button" onClick={() => void loadPlatforms()} disabled={Boolean(messagingBusy)}>
+            <RefreshCw className={messagingBusy === 'load' ? 'spinIcon' : undefined} size={16} />
+            {messagingBusy === 'load' ? '刷新中' : '刷新平台'}
+          </button>
+          <button className="lightButton" type="button" onClick={() => void restartMessagingGateway()} disabled={Boolean(messagingBusy)}>
+            <RefreshCw className={messagingBusy === 'gateway:restart' ? 'spinIcon' : undefined} size={16} />
+            {messagingBusy === 'gateway:restart' ? '重启中' : '重启 Gateway'}
+          </button>
+        </div>
       </div>
       {messagingStatus && <p className="surfaceStatus">{messagingStatus}</p>}
       <div className="gatewayGrid">
-        {platforms.length > 0 ? platforms.map((platform) => {
+        {filteredPlatforms.length > 0 ? filteredPlatforms.map((platform) => {
           const isConfigOpen = selectedMessagingPlatformId === platform.id;
           const envVars = platform.env_vars ?? [];
           const missingRequired = envVars.filter((env) => env.required && !env.is_set).map((env) => env.key);
@@ -8057,6 +8128,14 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
               <button type="button" onClick={() => void testPlatform(platform)} disabled={Boolean(messagingBusy)}>
                 {messagingBusy === `test:${platform.id}` ? '测试中' : '测试'}
               </button>
+              <button type="button" onClick={() => void copyPlatformSummary(platform, 'summary')} disabled={Boolean(messagingBusy)}>
+                {messagingBusy === `copy:summary:${platform.id}` ? '复制中' : '复制摘要'}
+              </button>
+              {platform.docs_url && (
+                <button type="button" onClick={() => void copyPlatformSummary(platform, 'docs')} disabled={Boolean(messagingBusy)}>
+                  {messagingBusy === `copy:docs:${platform.id}` ? '复制中' : '复制文档'}
+                </button>
+              )}
               {platform.docs_url && <button type="button" onClick={() => openPlatformDocs(platform)} disabled={Boolean(messagingBusy)}>文档</button>}
             </div>
             {isConfigOpen && (
@@ -8168,7 +8247,9 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
             )}
           </article>
           );
-        }) : (
+        }) : platforms.length > 0 ? (
+          <GatewayCard title="没有匹配平台" status="已过滤" desc="清空搜索或换个关键词查看平台配置。" />
+        ) : (
           <GatewayCard title="Gateway" status={runtime.connectionLabel} desc={runtime.inventoryError || '等待本机 Gateway 状态。'} />
         )}
       </div>

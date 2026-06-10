@@ -959,10 +959,34 @@ try {
     await waitFor(() => document.body.innerText.includes('Gateway'), 'settings integrations return');
     findSettingButton('消息平台', '管理').click();
     await waitFor(() => document.body.innerText.includes('管理 Hermes Gateway'), 'messaging settings navigation');
+    const messagingSearchInput = await waitFor(
+      () => document.querySelector('input[aria-label="搜索消息平台"]'),
+      'messaging search input',
+    );
+    if (!findButton('重启 Gateway')) {
+      throw new Error('Messaging page should expose Gateway restart action.');
+    }
+    setNativeValue(messagingSearchInput, 'telegram');
+    await waitFor(() => Array.from(document.querySelectorAll('.gatewayPlatformCard')).some((item) => item.textContent?.includes('Telegram')), 'messaging search keeps telegram');
+    setNativeValue(messagingSearchInput, 'no-such-platform-smoke');
+    await waitFor(() => document.body.innerText.includes('没有匹配平台'), 'messaging empty search state');
+    setNativeValue(messagingSearchInput, '');
     const telegramCard = await waitFor(
       () => Array.from(document.querySelectorAll('.gatewayPlatformCard')).find((item) => item.textContent?.includes('Telegram')),
       'telegram platform card',
       12000,
+    );
+    for (const label of ['复制摘要', '复制文档']) {
+      if (!findButton(label, telegramCard)) {
+        throw new Error(`Messaging platform card should expose ${label}.`);
+      }
+    }
+    findButton('复制摘要', telegramCard).click();
+    await waitFor(
+      () => document.querySelector('.surfaceStatus')?.textContent?.includes('摘要已复制')
+        || document.querySelector('.surfaceStatus')?.textContent?.includes('无法访问剪贴板')
+        || document.querySelector('.surfaceStatus')?.textContent?.includes('复制失败'),
+      'messaging copy summary feedback',
     );
     findButton('配置', telegramCard).click();
     await waitFor(() => document.querySelector('[data-testid="messaging-config-telegram"]'), 'telegram config panel');
@@ -1016,6 +1040,7 @@ try {
         'empty-prompt-actions',
         'inline-delete-confirmation',
         'markdown-table-rendering',
+        'messaging-platform-actions',
         'onboarding-config-feedback',
         'profile-feedback',
         'project-actions-feedback',

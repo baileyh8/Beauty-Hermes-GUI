@@ -1589,6 +1589,20 @@ button.workbenchItem:focus-visible {
   margin-bottom: 20px;
 }
 
+.pageIntroActions {
+  min-width: min(560px, 100%);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pageIntroActions .inlineSearch {
+  min-width: 220px;
+  flex: 1 1 240px;
+}
+
 .projectGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(220px, 1fr));
