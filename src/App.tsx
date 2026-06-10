@@ -58,7 +58,7 @@ import Wrench from 'lucide-react/dist/esm/icons/wrench.js';
 import X from 'lucide-react/dist/esm/icons/x.js';
 import XCircle from 'lucide-react/dist/esm/icons/x-circle.js';
 import Zap from 'lucide-react/dist/esm/icons/zap.js';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import hermesAgentLogo from './assets/hermes-agent-logo.png';
 import { JsonRpcGatewayClient, type GatewayConnectionState, type GatewayEvent } from './gateway';
 
@@ -109,6 +109,21 @@ const preferenceStorageKeys = {
   projects: 'beauty-hermes-project-configs',
   theme: 'beauty-hermes-ui-theme',
 } as const;
+
+const defaultRightRailWidth = 396;
+const minRightRailWidth = 320;
+const maxRightRailWidth = 520;
+const minMainColumnWidth = 600;
+
+function clampRightRailWidth(width: number, density: UiDensity = 'comfortable') {
+  const sidebarWidth = density === 'compact' ? 252 : 268;
+  const viewportMax = typeof window === 'undefined'
+    ? maxRightRailWidth
+    : Math.max(minRightRailWidth, window.innerWidth - sidebarWidth - minMainColumnWidth);
+  const maxWidth = Math.min(maxRightRailWidth, viewportMax);
+
+  return Math.min(maxWidth, Math.max(minRightRailWidth, Math.round(width)));
+}
 
 interface HermesProjectConfig {
   id: string;
@@ -3037,6 +3052,7 @@ function App() {
   const runtime = useHermesRuntime();
   const [surface, setSurface] = useState<Surface>('chat');
   const [rightOpen, setRightOpen] = useState(true);
+  const [rightRailWidth, setRightRailWidth] = useState(defaultRightRailWidth);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('activity');
   const [uiDensity, setUiDensity] = useState<UiDensity>(readStoredDensity);
   const [uiTheme, setUiTheme] = useState<UiTheme>(readStoredTheme);
@@ -3066,6 +3082,16 @@ function App() {
   useEffect(() => {
     writeStoredPreference(preferenceStorageKeys.pinnedSessions, JSON.stringify(pinnedSessionIds));
   }, [pinnedSessionIds]);
+
+  useEffect(() => {
+    const clampForViewport = () => {
+      setRightRailWidth((width) => clampRightRailWidth(width, uiDensity));
+    };
+
+    clampForViewport();
+    window.addEventListener('resize', clampForViewport);
+    return () => window.removeEventListener('resize', clampForViewport);
+  }, [uiDensity]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3105,6 +3131,50 @@ function App() {
   const showNotice = useCallback((message: string) => {
     setNotice(message);
   }, []);
+  const shellStyle = useMemo(() => ({
+    '--right-rail-width': `${rightRailWidth}px`,
+  }) as CSSProperties, [rightRailWidth]);
+  const handleWorkbenchResizeStart = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    try {
+      target.setPointerCapture(pointerId);
+    } catch {
+      // Pointer capture is best-effort; window listeners still drive resizing.
+    }
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const updateWidth = (clientX: number) => {
+      setRightRailWidth(clampRightRailWidth(window.innerWidth - clientX, uiDensity));
+    };
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      updateWidth(moveEvent.clientX);
+    };
+    const stopResize = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+
+      try {
+        target.releasePointerCapture(pointerId);
+      } catch {
+        // The pointer may already be released if the window lost focus.
+      }
+    };
+
+    updateWidth(event.clientX);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopResize, { once: true });
+    window.addEventListener('pointercancel', stopResize, { once: true });
+  }, [uiDensity]);
 
   const chatTitle = useMemo(() => {
     if (!runtime.selectedStoredSessionId) {
@@ -3247,6 +3317,7 @@ function App() {
       data-density={uiDensity}
       data-testid="app-shell"
       data-theme={uiTheme}
+      style={shellStyle}
     >
       <Sidebar
         activeSessionId={runtime.activeSessionId}
@@ -3396,6 +3467,7 @@ function App() {
             activeTab={workbenchTab}
             onTabChange={setWorkbenchTab}
             onCollapse={() => setRightOpen(false)}
+            onResizeStart={handleWorkbenchResizeStart}
             onOpenFilePreview={(fileLabel) => {
               setSelectedWorkbenchFileLabel(fileLabel);
               setWorkbenchTab('preview');
@@ -5052,6 +5124,7 @@ function Workbench({
   activeTab,
   onTabChange,
   onCollapse,
+  onResizeStart,
   onOpenFilePreview,
   onOpenApproval,
   runtime,
@@ -5060,6 +5133,7 @@ function Workbench({
   activeTab: WorkbenchTab;
   onTabChange: (tab: WorkbenchTab) => void;
   onCollapse: () => void;
+  onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onOpenFilePreview: (fileLabel: string) => void;
   onOpenApproval: (variant: ApprovalVariant) => void;
   runtime: HermesRuntime;
@@ -5074,6 +5148,12 @@ function Workbench({
 
   return (
     <aside className="workbench" data-testid="right-workbench">
+      <button
+        className="workbenchResizeHandle"
+        type="button"
+        aria-label="调整工作区宽度"
+        onPointerDown={onResizeStart}
+      />
       <div className="workbenchHeader">
         <div className="tabs four">
           {tabs.map((tab) => (
