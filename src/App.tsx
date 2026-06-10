@@ -1199,6 +1199,112 @@ function maybeJsonRecord(value: unknown): Record<string, unknown> | null {
   }
 }
 
+function fileChangeFromUnknown(value: unknown): 'add' | 'mod' {
+  const text = textFromUnknown(value).toLowerCase();
+  return /(add|new|create|created|新增|创建)/.test(text) ? 'add' : 'mod';
+}
+
+function gatewayFileItemFromUnknown(
+  value: unknown,
+  fallbackMeta = '文件',
+  fallbackChange: 'add' | 'mod' = 'mod',
+): GatewayFileItem | null {
+  if (typeof value === 'string') {
+    const label = compactLine(value, 220);
+    return label ? { change: fallbackChange, label, meta: fallbackMeta } : null;
+  }
+
+  const record = maybeJsonRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const label = cleanDisplayText(textFromUnknown(
+    record.path
+      ?? record.file_path
+      ?? record.filePath
+      ?? record.filepath
+      ?? record.absolute_path
+      ?? record.output_path
+      ?? record.outputPath
+      ?? record.artifact_path
+      ?? record.artifactPath
+      ?? record.label
+      ?? record.name,
+  )).trim();
+  if (!label) {
+    const nested = record.artifact ?? record.file ?? record.preview;
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      return gatewayFileItemFromUnknown(nested, fallbackMeta, fallbackChange);
+    }
+    return null;
+  }
+
+  const meta = compactLine(cleanDisplayText(textFromUnknown(
+    record.meta
+      ?? record.type
+      ?? record.kind
+      ?? record.summary
+      ?? record.description
+      ?? record.mime
+      ?? fallbackMeta,
+  )).trim() || fallbackMeta, 96);
+
+  return {
+    change: fileChangeFromUnknown(record.change ?? record.status ?? record.kind ?? fallbackChange),
+    label,
+    meta,
+  };
+}
+
+function gatewayFileItemsFromPayload(payload: Record<string, unknown>, fallbackName = '文件') {
+  const items: GatewayFileItem[] = [];
+  const collect = (value: unknown, fallbackMeta = fallbackName, fallbackChange: 'add' | 'mod' = 'mod') => {
+    if (Array.isArray(value)) {
+      value.forEach((entry) => collect(entry, fallbackMeta, fallbackChange));
+      return;
+    }
+
+    const item = gatewayFileItemFromUnknown(value, fallbackMeta, fallbackChange);
+    if (item) {
+      items.push(item);
+    }
+  };
+
+  collect(payload.files, '变更文件');
+  collect(payload.changed_files ?? payload.changedFiles, '变更文件');
+  collect(payload.artifacts, '产物', 'add');
+  collect(payload.file ?? payload.path ?? payload.file_path ?? payload.filePath, fallbackName);
+  collect(payload.output_path ?? payload.outputPath, '输出产物', 'add');
+  collect(payload.artifact ?? payload.artifact_path ?? payload.artifactPath, '产物', 'add');
+
+  if (typeof payload.inline_diff === 'string' && payload.inline_diff.trim()) {
+    items.push({ change: 'mod', label: `${fallbackName} diff`, meta: 'inline diff' });
+  }
+
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.label)) {
+      return false;
+    }
+    seen.add(item.label);
+    return true;
+  }).slice(0, 12);
+}
+
+function mergeGatewayFiles(current: GatewayFileItem[], incoming: GatewayFileItem[]) {
+  const seen = new Set<string>();
+  return [...incoming, ...current]
+    .filter((item) => {
+      if (!item.label || seen.has(item.label)) {
+        return false;
+      }
+      seen.add(item.label);
+      return true;
+    })
+    .slice(0, 12);
+}
+
 function commandFromUnknown(value: unknown): string {
   if (typeof value === 'string') {
     return value;
@@ -2051,13 +2157,24 @@ function useHermesRuntime(): HermesRuntime {
 
           if (isComplete) {
             appendToolDigest(display, sessionId, name);
-          }
 
-          if (typeof payload.inline_diff === 'string' && payload.inline_diff.trim()) {
-            setFiles((current) => [
-              { change: 'mod', label: `${name} diff`, meta: 'inline' },
-              ...current.filter((item) => item.label !== `${name} diff`),
-            ]);
+            const nextFiles = gatewayFileItemsFromPayload(payload, name);
+            if (nextFiles.length > 0) {
+              setFiles((current) => mergeGatewayFiles(current, nextFiles));
+            }
+          }
+          break;
+        }
+        case 'file.changed':
+        case 'file.created':
+        case 'file.updated':
+        case 'files.changed':
+        case 'artifact.created':
+        case 'artifact.ready':
+        case 'preview.ready': {
+          const nextFiles = gatewayFileItemsFromPayload(payload, event.type);
+          if (nextFiles.length > 0) {
+            setFiles((current) => mergeGatewayFiles(current, nextFiles));
           }
           break;
         }
@@ -5270,11 +5387,14 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
     : runtime.connection?.baseUrl
       ? `Gateway: ${runtime.connection.baseUrl}`
       : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
-  const loadFilePreview = useCallback(async (file: GatewayFileItem | null = selectedFile) => {
+  const loadFilePreview = useCallback(async (
+    file: GatewayFileItem | null = selectedFile,
+    options: { statusPrefix?: string } = {},
+  ) => {
     if (!file) {
       setPreview(null);
       setStatus('当前会话还没有可预览文件。');
-      return;
+      return false;
     }
 
     try {
@@ -5286,11 +5406,13 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
       });
       setPreview(result);
       setSelectedPath(file.label);
-      setStatus(`${result.name || file.label} 预览已加载。`);
+      setStatus(`${options.statusPrefix || ''}${result.name || file.label} 预览已加载。`);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setPreview(null);
       setStatus(`预览失败：${message}`);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -5301,7 +5423,7 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
       setStatus('');
       await runtime.refreshInventory();
       if (selectedFile) {
-        await loadFilePreview(selectedFile);
+        await loadFilePreview(selectedFile, { statusPrefix: '刷新完成，' });
       } else {
         setStatus(runtime.connection?.baseUrl ? '预览状态已刷新。' : '已刷新，本机 Gateway 暂无可打开地址。');
       }
@@ -5346,12 +5468,25 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
       setBusy(false);
     }
   };
-  const copyPreviewPath = async () => {
-    const value = preview?.path || selectedFile?.label || '';
+  const copyPreviewValue = async (value: string, successText: string) => {
     if (!value) {
-      setStatus('当前没有可复制路径。');
+      setStatus('当前没有可复制内容。');
       return;
     }
+
+    try {
+      await runtime.apiRequest({
+        body: { text: value },
+        method: 'POST',
+        path: '/api/clipboard/write',
+        timeoutMs: 5000,
+      });
+      setStatus(successText);
+      return;
+    } catch {
+      // Browser-only previews can still use the Web Clipboard API when Electron IPC is absent.
+    }
+
     if (!navigator.clipboard?.writeText) {
       setStatus('当前环境无法访问剪贴板。');
       return;
@@ -5359,11 +5494,29 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
 
     try {
       await navigator.clipboard.writeText(value);
-      setStatus('文件路径已复制。');
+      setStatus(successText);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`复制失败：${message}`);
     }
+  };
+  const copyPreviewPath = async () => {
+    await copyPreviewValue(preview?.path || selectedFile?.label || '', '文件路径已复制。');
+  };
+  const copyPreviewSummary = async () => {
+    const lines = [
+      `文件：${preview?.name || selectedFile?.label || '未选择'}`,
+      `路径：${preview?.path || selectedFile?.label || '未读取'}`,
+      `类型：${preview?.kind || 'unknown'}${preview?.mime ? ` · ${preview.mime}` : ''}`,
+      typeof preview?.size === 'number' ? `大小：${Math.ceil(preview.size / 1024)} KB` : '',
+      selectedFile?.meta ? `来源：${selectedFile.meta}` : '',
+      preview?.truncated ? '内容：已截断' : '',
+      preview?.text ? `摘要：${compactLine(preview.text, 240)}` : '',
+    ].filter(Boolean);
+    await copyPreviewValue(lines.join('\n'), '预览摘要已复制。');
+  };
+  const copyPreviewContent = async () => {
+    await copyPreviewValue(preview?.text || preview?.data_url || preview?.path || selectedFile?.label || '', '预览内容已复制。');
   };
 
   useEffect(() => {
@@ -5439,6 +5592,12 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
           </button>
           <button type="button" onClick={() => void copyPreviewPath()} disabled={busy || !selectedFile}>
             复制路径
+          </button>
+          <button type="button" onClick={() => void copyPreviewSummary()} disabled={busy || !selectedFile}>
+            复制摘要
+          </button>
+          <button type="button" onClick={() => void copyPreviewContent()} disabled={busy || !selectedFile}>
+            复制内容
           </button>
           <button
             type="button"

@@ -1852,7 +1852,26 @@ async function localFilesApi(method, url, body) {
 
     if (
       mime.startsWith('text/')
-      || ['.cjs', '.jsx', '.log', '.py', '.rs', '.sh', '.toml', '.xml'].includes(ext)
+      || [
+        '.cjs',
+        '.css',
+        '.js',
+        '.json',
+        '.jsx',
+        '.log',
+        '.md',
+        '.mdx',
+        '.mjs',
+        '.py',
+        '.rs',
+        '.sh',
+        '.toml',
+        '.ts',
+        '.tsx',
+        '.xml',
+        '.yaml',
+        '.yml',
+      ].includes(ext)
     ) {
       const maxBytes = 240000;
       return {

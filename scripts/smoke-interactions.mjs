@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 const rootDir = new URL('..', import.meta.url);
+const previewFixturePath = fileURLToPath(new URL('../package.json', import.meta.url));
 const port = 9300 + Math.floor(Math.random() * 400);
 
 const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['electron', `--remote-debugging-port=${port}`, '.'], {
@@ -126,8 +128,9 @@ try {
   })()`);
   await wait(1000);
 
-  const result = await evaluate(client, `(${async () => {
+  const result = await evaluate(client, `window.__beautyPreviewFixturePath = ${JSON.stringify(previewFixturePath)}; (${async () => {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const previewFixturePath = window.__beautyPreviewFixturePath;
     const waitFor = async (predicate, label, timeout = 8000) => {
       const deadline = Date.now() + timeout;
       while (Date.now() < deadline) {
@@ -426,12 +429,19 @@ try {
       },
       type: 'tool.complete',
     });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        files: [{ change: 'mod', meta: 'smoke preview fixture', path: previewFixturePath }],
+        session_id: 'smoke-preview',
+      },
+      type: 'file.changed',
+    });
 
     await waitFor(() => document.querySelector('[data-testid="right-workbench"]'), 'right workbench');
     const workbenchChecks = [
       ['文件', '变更文件'],
       ['终端', 'Hermes Gateway'],
-      ['预览', '暂无预览产物'],
+      ['预览', 'package.json'],
       ['活动', '当前任务'],
     ];
     for (const [tab, expected] of workbenchChecks) {
@@ -469,13 +479,41 @@ try {
         }
       }
       if (tab === '预览') {
-        for (const label of ['打开文件', '复制路径']) {
+        await waitFor(
+          () => document.querySelector('[data-testid="right-workbench"] .previewTextFrame')?.textContent?.includes('beauty-hermes-gui'),
+          'preview real file content',
+        );
+        for (const label of ['打开文件', '复制路径', '复制摘要', '复制内容']) {
           if (!findButton(label, document.querySelector('[data-testid="right-workbench"]'))) {
             throw new Error(`Preview workbench should expose ${label} action.`);
           }
         }
         findButton('刷新', document.querySelector('[data-testid="right-workbench"]'))?.click();
-        await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('刷新'), 'preview refresh feedback');
+        await waitFor(
+          () => {
+            const text = document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent || '';
+            return text.includes('刷新完成') || text.includes('预览已加载');
+          },
+          'preview refresh feedback',
+        );
+        const copyPreviewSummaryButton = await waitFor(() => {
+          const button = findButton('复制摘要', document.querySelector('[data-testid="right-workbench"]'));
+          return button && !button.disabled ? button : null;
+        }, 'preview copy summary button enabled');
+        copyPreviewSummaryButton.click();
+        await waitFor(() => {
+          const text = document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent || '';
+          return text.includes('已复制') || text.includes('无法访问剪贴板') || text.includes('复制失败');
+        }, 'preview copy summary feedback');
+        const copyPreviewContentButton = await waitFor(() => {
+          const button = findButton('复制内容', document.querySelector('[data-testid="right-workbench"]'));
+          return button && !button.disabled ? button : null;
+        }, 'preview copy content button enabled');
+        copyPreviewContentButton.click();
+        await waitFor(() => {
+          const text = document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent || '';
+          return text.includes('已复制') || text.includes('无法访问剪贴板') || text.includes('复制失败');
+        }, 'preview copy content feedback');
         const openGatewayButton = findButton('打开 Gateway', document.querySelector('[data-testid="right-workbench"]'));
         if (openGatewayButton && !openGatewayButton.disabled) {
           openGatewayButton.click();
@@ -1182,6 +1220,8 @@ try {
         'voice-feedback',
         'workbench-feedback',
         'workbench-file-preview-feedback',
+        'workbench-preview-real-file',
+        'workbench-preview-copy-actions',
       ],
       uxHoles: [],
       workbench: workbenchChecks.map(([label]) => label),
