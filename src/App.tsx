@@ -78,6 +78,11 @@ type SettingsSection = 'general' | 'models' | 'permissions' | 'integrations' | '
 type UiDensity = 'comfortable' | 'compact';
 type UiTheme = 'light' | 'soft';
 type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error' | 'stopped';
+interface SkillDeepLink {
+  nonce: number;
+  query: string;
+  skillName: string;
+}
 type ChatMessageKind =
   | 'assistant'
   | 'user'
@@ -833,6 +838,8 @@ function isKnownLocalSlashInput(text: string) {
 
 interface LocalSlashUiTarget {
   settingsSection?: SettingsSection;
+  skillName?: string;
+  skillQuery?: string;
   surface?: Surface;
   workbenchTab?: WorkbenchTab;
 }
@@ -862,7 +869,6 @@ function localSlashUiTarget(command: string): LocalSlashUiTarget | null {
     '/onboarding': 'onboarding',
     '/profiles': 'profiles',
     '/projects': 'projects',
-    '/skills': 'skills',
   };
   const workbenchTargets: Partial<Record<string, WorkbenchTab>> = {
     '/activity': 'activity',
@@ -881,6 +887,14 @@ function localSlashUiTarget(command: string): LocalSlashUiTarget | null {
 
   if (name === '/approval') {
     return { settingsSection: 'permissions', surface: 'settings' };
+  }
+
+  if (name === '/skills') {
+    return { skillQuery: query, surface: 'skills' };
+  }
+
+  if (name === '/skill') {
+    return { skillName: query, skillQuery: query, surface: 'skills' };
   }
 
   if (name === '/workbench') {
@@ -2778,6 +2792,7 @@ function App() {
   const [pendingSidebarDeleteKey, setPendingSidebarDeleteKey] = useState('');
   const [selectingSessionId, setSelectingSessionId] = useState('');
   const [selectedProjectKey, setSelectedProjectKey] = useState('project:local');
+  const [skillDeepLink, setSkillDeepLink] = useState<SkillDeepLink>({ nonce: 0, query: '', skillName: '' });
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
@@ -2917,6 +2932,25 @@ function App() {
     setSelectedProjectKey(projectKey);
     setSurface('projects');
   }, []);
+  const handleOpenSkills = useCallback((query = '', skillName = '') => {
+    setSkillDeepLink((current) => ({
+      nonce: current.nonce + 1,
+      query,
+      skillName,
+    }));
+    setSurface('skills');
+  }, []);
+  const handleSurfaceChange = useCallback((nextSurface: Surface) => {
+    if (nextSurface === 'projects') {
+      handleOpenProjects();
+      return;
+    }
+    if (nextSurface === 'skills') {
+      handleOpenSkills();
+      return;
+    }
+    setSurface(nextSurface);
+  }, [handleOpenProjects, handleOpenSkills]);
 
   return (
     <div
@@ -2932,13 +2966,7 @@ function App() {
         model={runtime.model}
         onNewTask={handleStartNewTask}
         onOpenProjects={handleOpenProjects}
-        onSurfaceChange={(nextSurface) => {
-          if (nextSurface === 'projects') {
-            handleOpenProjects();
-            return;
-          }
-          setSurface(nextSurface);
-        }}
+        onSurfaceChange={handleSurfaceChange}
         onOpenCommand={() => setCommandOpen(true)}
         onSelectSession={handleSelectSession}
         onArchiveItem={handleArchiveItem}
@@ -3000,7 +3028,8 @@ function App() {
             runtime={runtime}
             setAttachmentOpen={setAttachmentOpen}
             onOpenApproval={() => setApprovalVariant('risk')}
-            onNavigate={(nextSurface) => setSurface(nextSurface)}
+            onOpenSkills={handleOpenSkills}
+            onNavigate={handleSurfaceChange}
             onOpenProjects={() => handleOpenProjects()}
             onOpenSettingsSection={(section) => {
               setSettingsSection(section);
@@ -3033,7 +3062,7 @@ function App() {
         )}
         {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} onOpenChat={handleStartNewTask} />}
         {surface === 'profiles' && <ProfilesSurface runtime={runtime} />}
-        {surface === 'skills' && <SkillsSurface runtime={runtime} />}
+        {surface === 'skills' && <SkillsSurface deepLink={skillDeepLink} runtime={runtime} />}
         {surface === 'cron' && <CronSurface runtime={runtime} />}
         {surface === 'messaging' && <MessagingSurface runtime={runtime} />}
         {surface === 'settings' && (
@@ -3044,7 +3073,7 @@ function App() {
             theme={uiTheme}
             onDensityChange={setUiDensity}
             onOpenPermission={() => setApprovalVariant('permission')}
-            onOpenSurface={setSurface}
+            onOpenSurface={handleSurfaceChange}
             onSelect={setSettingsSection}
             onThemeChange={setUiTheme}
           />
@@ -3120,6 +3149,10 @@ function App() {
           onOpenApproval={() => {
             setCommandOpen(false);
             setApprovalVariant('risk');
+          }}
+          onOpenSkills={(query, skillName) => {
+            setCommandOpen(false);
+            handleOpenSkills(query, skillName);
           }}
           onOpenSettingsSection={(section) => {
             setSettingsSection(section);
@@ -3497,6 +3530,7 @@ function ChatSurface({
   runtime,
   setAttachmentOpen,
   onOpenApproval,
+  onOpenSkills,
   onNavigate,
   onOpenProjects,
   onOpenSettingsSection,
@@ -3507,6 +3541,7 @@ function ChatSurface({
   runtime: HermesRuntime;
   setAttachmentOpen: (open: boolean) => void;
   onOpenApproval: () => void;
+  onOpenSkills: (query?: string, skillName?: string) => void;
   onNavigate: (surface: Surface) => void;
   onOpenProjects: () => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
@@ -3579,6 +3614,7 @@ function ChatSurface({
         setAttachmentOpen={setAttachmentOpen}
         runtime={runtime}
         onNavigate={onNavigate}
+        onOpenSkills={onOpenSkills}
         onOpenProjects={onOpenProjects}
         onOpenSettingsSection={onOpenSettingsSection}
         onOpenWorkbenchTab={onOpenWorkbenchTab}
@@ -4229,6 +4265,7 @@ function Artifact({
 function Composer({
   attachmentOpen,
   onNavigate,
+  onOpenSkills,
   onOpenProjects,
   onOpenSettingsSection,
   onOpenWorkbenchTab,
@@ -4237,6 +4274,7 @@ function Composer({
 }: {
   attachmentOpen: boolean;
   onNavigate: (surface: Surface) => void;
+  onOpenSkills: (query?: string, skillName?: string) => void;
   onOpenProjects: () => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
@@ -4350,6 +4388,10 @@ function Composer({
       window.requestAnimationFrame(() => {
         if (uiTarget.settingsSection) {
           onOpenSettingsSection(uiTarget.settingsSection);
+          return;
+        }
+        if (uiTarget.surface === 'skills') {
+          onOpenSkills(uiTarget.skillQuery, uiTarget.skillName);
           return;
         }
         if (uiTarget.surface) {
@@ -5379,6 +5421,7 @@ function CommandCenter({
   onOpenWorkbenchTab,
   onOpenWorkbenchFile,
   onOpenApproval,
+  onOpenSkills,
   onOpenSettingsSection,
   runtime,
 }: {
@@ -5390,6 +5433,7 @@ function CommandCenter({
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
   onOpenWorkbenchFile: (fileLabel: string) => void;
   onOpenApproval: () => void;
+  onOpenSkills: (query?: string, skillName?: string) => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
   runtime: HermesRuntime;
 }) {
@@ -5462,7 +5506,7 @@ function CommandCenter({
         group: '跳转',
         icon,
         keywords: `${surface} ${title} ${desc}`,
-        run: () => onNavigate(surface),
+        run: () => surface === 'skills' ? onOpenSkills('', '') : onNavigate(surface),
         title,
       })),
       ...settingsSections.map((section) => ({
@@ -5503,7 +5547,7 @@ function CommandCenter({
         group: 'Skills',
         icon: <Puzzle />,
         keywords: `${skill.name} ${skill.description} ${skill.path} ${skill.source}`,
-        run: () => onNavigate('skills'),
+        run: () => onOpenSkills(skill.name, skill.name),
         title: skill.name,
       })) ?? []),
     ];
@@ -5535,7 +5579,7 @@ function CommandCenter({
     }
 
     return list;
-  }, [onClose, onNavigate, onNewTask, onOpenApproval, onOpenSettingsSection, onOpenWorkbenchFile, onOpenWorkbenchTab, query, runtime]);
+  }, [onClose, onNavigate, onNewTask, onOpenApproval, onOpenSettingsSection, onOpenSkills, onOpenWorkbenchFile, onOpenWorkbenchTab, query, runtime]);
   const filteredActions = useMemo(() => {
     if (!normalized) {
       return actions;
@@ -7469,7 +7513,7 @@ function PolicyCard({ icon, title, desc }: { icon: React.ReactNode; title: strin
   );
 }
 
-function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
+function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime: HermesRuntime }) {
   const [query, setQuery] = useState('');
   const [skillRows, setSkillRows] = useState<HermesSkillInfo[]>([]);
   const [expandedSkillName, setExpandedSkillName] = useState('');
@@ -7579,6 +7623,38 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
     })) ?? []),
   ];
   const rows = skillRows.length > 0 ? skillRows : fallbackRows;
+  const rowSignature = rows.map((skill) => `${skill.name}:${skill.enabled ?? true}`).join('|');
+  useEffect(() => {
+    const nextQuery = deepLink.query.trim();
+    const targetQuery = deepLink.skillName.trim().toLowerCase();
+
+    setQuery(nextQuery);
+
+    if (!targetQuery) {
+      setExpandedSkillName('');
+      if (deepLink.nonce > 0) {
+        setSkillStatus(nextQuery ? `已按“${nextQuery}”筛选 skills。` : '已打开技能库。');
+      }
+      return;
+    }
+
+    const target = rows.find((skill) => skill.name.toLowerCase() === targetQuery)
+      ?? rows.find((skill) => skill.name.toLowerCase().includes(targetQuery));
+    if (!target) {
+      setExpandedSkillName('');
+      setSkillStatus(`正在查找 ${deepLink.skillName}。`);
+      return;
+    }
+
+    setQuery(target.name);
+    setExpandedSkillName(target.name);
+    setSkillStatus(`已定位 ${target.name}。`);
+    window.requestAnimationFrame(() => {
+      const targetNode = Array.from(document.querySelectorAll<HTMLElement>('[data-skill-name]'))
+        .find((node) => node.dataset.skillName === target.name);
+      targetNode?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
+  }, [deepLink.nonce, deepLink.query, deepLink.skillName, rowSignature]);
   const filteredSkills = rows
     .filter((skill) => {
       const haystack = `${skill.name} ${skill.description || ''} ${skill.path || ''} ${skill.source || ''}`.toLowerCase();
@@ -7607,7 +7683,7 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
         {filteredSkills.length > 0 ? filteredSkills.map((skill) => {
           const expanded = expandedSkillName === skill.name;
           return (
-          <article className={expanded ? 'skillCard expanded' : 'skillCard'} key={`${skill.source || 'local'}-${skill.name}`}>
+          <article className={expanded ? 'skillCard expanded' : 'skillCard'} data-skill-name={skill.name} key={`${skill.source || 'local'}-${skill.name}`}>
             <div className="skillCardHeader">
               <div className="skillIcon">
                 <Puzzle size={20} />

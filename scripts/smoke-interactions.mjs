@@ -283,7 +283,38 @@ try {
     await runSlashNavigation('/settings 外观', '设置', '界面密度', 'slash settings');
     await runSlashNavigation('/models', '设置', '默认模型', 'slash models');
     await runSlashNavigation('/approval', '设置', '命令审批', 'slash approval');
-    await runSlashNavigation('/skills', '技能库', '读取本机 Hermes skills', 'slash skills');
+    setNativeValue(textarea, '/skills');
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('技能库'), 'slash skills title');
+    await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'slash skills content');
+    const firstSkillName = await waitFor(
+      () => document.querySelector('.skillCard .skillTitle strong')?.textContent?.trim(),
+      'first skill name',
+    );
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash skills'));
+
+    const skillSearchText = firstSkillName.split(/[-_:]/)[0] || firstSkillName;
+    setNativeValue(textarea, `/skills ${skillSearchText}`);
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('技能库'), 'slash skills search title');
+    await waitFor(
+      () => document.querySelector('input[aria-label="搜索 skill"]')?.value === skillSearchText,
+      'slash skills query prefill',
+    );
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash skills query'));
+
+    setNativeValue(textarea, `/skill ${firstSkillName}`);
+    await sleep(120);
+    sendButton.click();
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('技能库'), 'slash skill detail title');
+    await waitFor(
+      () => Array.from(document.querySelectorAll('.skillCard.expanded'))
+        .some((card) => card.getAttribute('data-skill-name') === firstSkillName && card.querySelector('.skillDetail')),
+      'slash skill expands target',
+    );
+    ({ textarea, sendButton } = await startNewTaskFromPage('slash skill detail'));
     await runSlashNavigation('/cron', '自动化', '后台调度', 'slash cron');
     await runSlashNavigation('/messaging', '消息网关', '管理 Hermes Gateway', 'slash messaging');
     await runSlashNavigation('/diagnostics', '诊断与更新', 'Desktop shell', 'slash diagnostics');
@@ -700,6 +731,15 @@ try {
         || document.querySelector('.surfaceStatus')?.textContent?.includes('复制失败'),
       'skill copy feedback',
     );
+    await openCommandCenter(firstSkillName);
+    await waitFor(() => findCommandRow(firstSkillName), 'skill command row');
+    findCommandRow(firstSkillName)?.click();
+    await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'skill command center auto close');
+    await waitFor(
+      () => Array.from(document.querySelectorAll('.skillCard.expanded'))
+        .some((card) => card.getAttribute('data-skill-name') === firstSkillName && card.querySelector('.skillDetail')),
+      'command center skill expands target',
+    );
 
     await openCommandCenter('项目');
     await waitFor(() => findCommandRow('项目'), 'projects command row');
@@ -1106,7 +1146,10 @@ try {
         'project-card-real-actions',
         'session-selection-feedback',
         'skill-detail-actions',
+        'skill-command-center-deeplink',
         'skill-copy-feedback',
+        'slash-skill-deeplink',
+        'slash-skills-search-prefill',
         'slash-aria-selected',
         'slash-escape-close',
         'static-agent-card',
