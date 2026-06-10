@@ -5814,6 +5814,34 @@ textarea {
   min-width: min(620px, 52vw);
 }
 
+.mcpCreateForm {
+  grid-column: 2 / 4;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+}
+
+.settingInput {
+  min-width: 150px;
+  max-width: 240px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dfe4ea;
+  border-radius: 11px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.92);
+  color: #20242a;
+  font: inherit;
+  font-size: 12px;
+}
+
+.settingInput.short,
+.settingSelect.short {
+  min-width: 96px;
+  max-width: 138px;
+}
+
 .settingSelect {
   min-width: 150px;
   max-width: 220px;
@@ -5833,9 +5861,21 @@ textarea {
   max-width: 300px;
 }
 
+.settingInput:focus,
 .settingSelect:focus {
   border-color: #b9c8f7;
   box-shadow: 0 0 0 3px rgba(47, 103, 232, 0.08);
+}
+
+.settingInput:disabled {
+  color: #939aa4;
+  background: #f4f6f8;
+}
+
+.selectButton.danger {
+  color: #b42318;
+  border-color: #f1c4bf;
+  background: #fff8f6;
 }
 
 .detailActions {

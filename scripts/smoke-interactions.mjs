@@ -624,6 +624,25 @@ try {
     if (document.body.innerText.includes('本机只读')) {
       throw new Error('Settings deep pages must not present local-only configuration as read-only.');
     }
+    const addMcpRow = settingRow('添加 MCP Server');
+    if (!addMcpRow) {
+      throw new Error('Missing MCP create form.');
+    }
+    findButton('添加', addMcpRow).click();
+    await waitFor(() => document.body.innerText.includes('请输入 MCP server 名称'), 'mcp create name validation');
+    setNativeValue(addMcpRow.querySelector('input[aria-label="MCP server 名称"]'), 'smoke-ui-mcp');
+    findButton('添加', addMcpRow).click();
+    await waitFor(() => document.body.innerText.includes('请输入 MCP server command'), 'mcp create command validation');
+    const mcpTypeSelect = addMcpRow.querySelector('select[aria-label="MCP server 类型"]');
+    mcpTypeSelect.value = 'http';
+    mcpTypeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(120);
+    const mcpUrlInput = await waitFor(() => addMcpRow.querySelector('input[aria-label="MCP server URL"]'), 'mcp url input');
+    setNativeValue(mcpUrlInput, 'not-a-url');
+    await waitFor(() => mcpUrlInput.value === 'not-a-url', 'mcp url input value');
+    await sleep(120);
+    findButton('添加', addMcpRow).click();
+    await waitFor(() => document.body.innerText.includes('http:// 或 https://'), 'mcp create url validation');
 
     await selectSettingsSection('外观', '界面密度');
     findSettingButton('界面密度', '舒适').click();

@@ -757,6 +757,65 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"servers": [summary(name, cfg) for 
 `, {}, 20000);
   }
 
+  if (method === 'POST' && url.pathname === '/api/mcp/servers') {
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+name = str(payload.get("name") or "").strip()
+url = str(payload.get("url") or "").strip()
+command = str(payload.get("command") or "").strip()
+args = payload.get("args") or []
+env = payload.get("env") or {}
+auth = payload.get("auth")
+if not name:
+    raise SystemExit("Server name is required")
+if name in _get_mcp_servers():
+    raise SystemExit(f"Server '{name}' already exists")
+if not url and not command:
+    raise SystemExit("Provide either a URL or a command")
+cfg = {}
+if url:
+    cfg["url"] = url
+if command:
+    cfg["command"] = command
+    if isinstance(args, list) and args:
+        cfg["args"] = [str(item) for item in args]
+if isinstance(env, dict) and env:
+    cfg["env"] = env
+if auth:
+    cfg["auth"] = auth
+_save_mcp_server(name, cfg)
+transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+result = {
+    "name": name,
+    "transport": transport,
+    "url": cfg.get("url"),
+    "command": cfg.get("command"),
+    "args": list(cfg.get("args") or []),
+    "auth": cfg.get("auth"),
+    "enabled": cfg.get("enabled", True) is not False,
+    "tools": cfg.get("tools"),
+    "source": "desktop-local-bridge",
+}
+print("__BEAUTY_HERMES_JSON__" + json.dumps(result))
+`, body || {}, 20000);
+  }
+
+  const mcpDeleteMatch = url.pathname.match(/^\/api\/mcp\/servers\/([^/]+)$/);
+  if (method === 'DELETE' && mcpDeleteMatch) {
+    const name = decodeURIComponent(mcpDeleteMatch[1]);
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.mcp_config import _remove_mcp_server
+name = str(payload.get("name") or "").strip()
+if not _remove_mcp_server(name):
+    raise SystemExit(f"Server '{name}' not found")
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "source": "desktop-local-bridge"}))
+`, { name }, 20000);
+  }
+
   const mcpEnabledMatch = url.pathname.match(/^\/api\/mcp\/servers\/([^/]+)\/enabled$/);
   if (method === 'PUT' && mcpEnabledMatch) {
     const name = decodeURIComponent(mcpEnabledMatch[1]);

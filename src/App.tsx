@@ -6173,6 +6173,11 @@ function SettingsPanel({
   const [toolsetsLoaded, setToolsetsLoaded] = useState(false);
   const [mcpServers, setMcpServers] = useState<HermesMcpServerInfo[]>([]);
   const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
+  const [mcpDraftName, setMcpDraftName] = useState('');
+  const [mcpDraftTransport, setMcpDraftTransport] = useState<'http' | 'stdio'>('stdio');
+  const [mcpDraftEndpoint, setMcpDraftEndpoint] = useState('');
+  const [mcpDraftArgs, setMcpDraftArgs] = useState('');
+  const [pendingMcpDeleteName, setPendingMcpDeleteName] = useState('');
   const selectedRef = useRef(selected);
   useEffect(() => {
     selectedRef.current = selected;
@@ -6364,6 +6369,56 @@ function SettingsPanel({
       setSettingsBusy('');
     }
   }, [apiRequest]);
+  const addMcpServer = useCallback(async () => {
+    const name = mcpDraftName.trim();
+    const endpoint = mcpDraftEndpoint.trim();
+    if (!name) {
+      setSettingsStatus('请输入 MCP server 名称。');
+      return;
+    }
+    if (!endpoint) {
+      setSettingsStatus(mcpDraftTransport === 'http' ? '请输入 MCP server URL。' : '请输入 MCP server command。');
+      return;
+    }
+    if (mcpDraftTransport === 'http' && !/^https?:\/\//i.test(endpoint)) {
+      setSettingsStatus('MCP URL 需要以 http:// 或 https:// 开头。');
+      return;
+    }
+
+    let args: string[] = [];
+    try {
+      const text = mcpDraftArgs.trim();
+      if (text.startsWith('[')) {
+        const parsed = JSON.parse(text);
+        if (!Array.isArray(parsed)) {
+          throw new Error('args JSON 必须是数组。');
+        }
+        args = parsed.map((item) => String(item));
+      } else if (text) {
+        args = text.split(/\s+/).filter(Boolean);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSettingsStatus(`MCP args 格式错误：${message}`);
+      return;
+    }
+
+    await runSettingAction('mcp:add', `MCP server ${name} 添加`, async () => {
+      await apiRequest({
+        body: mcpDraftTransport === 'http'
+          ? { name, url: endpoint }
+          : { args, command: endpoint, name },
+        method: 'POST',
+        path: '/api/mcp/servers',
+        timeoutMs: 30000,
+      });
+      setMcpDraftName('');
+      setMcpDraftEndpoint('');
+      setMcpDraftArgs('');
+      await loadMcpServers();
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, loadMcpServers, mcpDraftArgs, mcpDraftEndpoint, mcpDraftName, mcpDraftTransport, runtime]);
   const toggleMcpServer = useCallback(async (server: HermesMcpServerInfo) => {
     const nextEnabled = !server.enabled;
     await runSettingAction(`mcp:${server.name}`, `${server.name} ${nextEnabled ? '启用' : '停用'}`, async () => {
@@ -6377,6 +6432,24 @@ function SettingsPanel({
       await runtime.refreshInventory();
     });
   }, [apiRequest, runtime]);
+  const deleteMcpServer = useCallback(async (server: HermesMcpServerInfo) => {
+    if (pendingMcpDeleteName !== server.name) {
+      setPendingMcpDeleteName(server.name);
+      setSettingsStatus(`再次点击删除 ${server.name}，操作不可恢复。`);
+      return;
+    }
+
+    await runSettingAction(`mcp:delete:${server.name}`, `${server.name} 删除`, async () => {
+      await apiRequest({
+        method: 'DELETE',
+        path: `/api/mcp/servers/${encodeURIComponent(server.name)}`,
+        timeoutMs: 30000,
+      });
+      setPendingMcpDeleteName('');
+      setMcpServers((current) => current.filter((item) => item.name !== server.name));
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, pendingMcpDeleteName, runtime]);
   const testMcpServer = useCallback(async (server: HermesMcpServerInfo) => {
     await runSettingAction(`mcp:test:${server.name}`, `${server.name} 测试`, async () => {
       const result = await apiRequest<{ error?: string; ok?: boolean; tools?: Array<{ name?: string }> }>({
@@ -6459,6 +6532,60 @@ function SettingsPanel({
       { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('integrations:messaging', '消息平台刷新')}>{settingsBusy === 'integrations:messaging' ? '刷新中' : '刷新'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('messaging')}>管理</button></div> },
       { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('skills')}>查看</button> },
       { icon: <Network size={18} />, title: 'MCP Servers', desc: `${enabledMcpCount}/${mcpServers.length} 已启用，配置写入 Hermes mcp_servers。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadMcpServers()}>{settingsBusy === 'mcp:load' ? '同步中' : '同步'}</button> },
+      {
+        icon: <Plus size={18} />,
+        title: '添加 MCP Server',
+        desc: mcpDraftTransport === 'http' ? 'HTTP/SSE server：填写 URL。' : 'stdio server：填写 command，args 可用空格或 JSON 数组。',
+        control: (
+          <form
+            className="settingControlStack wide mcpCreateForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void addMcpServer();
+            }}
+          >
+            <input
+              aria-label="MCP server 名称"
+              className="settingInput short"
+              disabled={settingsControlLocked}
+              placeholder="name"
+              value={mcpDraftName}
+              onChange={(event) => setMcpDraftName(event.target.value)}
+            />
+            <select
+              aria-label="MCP server 类型"
+              className="settingSelect short"
+              disabled={settingsControlLocked}
+              value={mcpDraftTransport}
+              onChange={(event) => setMcpDraftTransport(event.target.value === 'http' ? 'http' : 'stdio')}
+            >
+              <option value="stdio">stdio</option>
+              <option value="http">http</option>
+            </select>
+            <input
+              aria-label={mcpDraftTransport === 'http' ? 'MCP server URL' : 'MCP server command'}
+              className="settingInput"
+              disabled={settingsControlLocked}
+              placeholder={mcpDraftTransport === 'http' ? 'https://...' : 'npx'}
+              value={mcpDraftEndpoint}
+              onChange={(event) => setMcpDraftEndpoint(event.target.value)}
+            />
+            {mcpDraftTransport === 'stdio' && (
+              <input
+                aria-label="MCP server args"
+                className="settingInput"
+                disabled={settingsControlLocked}
+                placeholder="-y @scope/server"
+                value={mcpDraftArgs}
+                onChange={(event) => setMcpDraftArgs(event.target.value)}
+              />
+            )}
+            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
+              {settingsBusy === 'mcp:add' ? '添加中' : '添加'}
+            </button>
+          </form>
+        ),
+      },
       ...mcpServers.map((server) => ({
         icon: <Network size={18} />,
         title: server.name,
@@ -6476,6 +6603,14 @@ function SettingsPanel({
             </button>
             <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void testMcpServer(server)}>
               {settingsBusy === `mcp:test:${server.name}` ? '测试中' : '测试'}
+            </button>
+            <button
+              className={pendingMcpDeleteName === server.name ? 'selectButton danger' : 'selectButton'}
+              type="button"
+              disabled={settingsControlLocked}
+              onClick={() => void deleteMcpServer(server)}
+            >
+              {pendingMcpDeleteName === server.name ? '确认删除' : '删除'}
             </button>
           </div>
         ),

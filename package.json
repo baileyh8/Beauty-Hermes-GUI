@@ -19,6 +19,7 @@
     "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
     "smoke:interactions": "npm run build && node scripts/smoke-interactions.mjs",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "smoke:settings-bridge": "npm run build && node scripts/smoke-settings-bridge.mjs",
     "pack": "npm run build && node scripts/package-mac.mjs --app-only",
     "dist:mac": "npm run build && node scripts/package-mac.mjs"
   },
