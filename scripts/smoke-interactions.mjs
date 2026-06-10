@@ -233,7 +233,7 @@ try {
     await runSlashNavigation('/approval', '设置', '命令审批', 'slash approval');
     await runSlashNavigation('/skills', '技能库', '读取本机 Hermes skills', 'slash skills');
     await runSlashNavigation('/cron', '自动化', '后台调度', 'slash cron');
-    await runSlashNavigation('/messaging', '消息网关', 'Messaging Gateway', 'slash messaging');
+    await runSlashNavigation('/messaging', '消息网关', '管理 Hermes Gateway', 'slash messaging');
     await runSlashNavigation('/diagnostics', '诊断与更新', 'Desktop shell', 'slash diagnostics');
     await runSlashNavigation('/diagnose', '诊断与更新', 'Desktop shell', 'slash diagnose');
     await runSlashNavigation('/gateway', '诊断与更新', 'Desktop shell', 'slash gateway');
@@ -370,7 +370,7 @@ try {
       ['Profiles', '工作身份'],
       ['技能库', '读取本机 Hermes skills'],
       ['自动化', '后台调度'],
-      ['消息网关', 'Messaging Gateway'],
+      ['消息网关', '管理 Hermes Gateway'],
       ['设置', '通用'],
       ['诊断', '诊断与更新'],
     ];
@@ -725,7 +725,16 @@ try {
     findNavButton('设置')?.click();
     await waitFor(() => document.body.innerText.includes('Gateway'), 'settings integrations return');
     findSettingButton('消息平台', '管理').click();
-    await waitFor(() => document.body.innerText.includes('Messaging Gateway'), 'messaging settings navigation');
+    await waitFor(() => document.body.innerText.includes('管理 Hermes Gateway'), 'messaging settings navigation');
+    const telegramCard = await waitFor(
+      () => Array.from(document.querySelectorAll('.gatewayPlatformCard')).find((item) => item.textContent?.includes('Telegram')),
+      'telegram platform card',
+      12000,
+    );
+    findButton('配置', telegramCard).click();
+    await waitFor(() => document.querySelector('[data-testid="messaging-config-telegram"]'), 'telegram config panel');
+    await waitFor(() => document.querySelector('input[aria-label="Telegram TELEGRAM_BOT_TOKEN"]'), 'telegram token input');
+    await waitFor(() => document.querySelector('input[aria-label="Telegram bot 名称"]'), 'telegram onboarding input');
     findNavButton('设置')?.click();
     await waitFor(() => document.body.innerText.includes('Gateway'), 'settings integrations return again');
 

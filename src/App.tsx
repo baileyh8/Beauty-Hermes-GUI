@@ -361,13 +361,58 @@ interface HermesMessagingPlatformInfo {
   docs_url?: string;
   enabled?: boolean;
   error_message?: string;
+  env_vars?: Array<{
+    description?: string;
+    is_password?: boolean;
+    is_set?: boolean;
+    key: string;
+    password?: boolean;
+    prompt?: string;
+    redacted_value?: null | string;
+    required?: boolean;
+    url?: string;
+  }>;
   gateway_running?: boolean;
+  home_channel?: null | Record<string, unknown>;
   id: string;
   name: string;
   state?: string;
   updated_at?: string;
-  env_vars?: Array<{ is_set?: boolean; key: string; required?: boolean }>;
 }
+
+interface TelegramOnboardingState {
+  botUsername?: null | string;
+  deepLink?: string;
+  expiresAt?: string;
+  ownerUserId?: null | string;
+  pairingId?: string;
+  qrPayload?: string;
+  status?: 'idle' | 'waiting' | 'ready' | 'applied' | 'error';
+  suggestedUsername?: string;
+}
+
+const messagingPlatformDescriptions: Record<string, string> = {
+  api_server: '提供 OpenAI-compatible HTTP API，供 Open WebUI 等客户端调用。',
+  bluebubbles: '通过 BlueBubbles server 接入 iMessage。',
+  dingtalk: '连接钉钉群机器人或企业内部应用。',
+  discord: '连接 Discord 私聊、频道和 threads。',
+  email: '通过 IMAP/SMTP 邮箱收发消息。',
+  feishu: '连接飞书 / Lark 应用与群聊。',
+  homeassistant: '通过 Home Assistant 控制智能家居。',
+  mattermost: '连接 Mattermost 频道和私聊。',
+  matrix: '连接 Matrix 房间与私信。',
+  qqbot: '连接 QQ 开放平台 Bot。',
+  signal: '通过 signal-cli REST bridge 接入 Signal。',
+  slack: '通过 Slack Socket Mode 接入工作区。',
+  sms: '通过 Twilio 收发 SMS。',
+  telegram: '连接 Telegram 私聊、群组和话题。',
+  webhook: '接收 GitHub、GitLab 等 webhook 事件。',
+  wecom: '连接企业微信群机器人。',
+  wecom_callback: '连接企业微信应用回调。',
+  weixin: '连接微信公众号。',
+  whatsapp: '通过 WhatsApp bridge 和 QR 认证接入。',
+  yuanbao: '连接腾讯元宝平台。',
+};
 
 interface HermesModelProviderInfo {
   authenticated?: boolean;
@@ -6446,6 +6491,11 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
   const [platformsState, setPlatformsState] = useState<HermesMessagingPlatformInfo[]>([]);
   const [messagingStatus, setMessagingStatus] = useState('');
   const [messagingBusy, setMessagingBusy] = useState('');
+  const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] = useState('');
+  const [messagingEnvDrafts, setMessagingEnvDrafts] = useState<Record<string, string>>({});
+  const [telegramBotName, setTelegramBotName] = useState('Hermes Agent');
+  const [telegramAllowedUsers, setTelegramAllowedUsers] = useState('');
+  const [telegramOnboarding, setTelegramOnboarding] = useState<TelegramOnboardingState>({ status: 'idle' });
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const loadPlatforms = useCallback(async () => {
@@ -6507,6 +6557,189 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     const docsWindow = window.open(platform.docs_url, '_blank', 'noopener,noreferrer');
     setMessagingStatus(docsWindow ? `${platform.name} 文档已打开。` : `${platform.name} 文档可能被浏览器拦截。`);
   }, []);
+  const togglePlatformConfig = useCallback((platform: HermesMessagingPlatformInfo) => {
+    if (selectedMessagingPlatformId === platform.id) {
+      setSelectedMessagingPlatformId('');
+      return;
+    }
+    setSelectedMessagingPlatformId(platform.id);
+    setMessagingEnvDrafts({});
+    setMessagingStatus(`${platform.name} 配置已展开`);
+  }, [selectedMessagingPlatformId]);
+  const savePlatformConfig = useCallback(async (platform: HermesMessagingPlatformInfo) => {
+    const env: Record<string, string> = {};
+    Object.entries(messagingEnvDrafts).forEach(([key, value]) => {
+      const trimmed = value.trim();
+      if (trimmed) {
+        env[key] = trimmed;
+      }
+    });
+    if (Object.keys(env).length === 0) {
+      setMessagingStatus('请输入至少一个要保存的配置值。');
+      return;
+    }
+
+    try {
+      setMessagingBusy(`config:${platform.id}`);
+      await apiRequest({
+        body: { env },
+        method: 'PUT',
+        path: `/api/messaging/platforms/${encodeURIComponent(platform.id)}`,
+        timeoutMs: 30000,
+      });
+      setMessagingEnvDrafts({});
+      setMessagingStatus(`${platform.name} 配置已保存，重启 Gateway 后生效`);
+      await loadPlatforms();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`保存配置失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, [apiRequest, loadPlatforms, messagingEnvDrafts, refreshInventory]);
+  const clearPlatformEnv = useCallback(async (platform: HermesMessagingPlatformInfo, key: string) => {
+    try {
+      setMessagingBusy(`clear:${platform.id}:${key}`);
+      await apiRequest({
+        body: { clear_env: [key] },
+        method: 'PUT',
+        path: `/api/messaging/platforms/${encodeURIComponent(platform.id)}`,
+        timeoutMs: 30000,
+      });
+      setMessagingEnvDrafts((current) => ({ ...current, [key]: '' }));
+      setMessagingStatus(`${key} 已清除`);
+      await loadPlatforms();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`清除失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, [apiRequest, loadPlatforms, refreshInventory]);
+  const startTelegramOnboarding = useCallback(async () => {
+    try {
+      setMessagingBusy('telegram:onboarding:start');
+      const result = await apiRequest<{
+        deep_link?: string;
+        expires_at?: string;
+        pairing_id?: string;
+        qr_payload?: string;
+        suggested_username?: string;
+      }>({
+        body: { bot_name: telegramBotName.trim() || 'Hermes Agent' },
+        method: 'POST',
+        path: '/api/messaging/telegram/onboarding/start',
+        timeoutMs: 30000,
+      });
+      setTelegramOnboarding({
+        deepLink: result.deep_link,
+        expiresAt: result.expires_at,
+        pairingId: result.pairing_id,
+        qrPayload: result.qr_payload,
+        status: 'waiting',
+        suggestedUsername: result.suggested_username,
+      });
+      setMessagingStatus('Telegram 配对已开始，打开链接后返回检查状态。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTelegramOnboarding({ status: 'error' });
+      setMessagingStatus(`Telegram 配对启动失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, [apiRequest, telegramBotName]);
+  const pollTelegramOnboarding = useCallback(async () => {
+    const pairingId = telegramOnboarding.pairingId;
+    if (!pairingId) {
+      setMessagingStatus('请先开始 Telegram 配对。');
+      return;
+    }
+
+    try {
+      setMessagingBusy('telegram:onboarding:poll');
+      const result = await apiRequest<{
+        bot_username?: null | string;
+        expires_at?: string;
+        owner_user_id?: null | string;
+        status?: 'waiting' | 'ready';
+      }>({
+        path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+        timeoutMs: 30000,
+      });
+      setTelegramOnboarding((current) => ({
+        ...current,
+        botUsername: result.bot_username,
+        expiresAt: result.expires_at || current.expiresAt,
+        ownerUserId: result.owner_user_id,
+        status: result.status === 'ready' ? 'ready' : 'waiting',
+      }));
+      if (result.owner_user_id) {
+        setTelegramAllowedUsers((current) => current || String(result.owner_user_id));
+      }
+      setMessagingStatus(result.status === 'ready' ? 'Telegram 已就绪，可以应用配置。' : 'Telegram 仍在等待授权。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`检查 Telegram 配对失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, [apiRequest, telegramOnboarding.pairingId]);
+  const applyTelegramOnboarding = useCallback(async () => {
+    const pairingId = telegramOnboarding.pairingId;
+    const allowedUserIds = telegramAllowedUsers.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+    if (!pairingId) {
+      setMessagingStatus('请先开始 Telegram 配对。');
+      return;
+    }
+    if (allowedUserIds.length === 0) {
+      setMessagingStatus('请输入允许使用 Telegram bot 的用户 ID。');
+      return;
+    }
+
+    try {
+      setMessagingBusy('telegram:onboarding:apply');
+      await apiRequest({
+        body: { allowed_user_ids: allowedUserIds },
+        method: 'POST',
+        path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
+        timeoutMs: 30000,
+      });
+      setTelegramOnboarding((current) => ({ ...current, status: 'applied' }));
+      setMessagingStatus('Telegram 配置已应用，重启 Gateway 后生效。');
+      await loadPlatforms();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`应用 Telegram 配置失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, [apiRequest, loadPlatforms, refreshInventory, telegramAllowedUsers, telegramOnboarding.pairingId]);
+  const cancelTelegramOnboarding = useCallback(async () => {
+    const pairingId = telegramOnboarding.pairingId;
+    if (!pairingId) {
+      setTelegramOnboarding({ status: 'idle' });
+      return;
+    }
+
+    try {
+      setMessagingBusy('telegram:onboarding:cancel');
+      await apiRequest({
+        method: 'DELETE',
+        path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+        timeoutMs: 20000,
+      });
+      setTelegramOnboarding({ status: 'idle' });
+      setMessagingStatus('Telegram 配对已取消。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessagingStatus(`取消 Telegram 配对失败：${message}`);
+    } finally {
+      setMessagingBusy('');
+    }
+  }, [apiRequest, telegramOnboarding.pairingId]);
   useEffect(() => {
     void loadPlatforms();
   }, [loadPlatforms]);
@@ -6529,8 +6762,8 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     <section className="pageSurface">
       <div className="pageIntro">
         <div>
-          <h2>Messaging Gateway</h2>
-          <p>读取 Hermes Gateway 平台状态、频道目录和用户配对。</p>
+          <h2>消息网关</h2>
+          <p>管理 Hermes Gateway 平台状态、凭据配置、连接测试和用户配对。</p>
         </div>
         <button className="lightButton" type="button" onClick={() => void loadPlatforms()} disabled={Boolean(messagingBusy)}>
           <RefreshCw className={messagingBusy === 'load' ? 'spinIcon' : undefined} size={16} />
@@ -6539,15 +6772,40 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
       </div>
       {messagingStatus && <p className="surfaceStatus">{messagingStatus}</p>}
       <div className="gatewayGrid">
-        {platforms.length > 0 ? platforms.map((platform) => (
-          <article className="gatewayCard" key={platform.id}>
-            <div>
-              <Network size={20} />
-              <span className={platform.state === 'connected' ? 'pill green' : platform.enabled ? 'pill amber' : 'pill'}>{platform.state === 'connected' ? '已连接' : platform.state || (platform.enabled ? '待连接' : '已停用')}</span>
-            </div>
+        {platforms.length > 0 ? platforms.map((platform) => {
+          const isConfigOpen = selectedMessagingPlatformId === platform.id;
+          const envVars = platform.env_vars ?? [];
+          const missingRequired = envVars.filter((env) => env.required && !env.is_set).map((env) => env.key);
+          const stateLabel = platform.state === 'connected'
+            ? '已连接'
+            : platform.state === 'not_configured'
+              ? '待配置'
+              : platform.state === 'disabled'
+                ? '已停用'
+                : platform.state || (platform.enabled ? '待连接' : '已停用');
+          const configLabel = platform.configured
+            ? '配置完整'
+            : missingRequired.length > 0
+              ? `缺少 ${missingRequired.length} 项`
+              : '待配置';
+
+          return (
+            <article className={isConfigOpen ? 'gatewayCard gatewayPlatformCard configOpen' : 'gatewayCard gatewayPlatformCard'} key={platform.id}>
+              <div className="gatewayCardHeader">
+                <Network size={18} />
+                <span className={platform.state === 'connected' ? 'pill green' : platform.enabled ? 'pill amber' : 'pill'}>{stateLabel}</span>
+              </div>
             <strong>{platform.name}</strong>
-            <p>{platform.description || `${messaging?.channelCounts[platform.id] ?? 0} 个频道 · ${platform.updated_at || '未记录更新时间'}`}</p>
+            <p>{messagingPlatformDescriptions[platform.id] || platform.description || `${messaging?.channelCounts[platform.id] ?? 0} 个频道 · ${platform.updated_at || '未记录更新时间'}`}</p>
+            <div className="platformMetaLine">
+              <span>{configLabel}</span>
+              <span>{envVars.length} 项配置</span>
+              {platform.error_message && <span className="dangerText">{platform.error_message}</span>}
+            </div>
             <div className="cardActions">
+              <button aria-expanded={isConfigOpen} type="button" onClick={() => togglePlatformConfig(platform)} disabled={Boolean(messagingBusy)}>
+                {isConfigOpen ? '收起配置' : '配置'}
+              </button>
               <button type="button" onClick={() => void togglePlatform(platform)} disabled={Boolean(messagingBusy)}>
                 {messagingBusy === `toggle:${platform.id}` ? '更新中' : platform.enabled ? '停用' : '启用'}
               </button>
@@ -6556,8 +6814,116 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
               </button>
               {platform.docs_url && <button type="button" onClick={() => openPlatformDocs(platform)} disabled={Boolean(messagingBusy)}>文档</button>}
             </div>
+            {isConfigOpen && (
+              <div className="platformConfig" data-testid={`messaging-config-${platform.id}`}>
+                <div className="platformConfigHeader">
+                  <div>
+                    <strong>平台配置</strong>
+                    <span>{platform.enabled ? '保存后重启 Gateway 生效' : '可先保存配置，再启用平台'}</span>
+                  </div>
+                  <button className="selectButton" type="button" onClick={() => void savePlatformConfig(platform)} disabled={Boolean(messagingBusy)}>
+                    {messagingBusy === `config:${platform.id}` ? '保存中' : '保存配置'}
+                  </button>
+                </div>
+                {envVars.length > 0 ? (
+                  <div className="platformEnvGrid">
+                    {envVars.map((env) => {
+                      const isSecret = Boolean(env.password || env.is_password || /TOKEN|SECRET|PASSWORD|KEY/i.test(env.key));
+                      return (
+                        <label className="platformEnvField" key={env.key}>
+                          <span className="platformEnvLabel">
+                            <span>{env.prompt || env.key}</span>
+                            {env.required && <em>必填</em>}
+                            {env.is_set && <em className="set">已保存</em>}
+                          </span>
+                          <div className="platformEnvInputRow">
+                            <input
+                              aria-label={`${platform.name} ${env.key}`}
+                              className="settingInput"
+                              disabled={Boolean(messagingBusy)}
+                              onChange={(event) => setMessagingEnvDrafts((current) => ({ ...current, [env.key]: event.target.value }))}
+                              placeholder={env.is_set ? (env.redacted_value || '已保存，输入新值覆盖') : (env.description || env.key)}
+                              type={isSecret ? 'password' : 'text'}
+                              value={messagingEnvDrafts[env.key] ?? ''}
+                            />
+                            {env.is_set && (
+                              <button className="selectButton danger" type="button" onClick={() => void clearPlatformEnv(platform, env.key)} disabled={Boolean(messagingBusy)}>
+                                清除
+                              </button>
+                            )}
+                          </div>
+                          <small>{env.description || env.key}</small>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="platformConfigEmpty">这个平台暂无可编辑环境变量，仍可启用、停用或测试连接。</p>
+                )}
+                {platform.id === 'telegram' && (
+                  <div className="telegramOnboarding">
+                    <div className="platformConfigHeader">
+                      <div>
+                        <strong>Telegram 快速配对</strong>
+                        <span>按官方 onboarding 流程获取 Bot token 并写入允许用户。</span>
+                      </div>
+                    </div>
+                    <div className="telegramOnboardingGrid">
+                      <label className="platformEnvField">
+                        <span className="platformEnvLabel"><span>Bot 名称</span></span>
+                        <input
+                          aria-label="Telegram bot 名称"
+                          className="settingInput"
+                          disabled={Boolean(messagingBusy)}
+                          onChange={(event) => setTelegramBotName(event.target.value)}
+                          value={telegramBotName}
+                        />
+                      </label>
+                      <button className="selectButton" type="button" onClick={() => void startTelegramOnboarding()} disabled={Boolean(messagingBusy)}>
+                        {messagingBusy === 'telegram:onboarding:start' ? '启动中' : '开始配对'}
+                      </button>
+                      <button className="selectButton" type="button" onClick={() => void pollTelegramOnboarding()} disabled={Boolean(messagingBusy) || !telegramOnboarding.pairingId}>
+                        {messagingBusy === 'telegram:onboarding:poll' ? '检查中' : '检查状态'}
+                      </button>
+                      <button className="selectButton danger" type="button" onClick={() => void cancelTelegramOnboarding()} disabled={Boolean(messagingBusy) || !telegramOnboarding.pairingId}>
+                        取消
+                      </button>
+                    </div>
+                    {telegramOnboarding.pairingId && (
+                      <div className="telegramPairingStatus">
+                        <span>{telegramOnboarding.status === 'ready' ? '已就绪' : telegramOnboarding.status === 'applied' ? '已应用' : telegramOnboarding.status === 'error' ? '失败' : '等待授权'}</span>
+                        <code>{telegramOnboarding.pairingId}</code>
+                        {telegramOnboarding.expiresAt && <span>过期 {telegramOnboarding.expiresAt}</span>}
+                      </div>
+                    )}
+                    {telegramOnboarding.deepLink && (
+                      <a className="platformDocLink" href={telegramOnboarding.deepLink} target="_blank" rel="noreferrer">
+                        打开 Telegram 配对链接
+                      </a>
+                    )}
+                    <div className="telegramAllowedRow">
+                      <label className="platformEnvField">
+                        <span className="platformEnvLabel"><span>允许用户 ID</span><em>数字</em></span>
+                        <input
+                          aria-label="Telegram allowed users"
+                          className="settingInput"
+                          disabled={Boolean(messagingBusy)}
+                          onChange={(event) => setTelegramAllowedUsers(event.target.value)}
+                          placeholder="例如 123456789，多个用逗号分隔"
+                          value={telegramAllowedUsers}
+                        />
+                      </label>
+                      <button className="selectButton" type="button" onClick={() => void applyTelegramOnboarding()} disabled={Boolean(messagingBusy) || !telegramOnboarding.pairingId}>
+                        {messagingBusy === 'telegram:onboarding:apply' ? '应用中' : '应用配置'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </article>
-        )) : (
+          );
+        }) : (
           <GatewayCard title="Gateway" status={runtime.connectionLabel} desc={runtime.inventoryError || '等待本机 Gateway 状态。'} />
         )}
       </div>

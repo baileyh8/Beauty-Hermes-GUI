@@ -83,6 +83,9 @@ const requiredText = [
   'toggleSkill',
   'createCronJob',
   'togglePlatform',
+  'savePlatformConfig',
+  'startTelegramOnboarding',
+  'telegramOnboarding',
 ];
 
 const requiredStyles = [
@@ -105,6 +108,9 @@ const requiredStyles = [
   '.emptyHints button',
   '.cronEditor',
   '.cronRunRow',
+  '.platformConfig',
+  '.platformEnvGrid',
+  '.telegramOnboarding',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));
@@ -125,6 +131,8 @@ const requiredElectronText = [
   "url.pathname === '/api/cron/jobs'",
   "url.pathname === '/api/cron/delivery-targets'",
   "url.pathname === '/api/messaging/platforms'",
+  '/api/messaging/telegram/onboarding/start',
+  'save_env_value("TELEGRAM_BOT_TOKEN"',
   '当前 Hermes Gateway 不支持这个桌面增强操作',
 ];
 const missingElectronText = requiredElectronText.filter((token) => !electronMain.includes(token));

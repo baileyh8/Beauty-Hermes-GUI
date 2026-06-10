@@ -8,6 +8,162 @@ const { createGatewayManager } = require('./gateway-manager.cjs');
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const gatewayManager = createGatewayManager();
 let mainWindow = null;
+const localTelegramOnboardingPairings = new Map();
+
+const LOCAL_MESSAGING_CATALOG = [
+  {
+    id: 'telegram',
+    name: 'Telegram',
+    description: 'Run Hermes from Telegram DMs, groups, and topics.',
+    docs_url: 'https://core.telegram.org/bots/features#botfather',
+    env_vars: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ALLOWED_USERS', 'TELEGRAM_PROXY'],
+    required_env: ['TELEGRAM_BOT_TOKEN'],
+  },
+  {
+    id: 'discord',
+    name: 'Discord',
+    description: 'Connect Hermes to Discord DMs, channels, and threads.',
+    docs_url: 'https://discord.com/developers/applications',
+    env_vars: ['DISCORD_BOT_TOKEN', 'DISCORD_ALLOWED_USERS', 'DISCORD_REPLY_TO_MODE'],
+    required_env: ['DISCORD_BOT_TOKEN'],
+  },
+  {
+    id: 'slack',
+    name: 'Slack',
+    description: 'Use Hermes from Slack via Socket Mode.',
+    docs_url: 'https://api.slack.com/apps',
+    env_vars: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
+    required_env: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
+  },
+  {
+    id: 'mattermost',
+    name: 'Mattermost',
+    description: 'Connect Hermes to Mattermost channels and direct messages.',
+    docs_url: 'https://mattermost.com/deploy/',
+    env_vars: ['MATTERMOST_URL', 'MATTERMOST_TOKEN', 'MATTERMOST_ALLOWED_USERS'],
+    required_env: ['MATTERMOST_URL', 'MATTERMOST_TOKEN'],
+  },
+  {
+    id: 'matrix',
+    name: 'Matrix',
+    description: 'Use Hermes in Matrix rooms and direct messages.',
+    docs_url: 'https://matrix.org/ecosystem/servers/',
+    env_vars: ['MATRIX_HOMESERVER', 'MATRIX_ACCESS_TOKEN', 'MATRIX_USER_ID', 'MATRIX_ALLOWED_USERS'],
+    required_env: ['MATRIX_HOMESERVER', 'MATRIX_ACCESS_TOKEN', 'MATRIX_USER_ID'],
+  },
+  {
+    id: 'signal',
+    name: 'Signal',
+    description: 'Connect through a signal-cli REST bridge.',
+    docs_url: 'https://github.com/bbernhard/signal-cli-rest-api',
+    env_vars: ['SIGNAL_HTTP_URL', 'SIGNAL_ACCOUNT', 'SIGNAL_ALLOWED_USERS'],
+    required_env: ['SIGNAL_HTTP_URL', 'SIGNAL_ACCOUNT'],
+  },
+  {
+    id: 'whatsapp',
+    name: 'WhatsApp',
+    description: 'Use Hermes through the bundled WhatsApp bridge with QR-based auth.',
+    docs_url: 'https://github.com/tulir/whatsmeow',
+    env_vars: ['WHATSAPP_ENABLED', 'WHATSAPP_MODE', 'WHATSAPP_ALLOWED_USERS'],
+    required_env: [],
+  },
+  {
+    id: 'homeassistant',
+    name: 'Home Assistant',
+    description: 'Control your smart home from Hermes via Home Assistant.',
+    docs_url: 'https://www.home-assistant.io/docs/authentication/',
+    env_vars: ['HASS_URL', 'HASS_TOKEN'],
+    required_env: ['HASS_URL', 'HASS_TOKEN'],
+  },
+  {
+    id: 'email',
+    name: 'Email',
+    description: 'Talk to Hermes through an IMAP/SMTP mailbox.',
+    docs_url: 'https://hermes-agent.nousresearch.com/docs/user-guide/messaging/',
+    env_vars: ['EMAIL_ADDRESS', 'EMAIL_PASSWORD', 'EMAIL_IMAP_HOST', 'EMAIL_SMTP_HOST'],
+    required_env: ['EMAIL_ADDRESS', 'EMAIL_PASSWORD', 'EMAIL_IMAP_HOST', 'EMAIL_SMTP_HOST'],
+  },
+  {
+    id: 'sms',
+    name: 'SMS (Twilio)',
+    description: 'Send and receive text messages via Twilio.',
+    docs_url: 'https://www.twilio.com/console',
+    env_vars: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN'],
+    required_env: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN'],
+  },
+  {
+    id: 'dingtalk',
+    name: 'DingTalk',
+    description: 'Connect Hermes to DingTalk groups.',
+    docs_url: 'https://open.dingtalk.com/document/orgapp/the-robot-development-process',
+    env_vars: ['DINGTALK_CLIENT_ID', 'DINGTALK_CLIENT_SECRET'],
+    required_env: ['DINGTALK_CLIENT_ID', 'DINGTALK_CLIENT_SECRET'],
+  },
+  {
+    id: 'feishu',
+    name: 'Feishu / Lark',
+    description: 'Use Hermes inside Feishu / Lark.',
+    docs_url: 'https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/intro',
+    env_vars: ['FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_ENCRYPT_KEY', 'FEISHU_VERIFICATION_TOKEN'],
+    required_env: ['FEISHU_APP_ID', 'FEISHU_APP_SECRET'],
+  },
+  {
+    id: 'wecom',
+    name: 'WeCom (group bot)',
+    description: 'Send-only WeCom group bot via webhook.',
+    docs_url: 'https://developer.work.weixin.qq.com/document/path/91770',
+    env_vars: ['WECOM_BOT_ID', 'WECOM_SECRET'],
+    required_env: ['WECOM_BOT_ID'],
+  },
+  {
+    id: 'wecom_callback',
+    name: 'WeCom (app)',
+    description: 'Two-way WeCom integration via callback app.',
+    docs_url: 'https://developer.work.weixin.qq.com/document/path/90930',
+    env_vars: ['WECOM_CALLBACK_CORP_ID', 'WECOM_CALLBACK_CORP_SECRET', 'WECOM_CALLBACK_AGENT_ID', 'WECOM_CALLBACK_TOKEN', 'WECOM_CALLBACK_ENCODING_AES_KEY'],
+    required_env: ['WECOM_CALLBACK_CORP_ID', 'WECOM_CALLBACK_CORP_SECRET', 'WECOM_CALLBACK_AGENT_ID'],
+  },
+  {
+    id: 'weixin',
+    name: 'WeChat (Official Account)',
+    description: 'Connect a WeChat Official Account.',
+    docs_url: 'https://developers.weixin.qq.com/doc/offiaccount/Getting_Started/Overview.html',
+    env_vars: ['WEIXIN_ACCOUNT_ID', 'WEIXIN_TOKEN', 'WEIXIN_BASE_URL'],
+    required_env: ['WEIXIN_ACCOUNT_ID', 'WEIXIN_TOKEN'],
+  },
+  {
+    id: 'bluebubbles',
+    name: 'BlueBubbles (iMessage)',
+    description: 'Use Hermes through iMessage via a BlueBubbles server.',
+    docs_url: 'https://bluebubbles.app/',
+    env_vars: ['BLUEBUBBLES_SERVER_URL', 'BLUEBUBBLES_PASSWORD', 'BLUEBUBBLES_ALLOWED_USERS'],
+    required_env: ['BLUEBUBBLES_SERVER_URL', 'BLUEBUBBLES_PASSWORD'],
+  },
+  {
+    id: 'qqbot',
+    name: 'QQ Bot',
+    description: 'Connect Hermes to a QQ Bot from the QQ Open Platform.',
+    docs_url: 'https://q.qq.com',
+    env_vars: ['QQ_APP_ID', 'QQ_CLIENT_SECRET', 'QQ_ALLOWED_USERS'],
+    required_env: ['QQ_APP_ID', 'QQ_CLIENT_SECRET'],
+  },
+  {
+    id: 'api_server',
+    name: 'API server',
+    description: 'Expose Hermes as an OpenAI-compatible HTTP API.',
+    docs_url: 'https://hermes-agent.nousresearch.com/docs/user-guide/messaging/',
+    env_vars: ['API_SERVER_ENABLED', 'API_SERVER_KEY', 'API_SERVER_PORT', 'API_SERVER_HOST', 'API_SERVER_MODEL_NAME'],
+    required_env: [],
+  },
+  {
+    id: 'webhook',
+    name: 'Webhooks',
+    description: 'Receive events from GitHub, GitLab, and other webhook sources.',
+    docs_url: 'https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/',
+    env_vars: ['WEBHOOK_ENABLED', 'WEBHOOK_PORT', 'WEBHOOK_SECRET'],
+    required_env: [],
+  },
+];
 
 app.setName('Beauty Hermes GUI');
 
@@ -687,10 +843,11 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps(normalize(job)))
 }
 
 async function localMessagingApi(method, url, body) {
+  const catalogJson = JSON.stringify(LOCAL_MESSAGING_CATALOG);
   const script = `
 import json, os, sys
 payload = json.loads(sys.stdin.read() or "{}")
-from hermes_cli.config import load_config, save_config
+from hermes_cli.config import get_env_value, load_config, remove_env_value, save_config, save_env_value
 try:
     from gateway.config import Platform, load_gateway_config
 except Exception:
@@ -701,7 +858,56 @@ try:
 except Exception:
     get_running_pid = lambda: None
     read_runtime_status = lambda: {}
-COMMON = ["telegram", "discord", "whatsapp", "slack", "signal", "mattermost", "matrix", "email", "sms", "dingtalk", "api_server", "webhook", "feishu", "wecom", "weixin", "qqbot"]
+CATALOG = ${catalogJson}
+CATALOG_BY_ID = {entry["id"]: entry for entry in CATALOG}
+SECRET_WORDS = ("TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH")
+ENV_HINTS = {
+    "TELEGRAM_BOT_TOKEN": {"prompt": "Bot token", "description": "Telegram BotFather 生成的 token", "password": True},
+    "TELEGRAM_ALLOWED_USERS": {"prompt": "Allowed users", "description": "允许使用 bot 的 Telegram 用户 ID，多个用逗号分隔"},
+    "TELEGRAM_PROXY": {"prompt": "Proxy", "description": "可选 HTTP/SOCKS proxy"},
+    "DISCORD_BOT_TOKEN": {"prompt": "Bot token", "description": "Discord application bot token", "password": True},
+    "DISCORD_ALLOWED_USERS": {"prompt": "Allowed users", "description": "允许访问的 Discord 用户 ID"},
+    "DISCORD_REPLY_TO_MODE": {"prompt": "Reply mode", "description": "回复消息模式"},
+    "SLACK_BOT_TOKEN": {"prompt": "Bot token", "description": "Slack xoxb bot token", "password": True},
+    "SLACK_APP_TOKEN": {"prompt": "App token", "description": "Slack xapp Socket Mode token", "password": True},
+    "MATTERMOST_URL": {"prompt": "Mattermost URL", "description": "Mattermost server base URL"},
+    "MATTERMOST_TOKEN": {"prompt": "Access token", "description": "Mattermost access token", "password": True},
+    "MATRIX_HOMESERVER": {"prompt": "Homeserver", "description": "Matrix homeserver URL"},
+    "MATRIX_ACCESS_TOKEN": {"prompt": "Access token", "description": "Matrix access token", "password": True},
+    "MATRIX_USER_ID": {"prompt": "User ID", "description": "Matrix bot user ID"},
+    "SIGNAL_HTTP_URL": {"prompt": "Signal bridge URL", "description": "signal-cli REST API base URL"},
+    "SIGNAL_ACCOUNT": {"prompt": "Signal account", "description": "Signal account phone number"},
+    "HASS_URL": {"prompt": "Home Assistant URL", "description": "Home Assistant base URL"},
+    "HASS_TOKEN": {"prompt": "Access token", "description": "Home Assistant long-lived access token", "password": True},
+    "EMAIL_ADDRESS": {"prompt": "Email address", "description": "收发邮件的账号"},
+    "EMAIL_PASSWORD": {"prompt": "Email password", "description": "邮箱密码或 app password", "password": True},
+    "EMAIL_IMAP_HOST": {"prompt": "IMAP host", "description": "IMAP server host"},
+    "EMAIL_SMTP_HOST": {"prompt": "SMTP host", "description": "SMTP server host"},
+    "TWILIO_ACCOUNT_SID": {"prompt": "Twilio Account SID", "description": "Twilio Account SID"},
+    "TWILIO_AUTH_TOKEN": {"prompt": "Twilio Auth Token", "description": "Twilio Auth Token", "password": True},
+}
+COMMON = [entry["id"] for entry in CATALOG]
+def catalog_lookup(platform_id):
+    entry = CATALOG_BY_ID.get(platform_id)
+    if entry:
+        return entry
+    return {"id": platform_id, "name": platform_id.replace("_", " ").title(), "description": "Hermes Gateway platform", "docs_url": "", "env_vars": [], "required_env": []}
+def redact(value):
+    text = str(value or "")
+    if not text:
+        return None
+    if len(text) <= 8:
+        return "****"
+    return f"{text[:4]}...{text[-4:]}"
+def env_info(key):
+    info = ENV_HINTS.get(key, {})
+    return {
+        "description": info.get("description", ""),
+        "prompt": info.get("prompt", key),
+        "url": info.get("url"),
+        "is_password": bool(info.get("password") or any(word in key.upper() for word in SECRET_WORDS)),
+        "advanced": bool(info.get("advanced", False)),
+    }
 def platform_ids():
     ids = []
     if Platform is not None:
@@ -738,27 +944,125 @@ def set_platform_enabled(platform_id, enabled):
     item["enabled"] = bool(enabled)
     save_config(cfg)
 def payload_for(platform_id):
+    entry = catalog_lookup(platform_id)
     runtime = read_runtime_status() or {}
     runtime_platforms = runtime.get("platforms") if isinstance(runtime, dict) else {}
     runtime_platform = runtime_platforms.get(platform_id, {}) if isinstance(runtime_platforms, dict) else {}
     enabled = platform_enabled(platform_id)
+    required_env = set(entry.get("required_env") or [])
+    env_vars = []
+    for key in entry.get("env_vars") or []:
+        value = get_env_value(key) or ""
+        env_vars.append({
+            "key": key,
+            "required": key in required_env,
+            "is_set": bool(value),
+            "redacted_value": redact(value),
+            **env_info(key),
+        })
+    configured = all(bool(get_env_value(key)) for key in required_env)
+    home_channel = None
+    if Platform is not None and load_gateway_config is not None:
+        try:
+            gateway_config = load_gateway_config()
+            platform = Platform(platform_id)
+            platform_config = gateway_config.platforms.get(platform)
+            if platform_config and getattr(platform_config, "home_channel", None):
+                home_channel = platform_config.home_channel.to_dict()
+        except Exception:
+            home_channel = None
     state = runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
     if not enabled:
         state = "disabled"
+    elif not configured:
+        state = "not_configured"
     elif not state:
         state = "gateway_stopped" if not get_running_pid() else "pending_restart"
     return {
         "id": platform_id,
-        "name": platform_id.replace("_", " ").title(),
-        "description": "Hermes Gateway platform",
+        "name": entry.get("name") or platform_id.replace("_", " ").title(),
+        "description": entry.get("description") or "",
+        "docs_url": entry.get("docs_url") or "",
         "enabled": enabled,
-        "configured": enabled,
+        "configured": configured,
         "gateway_running": bool(get_running_pid()),
         "state": state,
+        "error_code": runtime_platform.get("error_code") if isinstance(runtime_platform, dict) else None,
+        "error_message": runtime_platform.get("error_message") if isinstance(runtime_platform, dict) else None,
         "updated_at": runtime_platform.get("updated_at") if isinstance(runtime_platform, dict) else None,
-        "env_vars": [],
+        "home_channel": home_channel,
+        "env_vars": env_vars,
     }
 `;
+
+  if (method === 'POST' && url.pathname === '/api/messaging/telegram/onboarding/start') {
+    const botName = String(body?.bot_name || 'Hermes Agent').trim() || 'Hermes Agent';
+    const pairingId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const botSlug = botName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'hermes_agent';
+    const record = {
+      botToken: `local-telegram-token-${pairingId}`,
+      botUsername: `${botSlug}_bot`,
+      expiresAt,
+      ownerUserId: '10001',
+    };
+    localTelegramOnboardingPairings.set(pairingId, record);
+    return {
+      deep_link: `https://t.me/${record.botUsername}?start=${encodeURIComponent(pairingId)}`,
+      expires_at: expiresAt,
+      pairing_id: pairingId,
+      qr_payload: `https://t.me/${record.botUsername}?start=${encodeURIComponent(pairingId)}`,
+      source: 'desktop-local-bridge',
+      suggested_username: record.botUsername,
+    };
+  }
+
+  const telegramOnboardingMatch = url.pathname.match(/^\/api\/messaging\/telegram\/onboarding\/([^/]+)(?:\/([^/]+))?$/);
+  if (telegramOnboardingMatch) {
+    const pairingId = decodeURIComponent(telegramOnboardingMatch[1]);
+    const action = telegramOnboardingMatch[2] || '';
+    const record = localTelegramOnboardingPairings.get(pairingId);
+    if (method === 'GET' && !action) {
+      if (!record) {
+        throw new Error('Telegram setup session was not found. Start a new setup.');
+      }
+      return {
+        bot_username: record.botUsername,
+        expires_at: record.expiresAt,
+        owner_user_id: record.ownerUserId,
+        source: 'desktop-local-bridge',
+        status: 'ready',
+      };
+    }
+    if (method === 'DELETE' && !action) {
+      localTelegramOnboardingPairings.delete(pairingId);
+      return { ok: true, source: 'desktop-local-bridge' };
+    }
+    if (method === 'POST' && action === 'apply') {
+      if (!record) {
+        throw new Error('Telegram setup session was not found. Start a new setup.');
+      }
+      const allowedUserIds = Array.isArray(body?.allowed_user_ids)
+        ? body.allowed_user_ids.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+      if (!allowedUserIds.length || allowedUserIds.some((item) => !/^\d+$/.test(item))) {
+        throw new Error('Allowed Telegram user IDs must be numeric.');
+      }
+      const result = await runHermesPython(`${script}
+allowed_user_ids = [str(item).strip() for item in payload.get("allowed_user_ids", []) if str(item).strip()]
+save_env_value("TELEGRAM_BOT_TOKEN", str(payload.get("bot_token") or "").strip())
+save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
+set_platform_enabled("telegram", True)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "platform": "telegram", "bot_username": payload.get("bot_username"), "needs_restart": True, "source": "desktop-local-bridge"}))
+`, {
+        allowed_user_ids: allowedUserIds,
+        bot_token: record.botToken,
+        bot_username: record.botUsername,
+      }, 30000);
+      localTelegramOnboardingPairings.delete(pairingId);
+      return result;
+    }
+  }
 
   if (method === 'GET' && url.pathname === '/api/messaging/platforms') {
     return runHermesPython(`${script}
@@ -774,17 +1078,38 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"platforms": items, "source": "desk
     if (method === 'PUT' && !action) {
       return runHermesPython(`${script}
 platform_id = str(payload.get("id") or "").strip()
-enabled = bool(payload.get("enabled"))
-set_platform_enabled(platform_id, enabled)
-print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "platform": platform_id, "enabled": enabled, "source": "desktop-local-bridge"}))
+entry = catalog_lookup(platform_id)
+allowed_env = set(entry.get("env_vars") or [])
+for key in payload.get("clear_env") or []:
+    if key not in allowed_env:
+        raise SystemExit(f"{key} is not configurable for {entry.get('name') or platform_id}")
+    remove_env_value(key)
+for key, value in (payload.get("env") or {}).items():
+    if key not in allowed_env:
+        raise SystemExit(f"{key} is not configurable for {entry.get('name') or platform_id}")
+    trimmed = str(value or "").strip()
+    if trimmed:
+        save_env_value(key, trimmed)
+if "enabled" in payload and payload.get("enabled") is not None:
+    set_platform_enabled(platform_id, bool(payload.get("enabled")))
+item = payload_for(platform_id)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "platform": platform_id, "enabled": item.get("enabled"), "configured": item.get("configured"), "source": "desktop-local-bridge"}))
 `, { ...(body || {}), id }, 20000);
     }
     if (method === 'POST' && action === 'test') {
       return runHermesPython(`${script}
 platform_id = str(payload.get("id") or "").strip()
 item = payload_for(platform_id)
-ok = bool(item.get("enabled") and item.get("gateway_running") and item.get("state") == "connected")
-message = "连接正常" if ok else ("Gateway 未运行，重启后检查连接。" if item.get("enabled") else "平台已停用。")
+missing = [field.get("key") for field in item.get("env_vars", []) if field.get("required") and not field.get("is_set")]
+ok = bool(item.get("enabled") and item.get("configured") and item.get("gateway_running") and item.get("state") == "connected")
+if not item.get("enabled"):
+    message = "平台已停用。"
+elif missing:
+    message = "缺少必填配置：" + ", ".join(missing)
+elif not item.get("gateway_running"):
+    message = "配置已保存，Gateway 未运行或需要重启后检查连接。"
+else:
+    message = "配置已保存，等待 Gateway 报告连接状态。"
 print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": ok, "state": item.get("state"), "message": message, "source": "desktop-local-bridge"}))
 `, { id }, 20000);
     }

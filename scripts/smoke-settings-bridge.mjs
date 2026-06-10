@@ -195,6 +195,74 @@ try {
       timeoutMs: 30000,
     });
 
+    const messagingBefore = await api({ path: '/api/messaging/platforms', timeoutMs: 30000 });
+    const telegramBefore = messagingBefore.platforms?.find((platform) => platform.id === 'telegram');
+    if (!telegramBefore?.env_vars?.some((env) => env.key === 'TELEGRAM_BOT_TOKEN' && env.required === true)) {
+      throw new Error('Messaging platform metadata did not expose Telegram token config');
+    }
+    await api({
+      body: {
+        enabled: false,
+        env: {
+          TELEGRAM_ALLOWED_USERS: '10001',
+          TELEGRAM_BOT_TOKEN: '1234567890:bridge-smoke-token',
+        },
+      },
+      method: 'PUT',
+      path: '/api/messaging/platforms/telegram',
+      timeoutMs: 30000,
+    });
+    const messagingAfterSave = await api({ path: '/api/messaging/platforms', timeoutMs: 30000 });
+    const telegramAfterSave = messagingAfterSave.platforms?.find((platform) => platform.id === 'telegram');
+    if (
+      telegramAfterSave?.enabled !== false
+      || !telegramAfterSave.env_vars?.some((env) => env.key === 'TELEGRAM_BOT_TOKEN' && env.is_set === true)
+      || !telegramAfterSave.env_vars?.some((env) => env.key === 'TELEGRAM_ALLOWED_USERS' && env.is_set === true)
+    ) {
+      throw new Error('Messaging platform env save did not persist');
+    }
+    await api({
+      body: { clear_env: ['TELEGRAM_ALLOWED_USERS'] },
+      method: 'PUT',
+      path: '/api/messaging/platforms/telegram',
+      timeoutMs: 30000,
+    });
+    const messagingAfterClear = await api({ path: '/api/messaging/platforms', timeoutMs: 30000 });
+    const telegramAfterClear = messagingAfterClear.platforms?.find((platform) => platform.id === 'telegram');
+    if (telegramAfterClear?.env_vars?.some((env) => env.key === 'TELEGRAM_ALLOWED_USERS' && env.is_set === true)) {
+      throw new Error('Messaging platform env clear did not persist');
+    }
+    const pairing = await api({
+      body: { bot_name: 'Bridge Smoke' },
+      method: 'POST',
+      path: '/api/messaging/telegram/onboarding/start',
+      timeoutMs: 30000,
+    });
+    if (!pairing.pairing_id || !pairing.deep_link) {
+      throw new Error('Telegram onboarding start did not return pairing metadata');
+    }
+    const pairingStatus = await api({
+      path: '/api/messaging/telegram/onboarding/' + encodeURIComponent(pairing.pairing_id),
+      timeoutMs: 30000,
+    });
+    if (pairingStatus.status !== 'ready' || !pairingStatus.owner_user_id) {
+      throw new Error('Telegram onboarding status did not become ready in local bridge');
+    }
+    await api({
+      body: { allowed_user_ids: [pairingStatus.owner_user_id] },
+      method: 'POST',
+      path: '/api/messaging/telegram/onboarding/' + encodeURIComponent(pairing.pairing_id) + '/apply',
+      timeoutMs: 30000,
+    });
+    const messagingAfterOnboarding = await api({ path: '/api/messaging/platforms', timeoutMs: 30000 });
+    const telegramAfterOnboarding = messagingAfterOnboarding.platforms?.find((platform) => platform.id === 'telegram');
+    if (
+      telegramAfterOnboarding?.enabled !== true
+      || !telegramAfterOnboarding.env_vars?.some((env) => env.key === 'TELEGRAM_ALLOWED_USERS' && env.is_set === true)
+    ) {
+      throw new Error('Telegram onboarding apply did not persist env and enablement');
+    }
+
     const deliveryTargets = await api({ path: '/api/cron/delivery-targets', timeoutMs: 30000 });
     if (!deliveryTargets.targets?.some((target) => target.id === 'local')) {
       throw new Error('Cron delivery targets should include local');
@@ -354,6 +422,7 @@ try {
 
     return {
       mcp: 'create-toggle-delete',
+      messaging: 'env-save-clear-onboarding',
       model: 'saved',
       profiles: 'create-edit-soul-rename-delete',
       cron: 'create-update-runs-delete',

@@ -6179,6 +6179,196 @@ textarea {
   cursor: pointer;
 }
 
+.gatewayPlatformCard {
+  min-height: 154px;
+  gap: 8px;
+}
+
+.gatewayPlatformCard.configOpen {
+  grid-column: 1 / -1;
+}
+
+.gatewayCard > .gatewayCardHeader {
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+
+.platformMetaLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  color: #7c8490;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.platformMetaLine span {
+  min-width: 0;
+}
+
+.dangerText {
+  color: #b42318;
+}
+
+.platformConfig {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.platformConfigHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.platformConfigHeader > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.platformConfigHeader strong {
+  color: #20242a;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.platformConfigHeader span,
+.platformConfigEmpty {
+  color: #717882;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.platformEnvGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.platformEnvField {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.platformEnvLabel {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  color: #20242a;
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.25;
+}
+
+.platformEnvLabel span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platformEnvLabel em {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #fff7e8;
+  color: #a16207;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.platformEnvLabel em.set {
+  background: #ecfdf3;
+  color: #15803d;
+}
+
+.platformEnvInputRow {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.platformEnvInputRow .settingInput,
+.telegramOnboarding .settingInput {
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+}
+
+.platformEnvField small {
+  min-height: 28px;
+  color: #818892;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.telegramOnboarding {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e5e9ef;
+  border-radius: 14px;
+  background: rgba(249, 251, 253, 0.82);
+}
+
+.telegramOnboardingGrid,
+.telegramAllowedRow {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.telegramAllowedRow {
+  grid-template-columns: minmax(260px, 1fr) auto;
+}
+
+.telegramPairingStatus {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  color: #717882;
+  font-size: 11.5px;
+}
+
+.telegramPairingStatus code {
+  max-width: 260px;
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 7px;
+  background: #eef1f5;
+  color: #4b5563;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platformDocLink {
+  justify-self: start;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.platformDocLink:hover {
+  text-decoration: underline;
+}
+
 .ghostIcon.active {
   color: #2563eb;
   background: #eaf0ff;
