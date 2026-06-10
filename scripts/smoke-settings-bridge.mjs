@@ -525,6 +525,54 @@ try {
       path: '/api/model/set',
       timeoutMs: 30000,
     });
+    const auxiliaryBefore = await api({ path: '/api/model/auxiliary', timeoutMs: 30000 });
+    const visionBefore = auxiliaryBefore.tasks?.find((task) => task.task === 'vision');
+    if (!visionBefore || auxiliaryBefore.main?.provider !== 'smoke-provider' || auxiliaryBefore.main?.model !== 'smoke-model-next') {
+      throw new Error('Auxiliary model readback did not expose main model and vision slot');
+    }
+    const savedVisionAuxiliary = await api({
+      body: {
+        model: 'smoke-model-vision',
+        provider: 'smoke-provider-vision',
+        scope: 'auxiliary',
+        task: 'vision',
+      },
+      method: 'POST',
+      path: '/api/model/set',
+      timeoutMs: 30000,
+    });
+    if (
+      savedVisionAuxiliary.scope !== 'auxiliary'
+      || !savedVisionAuxiliary.tasks?.includes('vision')
+      || savedVisionAuxiliary.provider !== 'smoke-provider-vision'
+      || savedVisionAuxiliary.model !== 'smoke-model-vision'
+    ) {
+      throw new Error('Auxiliary vision model save did not return expected metadata');
+    }
+    const auxiliaryAfterSave = await api({ path: '/api/model/auxiliary', timeoutMs: 30000 });
+    const visionAfterSave = auxiliaryAfterSave.tasks?.find((task) => task.task === 'vision');
+    if (visionAfterSave?.provider !== 'smoke-provider-vision' || visionAfterSave?.model !== 'smoke-model-vision') {
+      throw new Error('Auxiliary vision model save did not persist');
+    }
+    const resetAuxiliary = await api({
+      body: {
+        model: 'smoke-model-next',
+        provider: 'smoke-provider',
+        scope: 'auxiliary',
+        task: '__reset__',
+      },
+      method: 'POST',
+      path: '/api/model/set',
+      timeoutMs: 30000,
+    });
+    if (resetAuxiliary.scope !== 'auxiliary' || resetAuxiliary.reset !== true) {
+      throw new Error('Auxiliary model reset did not return reset metadata');
+    }
+    const auxiliaryAfterReset = await api({ path: '/api/model/auxiliary', timeoutMs: 30000 });
+    const visionAfterReset = auxiliaryAfterReset.tasks?.find((task) => task.task === 'vision');
+    if (visionAfterReset?.provider !== 'auto' || visionAfterReset?.model) {
+      throw new Error('Auxiliary model reset did not restore vision to main-model fallback');
+    }
     const onboardingBefore = await api({ path: '/api/onboarding/config', timeoutMs: 30000 });
     if (!onboardingBefore.hermes_home || onboardingBefore.mode !== 'local') {
       throw new Error('Onboarding config did not expose local Hermes state');

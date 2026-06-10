@@ -1127,13 +1127,18 @@ try {
         }
       }
     }
-    const sessionAction = findProjectAction('会话', '新建任务') || findProjectAction('会话', '打开最近');
-    if (!sessionAction) {
-      throw new Error('Missing project session action.');
-    }
-    if (sessionAction.disabled) {
+    const sessionAction = await waitFor(
+      () => findProjectAction('会话', '新建任务') || findProjectAction('会话', '打开最近'),
+      'project session action',
+      15000,
+    );
+    await waitFor(
+      () => !sessionAction.disabled,
+      'project session action enabled',
+      15000,
+    ).catch(() => {
       throw new Error(`Project session action is disabled: ${document.querySelector('.surfaceStatus')?.textContent || 'no status'}`);
-    }
+    });
     sessionAction.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'project new task opens chat')
       .catch((error) => {
@@ -1249,6 +1254,44 @@ try {
     }
     if (findSettingButton('默认模型', '保存').disabled) {
       throw new Error('Model save action should be available after model options load.');
+    }
+    const auxiliaryModelRow = await waitFor(
+      () => settingRow('辅助模型'),
+      'auxiliary model settings row',
+      15000,
+    );
+    const auxiliarySyncButton = findButton('同步', auxiliaryModelRow);
+    if (!auxiliarySyncButton || !findButton('全部跟随主模型', auxiliaryModelRow)) {
+      throw new Error('Auxiliary model settings should expose sync and reset actions.');
+    }
+    if (auxiliarySyncButton.disabled) {
+      throw new Error('Auxiliary model sync action should be available.');
+    }
+    auxiliarySyncButton.click();
+    await waitFor(
+      () => !auxiliarySyncButton.textContent?.includes('同步中'),
+      'auxiliary model sync finished',
+      30000,
+    );
+    if (document.querySelector('.settingsStatus')?.textContent?.includes('辅助模型读取失败')) {
+      throw new Error(document.querySelector('.settingsStatus')?.textContent || 'Auxiliary model sync failed.');
+    }
+    const visionAuxiliaryRow = await waitFor(
+      () => Array.from(document.querySelectorAll('.settingRow'))
+        .find((row) => row.querySelector('strong')?.textContent?.trim() === 'Vision'),
+      'Vision auxiliary model row',
+      30000,
+    );
+    const visionProviderSelect = visionAuxiliaryRow.querySelector('select[aria-label="辅助模型 vision provider"]');
+    const visionModelSelect = visionAuxiliaryRow.querySelector('select[aria-label="辅助模型 vision model"]');
+    const visionSaveButton = findButton('保存', visionAuxiliaryRow);
+    if (!visionProviderSelect || !visionModelSelect || !visionSaveButton) {
+      throw new Error('Vision auxiliary model row should expose provider/model selects and save action.');
+    }
+    await waitFor(() => visionProviderSelect.options.length > 0, 'Vision auxiliary provider options', 15000);
+    await waitFor(() => visionModelSelect.options.length > 0, 'Vision auxiliary model options', 15000);
+    if (visionProviderSelect.disabled || visionModelSelect.disabled || visionSaveButton.disabled) {
+      throw new Error('Vision auxiliary model controls should be editable after local bridge load.');
     }
 
     await selectSettingsSection('权限', 'Toolsets');

@@ -2024,6 +2024,53 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps(payload))
 `, {}, 30000);
   }
 
+  if (method === 'GET' && url.pathname === '/api/model/auxiliary') {
+    return runHermesPython(`
+import json
+from hermes_cli.config import load_config
+
+AUX_TASK_SLOTS = (
+    "vision",
+    "web_extract",
+    "compression",
+    "skills_hub",
+    "approval",
+    "mcp",
+    "title_generation",
+    "triage_specifier",
+    "kanban_decomposer",
+    "profile_describer",
+    "curator",
+)
+
+cfg = load_config()
+aux_cfg = cfg.get("auxiliary", {})
+if not isinstance(aux_cfg, dict):
+    aux_cfg = {}
+
+tasks = []
+for slot in AUX_TASK_SLOTS:
+    slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+    tasks.append({
+        "task": slot,
+        "provider": str(slot_cfg.get("provider", "auto") or "auto"),
+        "model": str(slot_cfg.get("model", "") or ""),
+        "base_url": str(slot_cfg.get("base_url", "") or ""),
+    })
+
+model_cfg = cfg.get("model", {})
+if isinstance(model_cfg, dict):
+    main = {
+        "provider": str(model_cfg.get("provider", "") or ""),
+        "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+    }
+else:
+    main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
+
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"tasks": tasks, "main": main, "source": "desktop-local-bridge"}))
+`, {}, 20000);
+  }
+
   if (method === 'POST' && url.pathname === '/api/model/set') {
     return runHermesPython(`
 import json, sys
@@ -2032,20 +2079,87 @@ from hermes_cli.config import load_config, save_config
 scope = str(payload.get("scope") or "main").strip().lower()
 provider = str(payload.get("provider") or "").strip()
 model = str(payload.get("model") or "").strip()
-if scope != "main":
-    raise SystemExit("Only main model assignment is supported by the desktop local bridge.")
-if not provider or not model:
-    raise SystemExit("provider and model are required")
+task = str(payload.get("task") or "").strip().lower()
+base_url = str(payload.get("base_url") or "").strip()
+AUX_TASK_SLOTS = (
+    "vision",
+    "web_extract",
+    "compression",
+    "skills_hub",
+    "approval",
+    "mcp",
+    "title_generation",
+    "triage_specifier",
+    "kanban_decomposer",
+    "profile_describer",
+    "curator",
+)
+if scope not in ("main", "auxiliary"):
+    raise SystemExit("scope must be main or auxiliary")
 cfg = load_config()
-model_cfg = cfg.get("model", {})
-if not isinstance(model_cfg, dict):
-    model_cfg = {}
-model_cfg["provider"] = provider
-model_cfg["default"] = model
-model_cfg["name"] = model
-cfg["model"] = model_cfg
+if scope == "main":
+    if not provider or not model:
+        raise SystemExit("provider and model are required")
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    model_cfg["provider"] = provider
+    model_cfg["default"] = model
+    model_cfg["name"] = model
+    if base_url:
+        model_cfg["base_url"] = base_url
+    cfg["model"] = model_cfg
+    save_config(cfg)
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({
+        "ok": True,
+        "scope": scope,
+        "provider": provider,
+        "model": model,
+        "base_url": model_cfg.get("base_url", ""),
+        "source": "desktop-local-bridge",
+    }))
+    raise SystemExit(0)
+
+aux = cfg.get("auxiliary")
+if not isinstance(aux, dict):
+    aux = {}
+if task == "__reset__":
+    for slot in AUX_TASK_SLOTS:
+        slot_cfg = aux.get(slot)
+        if not isinstance(slot_cfg, dict):
+            slot_cfg = {}
+        slot_cfg["provider"] = "auto"
+        slot_cfg["model"] = ""
+        aux[slot] = slot_cfg
+    cfg["auxiliary"] = aux
+    save_config(cfg)
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "scope": "auxiliary", "reset": True, "source": "desktop-local-bridge"}))
+    raise SystemExit(0)
+
+if not provider:
+    raise SystemExit("provider is required for auxiliary")
+targets = [task] if task else list(AUX_TASK_SLOTS)
+for slot in targets:
+    if slot not in AUX_TASK_SLOTS:
+        raise SystemExit(f"unknown auxiliary task: {slot}")
+    slot_cfg = aux.get(slot)
+    if not isinstance(slot_cfg, dict):
+        slot_cfg = {}
+    slot_cfg["provider"] = provider
+    slot_cfg["model"] = model
+    if base_url:
+        slot_cfg["base_url"] = base_url
+    aux[slot] = slot_cfg
+cfg["auxiliary"] = aux
 save_config(cfg)
-print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "scope": scope, "provider": provider, "model": model, "source": "desktop-local-bridge"}))
+print("__BEAUTY_HERMES_JSON__" + json.dumps({
+    "ok": True,
+    "scope": "auxiliary",
+    "tasks": targets,
+    "provider": provider,
+    "model": model,
+    "source": "desktop-local-bridge",
+}))
 `, body || {}, 20000);
   }
 

@@ -591,6 +591,19 @@ interface HermesModelOptionsInfo {
   source?: string;
 }
 
+interface HermesAuxiliaryTaskAssignment {
+  base_url?: string;
+  model?: string;
+  provider?: string;
+  task: string;
+}
+
+interface HermesAuxiliaryModelsInfo {
+  main?: { model?: string; provider?: string };
+  source?: string;
+  tasks?: HermesAuxiliaryTaskAssignment[];
+}
+
 type RuntimeToolPolicy = 'always' | 'auto' | 'custom' | 'off';
 type ImageInputMode = 'auto' | 'native' | 'text';
 type ApprovalMode = 'manual' | 'smart' | 'off';
@@ -732,6 +745,20 @@ const primaryCredentialKeys = [
   'OPENROUTER_API_KEY',
   'GEMINI_API_KEY',
 ] as const;
+
+const auxiliaryTaskMeta: Record<string, { hint: string; label: string }> = {
+  approval: { label: 'Approval', hint: '智能审批' },
+  compression: { label: 'Compression', hint: '上下文压缩' },
+  curator: { label: 'Curator', hint: '技能复盘' },
+  kanban_decomposer: { label: 'Kanban decomposer', hint: '任务拆解' },
+  mcp: { label: 'MCP', hint: '工具路由' },
+  profile_describer: { label: 'Profile describer', hint: '身份描述' },
+  skills_hub: { label: 'Skills hub', hint: '技能搜索' },
+  title_generation: { label: 'Title generation', hint: '会话标题' },
+  triage_specifier: { label: 'Triage specifier', hint: '任务澄清' },
+  vision: { label: 'Vision', hint: '图像分析' },
+  web_extract: { label: 'Web extract', hint: '网页摘要' },
+};
 
 const surfaceMeta: Record<Surface, { title: string; subtitle: string }> = {
   chat: {
@@ -9951,6 +9978,9 @@ function SettingsPanel({
   const [modelOptionsLoaded, setModelOptionsLoaded] = useState(false);
   const [selectedModelProvider, setSelectedModelProvider] = useState('');
   const [selectedModelName, setSelectedModelName] = useState('');
+  const [auxiliaryModels, setAuxiliaryModels] = useState<HermesAuxiliaryModelsInfo | null>(null);
+  const [auxiliaryModelsLoaded, setAuxiliaryModelsLoaded] = useState(false);
+  const [auxiliaryDrafts, setAuxiliaryDrafts] = useState<Record<string, { model: string; provider: string }>>({});
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[]>([]);
   const [toolsetsLoaded, setToolsetsLoaded] = useState(false);
   const [expandedToolsetName, setExpandedToolsetName] = useState('');
@@ -10349,6 +10379,117 @@ function SettingsPanel({
       await runtime.refreshInventory();
     });
   }, [apiRequest, runtime, selectedModelName, selectedModelProvider]);
+  const loadAuxiliaryModels = useCallback(async (announce = false) => {
+    try {
+      setSettingsBusy('models:auxiliary:load');
+      const response = await apiRequest<HermesAuxiliaryModelsInfo>({ path: '/api/model/auxiliary', timeoutMs: 30000 });
+      const tasks = Array.isArray(response.tasks) ? response.tasks : [];
+      const normalized = { ...response, tasks };
+      setAuxiliaryModels(normalized);
+      setAuxiliaryModelsLoaded(true);
+      setAuxiliaryDrafts((current) => {
+        const next = { ...current };
+        tasks.forEach((task) => {
+          const provider = task.provider && task.provider !== 'auto'
+            ? task.provider
+            : response.main?.provider || selectedModelProvider || '';
+          const model = task.model || response.main?.model || selectedModelName || '';
+          if (!next[task.task]) {
+            next[task.task] = { provider, model };
+          }
+        });
+        return next;
+      });
+      if (announce && selectedRef.current === 'models') {
+        setSettingsStatus(`已同步 ${tasks.length} 个辅助模型任务`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (announce && selectedRef.current === 'models') {
+        setSettingsStatus(`辅助模型读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest, selectedModelName, selectedModelProvider]);
+  const saveAuxiliaryModel = useCallback(async (task: string) => {
+    const draft = auxiliaryDrafts[task] || { model: '', provider: '' };
+    if (!draft.provider) {
+      setSettingsStatus('请选择辅助模型 provider。');
+      return;
+    }
+
+    await runSettingAction(`models:auxiliary:${task}`, `${auxiliaryTaskMeta[task]?.label || task} 辅助模型保存`, async () => {
+      await apiRequest({
+        body: {
+          model: draft.model,
+          provider: draft.provider,
+          scope: 'auxiliary',
+          task,
+        },
+        method: 'POST',
+        path: '/api/model/set',
+        timeoutMs: 30000,
+      });
+      await loadAuxiliaryModels();
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, auxiliaryDrafts, loadAuxiliaryModels, runtime]);
+  const saveAuxiliaryAsMainModel = useCallback(async (task: string) => {
+    const provider = auxiliaryModels?.main?.provider || selectedModelProvider || config?.provider || '';
+    const model = auxiliaryModels?.main?.model || selectedModelName || config?.defaultModel || '';
+    if (!provider || !model) {
+      setSettingsStatus('主模型配置还不可用，先同步默认模型。');
+      return;
+    }
+
+    await runSettingAction(`models:auxiliary:${task}:main`, `${auxiliaryTaskMeta[task]?.label || task} 设为主模型`, async () => {
+      await apiRequest({
+        body: {
+          model,
+          provider,
+          scope: 'auxiliary',
+          task,
+        },
+        method: 'POST',
+        path: '/api/model/set',
+        timeoutMs: 30000,
+      });
+      setAuxiliaryDrafts((current) => ({ ...current, [task]: { provider, model } }));
+      await loadAuxiliaryModels();
+      await runtime.refreshInventory();
+    });
+  }, [
+    apiRequest,
+    auxiliaryModels?.main?.model,
+    auxiliaryModels?.main?.provider,
+    config?.defaultModel,
+    config?.provider,
+    loadAuxiliaryModels,
+    runtime,
+    selectedModelName,
+    selectedModelProvider,
+  ]);
+  const resetAuxiliaryModels = useCallback(async () => {
+    const provider = auxiliaryModels?.main?.provider || selectedModelProvider || config?.provider || '';
+    const model = auxiliaryModels?.main?.model || selectedModelName || config?.defaultModel || '';
+    await runSettingAction('models:auxiliary:reset', '辅助模型重置', async () => {
+      await apiRequest({
+        body: {
+          model,
+          provider,
+          scope: 'auxiliary',
+          task: '__reset__',
+        },
+        method: 'POST',
+        path: '/api/model/set',
+        timeoutMs: 30000,
+      });
+      setAuxiliaryDrafts({});
+      await loadAuxiliaryModels();
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, auxiliaryModels?.main?.model, auxiliaryModels?.main?.provider, config?.defaultModel, config?.provider, loadAuxiliaryModels, runtime, selectedModelName, selectedModelProvider]);
   const loadToolsets = useCallback(async () => {
     try {
       setSettingsBusy('toolsets:load');
@@ -10662,6 +10803,9 @@ function SettingsPanel({
     if (selected === 'models' && !modelOptionsLoaded && !settingsBusy) {
       void loadModelSettings();
     }
+    if (selected === 'models' && modelOptionsLoaded && !auxiliaryModelsLoaded && !settingsBusy) {
+      void loadAuxiliaryModels();
+    }
     if (selected === 'permissions' && !toolsetsLoaded && !settingsBusy) {
       void loadToolsets();
     }
@@ -10676,9 +10820,11 @@ function SettingsPanel({
     }
   }, [
     approvalPolicyLoaded,
+    auxiliaryModelsLoaded,
     envCredentialsLoaded,
     gatewayConfigLoaded,
     loadApprovalPolicy,
+    loadAuxiliaryModels,
     loadEnvCredentials,
     loadGatewayConfig,
     loadMcpServers,
@@ -10694,6 +10840,16 @@ function SettingsPanel({
   ]);
   const enabledToolsetCount = toolsets.filter((item) => item.enabled).length;
   const enabledMcpCount = mcpServers.filter((item) => item.enabled !== false).length;
+  const auxiliaryTaskEntries = useMemo(() => {
+    const tasks = auxiliaryModels?.tasks || [];
+    return tasks.map((task) => ({
+      ...task,
+      meta: auxiliaryTaskMeta[task.task] || {
+        hint: task.task.replace(/_/g, ' '),
+        label: task.task.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
+      },
+    }));
+  }, [auxiliaryModels?.tasks]);
   const credentialEntries = useMemo(() => {
     const primaryEntries = primaryCredentialKeys
       .map((key) => [key, envCredentials[key]] as [string, HermesEnvVarInfo | undefined])
@@ -11092,6 +11248,90 @@ function SettingsPanel({
         desc: `${modelOptions?.providers?.length ?? runtime.inventory?.models.length ?? 0} 个 provider · ${currentModelProvider?.authenticated === false ? '需要配置凭据' : '已可选择'}${currentModelProvider?.warning ? ` · ${currentModelProvider.warning}` : ''}`,
         control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadModelSettings()}>{settingsBusy === 'models:load' ? '同步中' : '同步'}</button>,
       },
+      {
+        icon: <Sparkles size={18} />,
+        title: '辅助模型',
+        desc: `${auxiliaryTaskEntries.length || 0} 个任务槽 · ${auxiliaryTaskEntries.filter((task) => task.provider && task.provider !== 'auto').length} 个已单独指定，未指定时跟随主模型。`,
+        control: (
+          <div className="settingInlineActions">
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadAuxiliaryModels(true)}>
+              {settingsBusy === 'models:auxiliary:load' ? '同步中' : '同步'}
+            </button>
+            <button className="selectButton" type="button" disabled={settingsControlLocked || !auxiliaryTaskEntries.length} onClick={() => void resetAuxiliaryModels()}>
+              {settingsBusy === 'models:auxiliary:reset' ? '重置中' : '全部跟随主模型'}
+            </button>
+          </div>
+        ),
+      },
+      ...auxiliaryTaskEntries.map((task) => {
+        const draft = auxiliaryDrafts[task.task] || {
+          model: task.model || auxiliaryModels?.main?.model || selectedModelName || '',
+          provider: task.provider && task.provider !== 'auto'
+            ? task.provider
+            : auxiliaryModels?.main?.provider || selectedModelProvider || '',
+        };
+        const models = modelOptions?.providers?.find((provider) => provider.slug === draft.provider)?.models || [];
+        const isAuto = !task.provider || task.provider === 'auto';
+        return {
+          icon: <SlidersHorizontal size={18} />,
+          title: task.meta.label,
+          desc: `${isAuto ? '跟随主模型' : `${task.provider} · ${task.model || 'provider 默认'}`} · ${task.meta.hint}`,
+          control: (
+            <form
+              className="settingControlStack wide auxiliaryModelForm"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveAuxiliaryModel(task.task);
+              }}
+            >
+              <select
+                aria-label={`辅助模型 ${task.task} provider`}
+                className="settingSelect short"
+                disabled={settingsControlLocked || !modelOptions?.providers?.length}
+                value={draft.provider}
+                onChange={(event) => {
+                  const provider = event.target.value;
+                  const nextModels = modelOptions?.providers?.find((item) => item.slug === provider)?.models || [];
+                  setAuxiliaryDrafts((current) => ({
+                    ...current,
+                    [task.task]: {
+                      model: nextModels[0] || '',
+                      provider,
+                    },
+                  }));
+                }}
+              >
+                {(modelOptions?.providers || []).map((provider) => (
+                  <option key={provider.slug} value={provider.slug}>{provider.name || provider.slug}</option>
+                ))}
+              </select>
+              <select
+                aria-label={`辅助模型 ${task.task} model`}
+                className="settingSelect model"
+                disabled={settingsControlLocked || models.length === 0}
+                value={draft.model}
+                onChange={(event) => {
+                  setAuxiliaryDrafts((current) => ({
+                    ...current,
+                    [task.task]: {
+                      ...draft,
+                      model: event.target.value,
+                    },
+                  }));
+                }}
+              >
+                {models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+              <button className="selectButton" type="submit" disabled={settingsControlLocked || !draft.provider}>
+                {settingsBusy === `models:auxiliary:${task.task}` ? '保存中' : '保存'}
+              </button>
+              <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void saveAuxiliaryAsMainModel(task.task)}>
+                {settingsBusy === `models:auxiliary:${task.task}:main` ? '设置中' : '设为主模型'}
+              </button>
+            </form>
+          ),
+        };
+      }),
     ],
     permissions: [
       { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={onOpenPermission}>手动确认</button> },
