@@ -891,6 +891,101 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "path": str(path), "sou
 }
 
 async function localSkillsApi(method, url, body) {
+  const localSkillName = (value) => {
+    const name = String(value || '').trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,79}$/.test(name)) {
+      throw new Error('Skill 名称只能包含字母、数字、点、下划线和短横线，长度 2-80。');
+    }
+    return name;
+  };
+  const localSkillRoot = () => path.join(resolveHermesHome(), 'skills');
+  const localSkillFile = (name) => {
+    const safeName = localSkillName(name);
+    const root = localSkillRoot();
+    const dir = path.join(root, safeName);
+    const resolvedDir = path.resolve(dir);
+    const resolvedRoot = path.resolve(root);
+    if (resolvedDir !== resolvedRoot && !resolvedDir.startsWith(`${resolvedRoot}${path.sep}`)) {
+      throw new Error('Skill 路径越界。');
+    }
+    return { dir: resolvedDir, filePath: path.join(resolvedDir, 'SKILL.md'), name: safeName };
+  };
+  const skillPayload = (name) => {
+    const target = localSkillFile(name);
+    if (!fs.existsSync(target.filePath)) {
+      throw new Error(`本地 skill 不存在：${target.name}`);
+    }
+    const content = safeReadText(target.filePath, 240000);
+    return {
+      content,
+      description: content.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1] || '',
+      name: target.name,
+      path: target.filePath,
+      source: 'local',
+    };
+  };
+  const detailMatch = url.pathname.match(/^\/api\/skills\/([^/]+)$/);
+
+  if (method === 'POST' && url.pathname === '/api/skills') {
+    const name = localSkillName(body?.name);
+    const description = String(body?.description || '').trim();
+    const target = localSkillFile(name);
+    if (fs.existsSync(target.filePath)) {
+      throw new Error(`本地 skill 已存在：${name}`);
+    }
+
+    fs.mkdirSync(target.dir, { recursive: true });
+    const safeDescription = description || '本地创建的 Hermes skill。';
+    const content = String(body?.content || '').trim() || [
+      '---',
+      `name: ${JSON.stringify(name)}`,
+      `description: ${JSON.stringify(safeDescription)}`,
+      '---',
+      '',
+      `# ${name}`,
+      '',
+      safeDescription,
+      '',
+      '## 使用场景',
+      '',
+      '- 描述这个 skill 适合处理的问题。',
+      '',
+      '## 工作方式',
+      '',
+      '- 写清楚输入、执行步骤和输出格式。',
+      '',
+    ].join('\n');
+    fs.writeFileSync(target.filePath, `${content.replace(/\s+$/, '')}\n`, { mode: 0o600 });
+    return { ok: true, skill: skillPayload(name), source: 'desktop-local-bridge' };
+  }
+
+  if (detailMatch) {
+    const name = decodeURIComponent(detailMatch[1]);
+    if (method === 'GET') {
+      return { skill: skillPayload(name), source: 'desktop-local-bridge' };
+    }
+    if (method === 'PUT') {
+      const target = localSkillFile(name);
+      if (!fs.existsSync(target.filePath)) {
+        throw new Error(`本地 skill 不存在：${target.name}`);
+      }
+      const content = String(body?.content || '').trim();
+      if (!content) {
+        throw new Error('SKILL.md 内容不能为空。');
+      }
+      fs.writeFileSync(target.filePath, `${content.replace(/\s+$/, '')}\n`, { mode: 0o600 });
+      return { ok: true, skill: skillPayload(name), source: 'desktop-local-bridge' };
+    }
+    if (method === 'DELETE') {
+      const target = localSkillFile(name);
+      if (!fs.existsSync(target.filePath)) {
+        throw new Error(`本地 skill 不存在：${target.name}`);
+      }
+      fs.rmSync(target.dir, { force: false, recursive: true });
+      return { ok: true, name: target.name, source: 'desktop-local-bridge' };
+    }
+  }
+
   const script = `
 import json, sys
 payload = json.loads(sys.stdin.read() or "{}")
@@ -2661,7 +2756,41 @@ async function localApiFallback(request, error) {
 }
 
 async function desktopApi(request) {
+  const rawPath = String(request?.path || '');
+  const method = String(request?.method || 'GET').toUpperCase();
+  const preferLocal = [
+    '/api/profiles',
+    '/api/skills',
+    '/api/cron/jobs',
+    '/api/cron/delivery-targets',
+    '/api/messaging/platforms',
+    '/api/messaging/telegram/onboarding',
+    '/api/onboarding',
+    '/api/model',
+    '/api/tools/toolsets',
+    '/api/mcp/servers',
+    '/api/clipboard',
+    '/api/files',
+  ].some((prefix) => rawPath.startsWith(prefix));
+
+  if (process.env.BEAUTY_HERMES_DEBUG_API === '1') {
+    console.error(`[beauty-hermes] api ${method} ${rawPath} preferLocal=${preferLocal}`);
+  }
+
+  if (preferLocal) {
+    const fallback = await localApiFallback(request);
+    if (fallback.handled) {
+      if (process.env.BEAUTY_HERMES_DEBUG_API === '1') {
+        console.error(`[beauty-hermes] api ${method} ${rawPath} handled=local`);
+      }
+      return fallback.value;
+    }
+  }
+
   try {
+    if (process.env.BEAUTY_HERMES_DEBUG_API === '1') {
+      console.error(`[beauty-hermes] api ${method} ${rawPath} handled=gateway`);
+    }
     return await gatewayManager.api(request);
   } catch (error) {
     const fallback = await localApiFallback(request, error);

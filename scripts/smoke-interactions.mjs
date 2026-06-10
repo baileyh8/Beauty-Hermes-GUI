@@ -817,6 +817,93 @@ try {
         .some((card) => card.getAttribute('data-skill-name') === firstSkillName && card.querySelector('.skillDetail')),
       'command center skill expands target',
     );
+    const skillSearchInput = document.querySelector('input[aria-label="搜索 skill"]');
+    if (skillSearchInput) {
+      setNativeValue(skillSearchInput, '');
+      await waitFor(() => document.querySelector('input[aria-label="搜索 skill"]')?.value === '', 'skill search cleared');
+    }
+    const localSkillName = `beauty-smoke-${Date.now().toString(36)}`;
+    const localSkillDescription = 'UI lifecycle smoke skill';
+    const skillNameInput = await waitFor(
+      () => document.querySelector('input[aria-label="新建 skill 名称"]'),
+      'local skill name input',
+    );
+    const skillDescriptionInput = await waitFor(
+      () => document.querySelector('input[aria-label="新建 skill 描述"]'),
+      'local skill description input',
+    );
+    setNativeValue(skillNameInput, localSkillName);
+    setNativeValue(skillDescriptionInput, localSkillDescription);
+    await waitFor(
+      () => document.querySelector('input[aria-label="新建 skill 名称"]')?.value === localSkillName
+        && document.querySelector('input[aria-label="新建 skill 描述"]')?.value === localSkillDescription,
+      'local skill create inputs filled',
+    );
+    await sleep(150);
+    const createSkillButton = await waitFor(
+      () => {
+        const button = document.querySelector('.skillCreateForm button');
+        return button && !button.disabled ? button : null;
+      },
+      'local skill create button enabled',
+      20000,
+    );
+    if (!createSkillButton.textContent?.includes('新建本地 skill')) {
+      throw new Error('Local skill create button has unexpected label.');
+    }
+    const createdSkill = await window.hermesDesktop.api({
+      body: { description: localSkillDescription, name: localSkillName },
+      method: 'POST',
+      path: '/api/skills',
+      timeoutMs: 20000,
+    });
+    if (!createdSkill?.skill?.name) {
+      throw new Error(`Local skill direct create returned unexpected payload: ${JSON.stringify(createdSkill)}`);
+    }
+    const editedSkillContent = [
+      '---',
+      `name: "${localSkillName}"`,
+      'description: "Edited from UI smoke"',
+      '---',
+      '',
+      `# ${localSkillName}`,
+      '',
+      'Edited from UI lifecycle smoke.',
+    ].join('\n');
+    const loadedSkill = await window.hermesDesktop.api({
+      path: `/api/skills/${encodeURIComponent(localSkillName)}`,
+      timeoutMs: 12000,
+    });
+    if (!loadedSkill?.skill?.content?.includes(localSkillName)) {
+      throw new Error('Local skill bridge did not read created SKILL.md.');
+    }
+    const savedSkill = await window.hermesDesktop.api({
+      body: { content: editedSkillContent },
+      method: 'PUT',
+      path: `/api/skills/${encodeURIComponent(localSkillName)}`,
+      timeoutMs: 12000,
+    });
+    if (!savedSkill?.skill?.content?.includes('Edited from UI lifecycle smoke.')) {
+      throw new Error('Local skill bridge did not persist edited SKILL.md.');
+    }
+    await window.hermesDesktop.api({
+      method: 'DELETE',
+      path: `/api/skills/${encodeURIComponent(localSkillName)}`,
+      timeoutMs: 12000,
+    });
+    let deletedSkillStillReadable = false;
+    try {
+      await window.hermesDesktop.api({
+        path: `/api/skills/${encodeURIComponent(localSkillName)}`,
+        timeoutMs: 12000,
+      });
+      deletedSkillStillReadable = true;
+    } catch {
+      deletedSkillStillReadable = false;
+    }
+    if (deletedSkillStillReadable) {
+      throw new Error('Local skill bridge delete did not remove SKILL.md.');
+    }
 
     await openCommandCenter('项目');
     await waitFor(() => findCommandRow('项目'), 'projects command row');
@@ -1252,6 +1339,7 @@ try {
         'session-selection-feedback',
         'sidebar-pinned-sessions',
         'skill-detail-actions',
+        'skill-local-lifecycle-bridge',
         'skill-command-center-deeplink',
         'skill-copy-feedback',
         'slash-skill-deeplink',

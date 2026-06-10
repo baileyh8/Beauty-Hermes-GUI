@@ -7939,9 +7939,15 @@ function PolicyCard({ icon, title, desc }: { icon: React.ReactNode; title: strin
 function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime: HermesRuntime }) {
   const [query, setQuery] = useState('');
   const [skillRows, setSkillRows] = useState<HermesSkillInfo[]>([]);
+  const [localSkillRows, setLocalSkillRows] = useState<HermesSkillInfo[]>([]);
   const [expandedSkillName, setExpandedSkillName] = useState('');
   const [skillStatus, setSkillStatus] = useState('');
   const [skillBusy, setSkillBusy] = useState('');
+  const [newSkillName, setNewSkillName] = useState('');
+  const [newSkillDescription, setNewSkillDescription] = useState('');
+  const [skillEditorName, setSkillEditorName] = useState('');
+  const [skillEditorContent, setSkillEditorContent] = useState('');
+  const [pendingSkillDeleteName, setPendingSkillDeleteName] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const loadSkills = useCallback(async () => {
@@ -7978,6 +7984,118 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
       setSkillBusy('');
     }
   }, [apiRequest, refreshInventory]);
+  const createSkill = useCallback(async (nameInput = newSkillName, descriptionInput = newSkillDescription) => {
+    const name = nameInput.trim();
+    const description = descriptionInput.trim();
+    if (!name) {
+      setSkillStatus('请输入本地 skill 名称。');
+      return;
+    }
+
+    try {
+      setSkillBusy('create');
+      const response = await apiRequest<{ skill?: HermesSkillInfo }>({
+        body: { description, name },
+        method: 'POST',
+        path: '/api/skills',
+        timeoutMs: 20000,
+      });
+      const skill = response.skill;
+      if (skill) {
+        setLocalSkillRows((current) => [skill, ...current.filter((row) => row.name !== skill.name)]);
+        setSkillRows((current) => [skill, ...current.filter((row) => row.name !== skill.name)]);
+        setExpandedSkillName(skill.name);
+        setSkillEditorName(skill.name);
+        setSkillEditorContent('');
+      }
+      setNewSkillName('');
+      setNewSkillDescription('');
+      setSkillStatus(`${skill?.name || name} 已创建。`);
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`创建失败：${message}`);
+    } finally {
+      setSkillBusy('');
+    }
+  }, [apiRequest, newSkillDescription, newSkillName, refreshInventory]);
+  const loadSkillContent = useCallback(async (skill: HermesSkillInfo) => {
+    try {
+      setSkillBusy(`edit:load:${skill.name}`);
+      const response = await apiRequest<{ skill?: HermesSkillInfo & { content?: string } }>({
+        path: `/api/skills/${encodeURIComponent(skill.name)}`,
+        timeoutMs: 15000,
+      });
+      setSkillEditorName(skill.name);
+      setSkillEditorContent(response.skill?.content || '');
+      setSkillStatus(`${skill.name} 已读取 SKILL.md。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`读取失败：${message}`);
+    } finally {
+      setSkillBusy('');
+    }
+  }, [apiRequest]);
+  const saveSkillContent = useCallback(async (skill: HermesSkillInfo) => {
+    if (skillEditorName !== skill.name) {
+      setSkillStatus('请先读取 SKILL.md。');
+      return;
+    }
+
+    try {
+      setSkillBusy(`edit:save:${skill.name}`);
+      const response = await apiRequest<{ skill?: HermesSkillInfo }>({
+        body: { content: skillEditorContent },
+        method: 'PUT',
+        path: `/api/skills/${encodeURIComponent(skill.name)}`,
+        timeoutMs: 20000,
+      });
+      if (response.skill) {
+        setLocalSkillRows((current) => current.map((row) => row.name === skill.name ? { ...row, ...response.skill } : row));
+        setSkillRows((current) => current.map((row) => row.name === skill.name ? { ...row, ...response.skill } : row));
+      }
+      setSkillStatus(`${skill.name} 已保存。`);
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`保存失败：${message}`);
+    } finally {
+      setSkillBusy('');
+    }
+  }, [apiRequest, refreshInventory, skillEditorContent, skillEditorName]);
+  const deleteSkill = useCallback(async (skill: HermesSkillInfo) => {
+    if (pendingSkillDeleteName !== skill.name) {
+      setPendingSkillDeleteName(skill.name);
+      setSkillStatus(`再次点击确认删除 ${skill.name}。`);
+      return;
+    }
+
+    try {
+      setSkillBusy(`delete:${skill.name}`);
+      await apiRequest({
+        method: 'DELETE',
+        path: `/api/skills/${encodeURIComponent(skill.name)}`,
+        timeoutMs: 20000,
+      });
+      setLocalSkillRows((current) => current.filter((row) => row.name !== skill.name));
+      setSkillRows((current) => current.filter((row) => row.name !== skill.name));
+      if (expandedSkillName === skill.name) {
+        setExpandedSkillName('');
+      }
+      if (skillEditorName === skill.name) {
+        setSkillEditorName('');
+        setSkillEditorContent('');
+      }
+      setPendingSkillDeleteName('');
+      setSkillStatus(`${skill.name} 已删除。`);
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`删除失败：${message}`);
+    } finally {
+      setSkillBusy('');
+    }
+  }, [apiRequest, expandedSkillName, pendingSkillDeleteName, refreshInventory, skillEditorName]);
   const copySkillInfo = useCallback(async (skill: HermesSkillInfo, kind: 'path' | 'summary') => {
     const value = kind === 'path'
       ? skill.path || skill.name
@@ -8040,7 +8158,11 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
       source: 'plugin',
     })) ?? []),
   ];
-  const rows = skillRows.length > 0 ? skillRows : fallbackRows;
+  const sourceRows = skillRows.length > 0 ? skillRows : fallbackRows;
+  const rows = [
+    ...localSkillRows,
+    ...sourceRows.filter((skill) => !localSkillRows.some((localSkill) => localSkill.name === skill.name)),
+  ];
   const rowSignature = rows.map((skill) => `${skill.name}:${skill.enabled ?? true}`).join('|');
   useEffect(() => {
     const nextQuery = deepLink.query.trim();
@@ -8096,10 +8218,55 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
           {skillBusy === 'load' ? '刷新中' : '刷新'}
         </button>
       </div>
+      <form
+        className="inlineCreateForm skillCreateForm"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const formData = new FormData(event.currentTarget);
+          void createSkill(
+            String(formData.get('name') || ''),
+            String(formData.get('description') || ''),
+          );
+        }}
+      >
+        <input
+          aria-label="新建 skill 名称"
+          disabled={skillBusy === 'create'}
+          name="name"
+          placeholder="local-skill-name"
+          value={newSkillName}
+          onChange={(event) => setNewSkillName(event.target.value)}
+        />
+        <input
+          aria-label="新建 skill 描述"
+          disabled={skillBusy === 'create'}
+          name="description"
+          placeholder="一句话描述使用场景"
+          value={newSkillDescription}
+          onChange={(event) => setNewSkillDescription(event.target.value)}
+        />
+        <button
+          type="button"
+          disabled={skillBusy === 'create'}
+          onClick={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget.form;
+            const formData = form ? new FormData(form) : null;
+            void createSkill(
+              String(formData?.get('name') || newSkillName),
+              String(formData?.get('description') || newSkillDescription),
+            );
+          }}
+        >
+          {skillBusy === 'create' ? '创建中' : '新建本地 skill'}
+        </button>
+      </form>
       {skillStatus && <p className="surfaceStatus">{skillStatus}</p>}
       <div className="skillGrid">
         {filteredSkills.length > 0 ? filteredSkills.map((skill) => {
           const expanded = expandedSkillName === skill.name;
+          const canEditSkill = skill.source !== 'plugin';
+          const editing = skillEditorName === skill.name;
           return (
           <article className={expanded ? 'skillCard expanded' : 'skillCard'} data-skill-name={skill.name} key={`${skill.source || 'local'}-${skill.name}`}>
             <div className="skillCardHeader">
@@ -8116,6 +8283,30 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
               <div className="skillDetail">
                 <code>{skill.path || '暂无本地路径'}</code>
                 <span>可用 `/skill {skill.name}` 在会话中查看或调用。</span>
+                <div className="skillEditorActions">
+                  <button type="button" onClick={() => void loadSkillContent(skill)} disabled={Boolean(skillBusy) || !canEditSkill}>
+                    {skillBusy === `edit:load:${skill.name}` ? '读取中' : '读取 SKILL.md'}
+                  </button>
+                  <button type="button" onClick={() => void saveSkillContent(skill)} disabled={Boolean(skillBusy) || !canEditSkill || !editing}>
+                    {skillBusy === `edit:save:${skill.name}` ? '保存中' : '保存'}
+                  </button>
+                  <button
+                    className={pendingSkillDeleteName === skill.name ? 'danger confirm' : 'danger'}
+                    type="button"
+                    onClick={() => void deleteSkill(skill)}
+                    disabled={Boolean(skillBusy) || !canEditSkill}
+                  >
+                    {pendingSkillDeleteName === skill.name ? '确认删除' : '删除'}
+                  </button>
+                </div>
+                <textarea
+                  aria-label="Skill 编辑器"
+                  className="skillEditor"
+                  disabled={Boolean(skillBusy) || !canEditSkill || !editing}
+                  placeholder={canEditSkill ? '读取 SKILL.md 后在这里编辑...' : '插件 skill 不在本地 skills 目录内，不能在这里编辑。'}
+                  value={editing ? skillEditorContent : ''}
+                  onChange={(event) => setSkillEditorContent(event.target.value)}
+                />
               </div>
             )}
             <div className="skillActions">
