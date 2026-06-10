@@ -713,6 +713,50 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps(rows))
 `, {}, 20000);
   }
 
+  const toolsetConfigMatch = url.pathname.match(/^\/api\/tools\/toolsets\/([^/]+)\/config$/);
+  if (method === 'GET' && toolsetConfigMatch) {
+    const name = decodeURIComponent(toolsetConfigMatch[1]);
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.config import get_env_value, load_config
+from hermes_cli.tools_config import TOOL_CATEGORIES, _get_effective_configurable_toolsets, _is_provider_active, _visible_providers
+name = str(payload.get("name") or "").strip()
+valid = {item[0] for item in _get_effective_configurable_toolsets()}
+if name not in valid:
+    raise SystemExit(f"Unknown toolset: {name}")
+config = load_config()
+cat = TOOL_CATEGORIES.get(name)
+providers = []
+active_provider = None
+if cat:
+    for prov in _visible_providers(cat, config, force_fresh=True):
+        env_vars = []
+        for env in prov.get("env_vars", []):
+            key = env["key"]
+            env_vars.append({
+                "key": key,
+                "prompt": env.get("prompt", key),
+                "url": env.get("url"),
+                "default": env.get("default"),
+                "is_set": bool(get_env_value(key)),
+            })
+        is_active = _is_provider_active(prov, config, force_fresh=True)
+        if is_active and active_provider is None:
+            active_provider = prov["name"]
+        providers.append({
+            "name": prov["name"],
+            "badge": prov.get("badge", ""),
+            "tag": prov.get("tag", ""),
+            "env_vars": env_vars,
+            "post_setup": prov.get("post_setup"),
+            "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+            "is_active": is_active,
+        })
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"name": name, "has_category": cat is not None, "providers": providers, "active_provider": active_provider, "source": "desktop-local-bridge"}))
+`, { name }, 20000);
+  }
+
   const toolsetMatch = url.pathname.match(/^\/api\/tools\/toolsets\/([^/]+)$/);
   if (method === 'PUT' && toolsetMatch) {
     const name = decodeURIComponent(toolsetMatch[1]);
@@ -735,6 +779,67 @@ else:
 _save_platform_tools(config, "cli", enabled)
 print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "enabled": enabled_next, "source": "desktop-local-bridge"}))
 `, { name, enabled: Boolean(body?.enabled) }, 20000);
+  }
+
+  const toolsetProviderMatch = url.pathname.match(/^\/api\/tools\/toolsets\/([^/]+)\/provider$/);
+  if (method === 'PUT' && toolsetProviderMatch) {
+    const name = decodeURIComponent(toolsetProviderMatch[1]);
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.config import load_config, save_config
+from hermes_cli.tools_config import _get_effective_configurable_toolsets, apply_provider_selection
+name = str(payload.get("name") or "").strip()
+provider = str(payload.get("provider") or "").strip()
+valid = {item[0] for item in _get_effective_configurable_toolsets()}
+if name not in valid:
+    raise SystemExit(f"Unknown toolset: {name}")
+if not provider:
+    raise SystemExit("provider is required")
+config = load_config()
+apply_provider_selection(name, provider, config)
+save_config(config)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "provider": provider, "source": "desktop-local-bridge"}))
+`, { name, provider: body?.provider || '' }, 20000);
+  }
+
+  const toolsetEnvMatch = url.pathname.match(/^\/api\/tools\/toolsets\/([^/]+)\/env$/);
+  if (method === 'PUT' && toolsetEnvMatch) {
+    const name = decodeURIComponent(toolsetEnvMatch[1]);
+    return runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.config import get_env_value, load_config, save_env_value
+from hermes_cli.tools_config import TOOL_CATEGORIES, _get_effective_configurable_toolsets, _visible_providers
+name = str(payload.get("name") or "").strip()
+env_payload = payload.get("env") or {}
+if not isinstance(env_payload, dict):
+    raise SystemExit("env must be an object")
+valid = {item[0] for item in _get_effective_configurable_toolsets()}
+if name not in valid:
+    raise SystemExit(f"Unknown toolset: {name}")
+config = load_config()
+cat = TOOL_CATEGORIES.get(name)
+allowed = set()
+if cat:
+    for prov in _visible_providers(cat, config, force_fresh=True):
+        for env in prov.get("env_vars", []):
+            allowed.add(env["key"])
+unknown = [key for key in env_payload if key not in allowed]
+if unknown:
+    raise SystemExit(f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}")
+saved = []
+skipped = []
+for key, value in env_payload.items():
+    text = str(value or "").strip()
+    if text:
+        save_env_value(key, text)
+        saved.append(key)
+    else:
+        skipped.append(key)
+status = {key: bool(get_env_value(key)) for key in allowed}
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status, "source": "desktop-local-bridge"}))
+`, { name, env: body?.env || {} }, 20000);
   }
 
   if (method === 'GET' && url.pathname === '/api/mcp/servers') {

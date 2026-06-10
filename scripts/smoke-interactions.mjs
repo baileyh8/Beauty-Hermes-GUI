@@ -615,6 +615,29 @@ try {
     if (toolsetToggle.disabled) {
       throw new Error('Toolset toggle should be editable after local bridge load.');
     }
+    const toolsetConfigButton = Array.from(document.querySelectorAll('.settingRow button'))
+      .find((item) => item.textContent?.includes('配置') && !item.disabled);
+    if (!toolsetConfigButton) {
+      throw new Error('Missing toolset config action.');
+    }
+    toolsetConfigButton.click();
+    const providerSelect = await waitFor(
+      () => Array.from(document.querySelectorAll('select')).find((item) => item.getAttribute('aria-label')?.includes('provider')),
+      'toolset provider select',
+      15000,
+    );
+    if (providerSelect.disabled || providerSelect.options.length === 0) {
+      throw new Error('Toolset provider select should be editable.');
+    }
+    const providerSaveButton = Array.from(document.querySelectorAll('.toolsetConfigForm button'))
+      .find((item) => item.textContent?.includes('保存 provider'));
+    if (!providerSaveButton || providerSaveButton.disabled) {
+      throw new Error('Missing toolset provider save action.');
+    }
+    const envInput = document.querySelector('.toolsetConfigForm input[type="password"]');
+    if (envInput && envInput.disabled) {
+      throw new Error('Toolset env inputs should be editable when present.');
+    }
 
     await selectSettingsSection('集成', 'MCP Servers');
     const mcpSyncButton = findSettingButton('MCP Servers', '同步');

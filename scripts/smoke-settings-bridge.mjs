@@ -162,6 +162,31 @@ try {
       path: '/api/tools/toolsets/' + encodeURIComponent(firstToolset.name),
       timeoutMs: 30000,
     });
+    const webConfig = await api({ path: '/api/tools/toolsets/web/config', timeoutMs: 30000 });
+    const firecrawl = webConfig.providers?.find((provider) => provider.name === 'Firecrawl Self-Hosted');
+    if (!firecrawl?.env_vars?.some((env) => env.key === 'FIRECRAWL_API_URL')) {
+      throw new Error('Toolset config did not expose Firecrawl env metadata');
+    }
+    await api({
+      body: { provider: 'Firecrawl Self-Hosted' },
+      method: 'PUT',
+      path: '/api/tools/toolsets/web/provider',
+      timeoutMs: 30000,
+    });
+    await api({
+      body: { env: { FIRECRAWL_API_URL: 'https://firecrawl.smoke.local' } },
+      method: 'PUT',
+      path: '/api/tools/toolsets/web/env',
+      timeoutMs: 30000,
+    });
+    const webConfigAfter = await api({ path: '/api/tools/toolsets/web/config', timeoutMs: 30000 });
+    if (webConfigAfter.active_provider !== 'Firecrawl Self-Hosted') {
+      throw new Error('Toolset provider selection did not persist');
+    }
+    const firecrawlAfter = webConfigAfter.providers?.find((provider) => provider.name === 'Firecrawl Self-Hosted');
+    if (!firecrawlAfter?.env_vars?.some((env) => env.key === 'FIRECRAWL_API_URL' && env.is_set === true)) {
+      throw new Error('Toolset env save did not persist');
+    }
 
     await api({
       body: { model: 'smoke-model-next', provider: 'smoke-provider', scope: 'main' },
@@ -208,6 +233,7 @@ try {
       mcp: 'create-toggle-delete',
       model: 'saved',
       toolset: firstToolset.name,
+      toolsetConfig: 'provider-env',
     };
   }})()`);
 

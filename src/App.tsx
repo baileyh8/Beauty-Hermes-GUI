@@ -372,6 +372,32 @@ interface HermesToolsetInfo {
   tools?: string[];
 }
 
+interface HermesToolsetEnvInfo {
+  default?: string;
+  is_set?: boolean;
+  key: string;
+  prompt?: string;
+  url?: string;
+}
+
+interface HermesToolsetProviderInfo {
+  badge?: string;
+  env_vars?: HermesToolsetEnvInfo[];
+  is_active?: boolean;
+  name: string;
+  post_setup?: string;
+  requires_nous_auth?: boolean;
+  tag?: string;
+}
+
+interface HermesToolsetConfigInfo {
+  active_provider?: null | string;
+  has_category?: boolean;
+  name: string;
+  providers?: HermesToolsetProviderInfo[];
+  source?: string;
+}
+
 interface HermesMcpServerInfo {
   args?: string[];
   command?: string;
@@ -6171,6 +6197,10 @@ function SettingsPanel({
   const [selectedModelName, setSelectedModelName] = useState('');
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[]>([]);
   const [toolsetsLoaded, setToolsetsLoaded] = useState(false);
+  const [expandedToolsetName, setExpandedToolsetName] = useState('');
+  const [toolsetConfigs, setToolsetConfigs] = useState<Record<string, HermesToolsetConfigInfo>>({});
+  const [toolsetEnvDrafts, setToolsetEnvDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [toolsetProviderDrafts, setToolsetProviderDrafts] = useState<Record<string, string>>({});
   const [mcpServers, setMcpServers] = useState<HermesMcpServerInfo[]>([]);
   const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
   const [mcpDraftName, setMcpDraftName] = useState('');
@@ -6350,6 +6380,82 @@ function SettingsPanel({
       await runtime.refreshInventory();
     });
   }, [apiRequest, runtime]);
+  const loadToolsetConfig = useCallback(async (toolset: HermesToolsetInfo, expand = true) => {
+    try {
+      setSettingsBusy(`toolset:config:${toolset.name}`);
+      const configInfo = await apiRequest<HermesToolsetConfigInfo>({
+        path: `/api/tools/toolsets/${encodeURIComponent(toolset.name)}/config`,
+        timeoutMs: 30000,
+      });
+      const providers = Array.isArray(configInfo.providers) ? configInfo.providers : [];
+      const activeProvider = configInfo.active_provider || providers.find((provider) => provider.is_active)?.name || providers[0]?.name || '';
+      setToolsetConfigs((current) => ({ ...current, [toolset.name]: { ...configInfo, providers } }));
+      setToolsetProviderDrafts((current) => ({ ...current, [toolset.name]: activeProvider }));
+      if (expand) {
+        setExpandedToolsetName(toolset.name);
+      }
+      setSettingsStatus(providers.length > 0 ? `${toolset.label || toolset.name} 配置已同步` : `${toolset.label || toolset.name} 暂无 provider 配置项`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSettingsStatus(`${toolset.label || toolset.name} 配置读取失败：${message}`);
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest]);
+  const saveToolsetProvider = useCallback(async (toolset: HermesToolsetInfo) => {
+    const provider = toolsetProviderDrafts[toolset.name] || '';
+    if (!provider) {
+      setSettingsStatus('请选择 provider。');
+      return;
+    }
+
+    await runSettingAction(`toolset:provider:${toolset.name}`, `${toolset.label || toolset.name} provider 保存`, async () => {
+      await apiRequest({
+        body: { provider },
+        method: 'PUT',
+        path: `/api/tools/toolsets/${encodeURIComponent(toolset.name)}/provider`,
+        timeoutMs: 30000,
+      });
+      await loadToolsetConfig(toolset, true);
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, loadToolsetConfig, runtime, toolsetProviderDrafts]);
+  const saveToolsetEnv = useCallback(async (toolset: HermesToolsetInfo, provider: HermesToolsetProviderInfo) => {
+    const draft = toolsetEnvDrafts[toolset.name] || {};
+    const env = Object.fromEntries((provider.env_vars || []).map((item) => [item.key, draft[item.key] || '']));
+    const hasValue = Object.values(env).some((value) => value.trim());
+    if (!hasValue) {
+      setSettingsStatus('请输入至少一个新的 env key；已配置的 key 不会被回显。');
+      return;
+    }
+
+    await runSettingAction(`toolset:env:${toolset.name}`, `${toolset.label || toolset.name} env 保存`, async () => {
+      const result = await apiRequest<{ saved?: string[] }>({
+        body: { env },
+        method: 'PUT',
+        path: `/api/tools/toolsets/${encodeURIComponent(toolset.name)}/env`,
+        timeoutMs: 30000,
+      });
+      setToolsetEnvDrafts((current) => ({ ...current, [toolset.name]: {} }));
+      await loadToolsetConfig(toolset, true);
+      setSettingsStatus(`已保存 ${result.saved?.length ?? 0} 个 env key`);
+    });
+  }, [apiRequest, loadToolsetConfig, toolsetEnvDrafts]);
+  const runToolsetPostSetup = useCallback(async (toolset: HermesToolsetInfo, provider: HermesToolsetProviderInfo) => {
+    if (!provider.post_setup) {
+      setSettingsStatus(`${provider.name} 没有 post-setup 步骤。`);
+      return;
+    }
+
+    await runSettingAction(`toolset:post:${toolset.name}`, `${provider.name} post-setup`, async () => {
+      await apiRequest({
+        body: { key: provider.post_setup },
+        method: 'POST',
+        path: `/api/tools/toolsets/${encodeURIComponent(toolset.name)}/post-setup`,
+        timeoutMs: 30000,
+      });
+    });
+  }, [apiRequest]);
   const loadMcpServers = useCallback(async () => {
     try {
       setSettingsBusy('mcp:load');
@@ -6664,22 +6770,104 @@ function SettingsPanel({
     permissions: [
       { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={onOpenPermission}>手动确认</button> },
       { icon: <KeyRound size={18} />, title: 'Toolsets', desc: `${enabledToolsetCount}/${toolsets.length || config?.toolsets.length || 0} 已启用，写入 platform_toolsets.cli。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadToolsets()}>{settingsBusy === 'toolsets:load' ? '同步中' : '同步'}</button> },
-      ...toolsets.map((toolset) => ({
-        icon: <Wrench size={18} />,
-        title: toolset.label || toolset.name,
-        desc: `${toolset.name} · ${toolset.description || toolset.tools?.slice(0, 4).join(', ') || 'Hermes toolset'}`,
-        control: (
-          <button
-            className={toolset.enabled ? 'toggle on' : 'toggle'}
-            type="button"
-            aria-label={`${toolset.enabled ? '停用' : '启用'} ${toolset.label || toolset.name}`}
-            disabled={settingsControlLocked}
-            onClick={() => void toggleToolset(toolset)}
-          >
-            <span />
-          </button>
-        ),
-      })),
+      ...toolsets.flatMap((toolset) => {
+        const label = toolset.label || toolset.name;
+        const configInfo = toolsetConfigs[toolset.name];
+        const providers = configInfo?.providers || [];
+        const selectedProviderName = toolsetProviderDrafts[toolset.name] || configInfo?.active_provider || providers.find((provider) => provider.is_active)?.name || providers[0]?.name || '';
+        const selectedProvider = providers.find((provider) => provider.name === selectedProviderName) || providers[0];
+        const envDraft = toolsetEnvDrafts[toolset.name] || {};
+        const configOpen = expandedToolsetName === toolset.name;
+        const rows: Array<{ desc: string; icon: React.ReactNode; title: string; control: React.ReactNode }> = [
+          {
+            icon: <Wrench size={18} />,
+            title: label,
+            desc: `${toolset.name} · ${toolset.description || toolset.tools?.slice(0, 4).join(', ') || 'Hermes toolset'}`,
+            control: (
+              <div className="settingInlineActions">
+                <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => configOpen ? setExpandedToolsetName('') : void loadToolsetConfig(toolset)}>
+                  {settingsBusy === `toolset:config:${toolset.name}` ? '读取中' : configOpen ? '收起' : '配置'}
+                </button>
+                <button
+                  className={toolset.enabled ? 'toggle on' : 'toggle'}
+                  type="button"
+                  aria-label={`${toolset.enabled ? '停用' : '启用'} ${label}`}
+                  disabled={settingsControlLocked}
+                  onClick={() => void toggleToolset(toolset)}
+                >
+                  <span />
+                </button>
+              </div>
+            ),
+          },
+        ];
+
+        if (configOpen) {
+          rows.push({
+            icon: <SlidersHorizontal size={18} />,
+            title: `${label} 配置`,
+            desc: providers.length > 0 ? `当前 provider：${configInfo?.active_provider || '未设置'}，env key 只显示配置状态。` : '这个 toolset 没有官方 provider 配置项。',
+            control: (
+              <div className="toolsetConfigForm">
+                {providers.length > 0 && (
+                  <div className="toolsetProviderRow">
+                    <select
+                      aria-label={`${label} provider`}
+                      className="settingSelect"
+                      disabled={settingsControlLocked}
+                      value={selectedProviderName}
+                      onChange={(event) => setToolsetProviderDrafts((current) => ({ ...current, [toolset.name]: event.target.value }))}
+                    >
+                      {providers.map((provider) => (
+                        <option key={provider.name} value={provider.name}>{provider.name}{provider.badge ? ` · ${provider.badge}` : ''}</option>
+                      ))}
+                    </select>
+                    <button className="selectButton" type="button" disabled={settingsControlLocked || !selectedProviderName} onClick={() => void saveToolsetProvider(toolset)}>
+                      {settingsBusy === `toolset:provider:${toolset.name}` ? '保存中' : '保存 provider'}
+                    </button>
+                    {selectedProvider?.post_setup && (
+                      <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void runToolsetPostSetup(toolset, selectedProvider)}>
+                        {settingsBusy === `toolset:post:${toolset.name}` ? '运行中' : 'Post setup'}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {selectedProvider?.env_vars?.length ? (
+                  <div className="toolsetEnvGrid">
+                    {selectedProvider.env_vars.map((env) => (
+                      <label className="toolsetEnvField" key={env.key}>
+                        <span>{env.prompt || env.key}</span>
+                        <input
+                          aria-label={`${label} ${env.key}`}
+                          className="settingInput"
+                          disabled={settingsControlLocked}
+                          placeholder={env.is_set ? `${env.key} 已配置` : env.default || env.key}
+                          type="password"
+                          value={envDraft[env.key] || ''}
+                          onChange={(event) => setToolsetEnvDrafts((current) => ({
+                            ...current,
+                            [toolset.name]: {
+                              ...(current[toolset.name] || {}),
+                              [env.key]: event.target.value,
+                            },
+                          }))}
+                        />
+                      </label>
+                    ))}
+                    <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void saveToolsetEnv(toolset, selectedProvider)}>
+                      {settingsBusy === `toolset:env:${toolset.name}` ? '保存中' : '保存 env'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="toolsetConfigHint">当前 provider 不需要额外 env key。</div>
+                )}
+              </div>
+            ),
+          });
+        }
+
+        return rows;
+      }),
     ],
   };
   const rows = rowsBySection[selected];
