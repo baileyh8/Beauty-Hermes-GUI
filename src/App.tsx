@@ -235,6 +235,7 @@ interface PendingClarify {
 interface HermesRuntime {
   activeSessionId: null | string;
   apiRequest: <T = unknown>(request: HermesApiRequest) => Promise<T>;
+  applyProjectContext: (context: ProjectRuntimeContext) => void;
   archiveSession: (item: SidebarItem) => Promise<void>;
   connection: HermesGatewayConnection | null;
   connectionLabel: string;
@@ -260,7 +261,7 @@ interface HermesRuntime {
   startGateway: () => Promise<void>;
   startNewTask: () => Promise<void>;
   stopGateway: () => Promise<void>;
-  submitPrompt: (text: string) => Promise<void>;
+  submitPrompt: (text: string, options?: ProjectRuntimeContext) => Promise<void>;
   respondApproval: (choice: 'once' | 'session' | 'always' | 'deny') => Promise<void>;
   respondClarify: (answer: string) => Promise<void>;
   tools: GatewayToolItem[];
@@ -377,9 +378,17 @@ interface SessionRuntimeInfo {
   context_percent?: number;
   cwd?: string;
   model?: string;
+  profile?: string;
+  profile_name?: string;
   provider?: string;
   running?: boolean;
   usage?: { context_percent?: number };
+}
+
+interface ProjectRuntimeContext {
+  cwd?: string;
+  model?: string;
+  profile?: string;
 }
 
 interface HermesProfileInfo {
@@ -1325,6 +1334,27 @@ function contextPercentFromInfo(info?: SessionRuntimeInfo) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null;
 }
 
+function normalizeProjectRuntimeContext(context?: ProjectRuntimeContext): ProjectRuntimeContext {
+  const next: ProjectRuntimeContext = {};
+  const cwd = String(context?.cwd || '').trim();
+  const model = String(context?.model || '').trim();
+  const profile = String(context?.profile || '').trim();
+
+  if (cwd) {
+    next.cwd = cwd;
+  }
+
+  if (model) {
+    next.model = model;
+  }
+
+  if (profile) {
+    next.profile = profile;
+  }
+
+  return next;
+}
+
 function compactCwd(cwd?: null | string) {
   if (!cwd) {
     return 'Hermes Desktop优化';
@@ -1509,6 +1539,7 @@ function useHermesRuntime(): HermesRuntime {
   const ignoredSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingApprovalRef = useRef<PendingApproval | null>(null);
   const pendingClarifyRef = useRef<PendingClarify | null>(null);
+  const projectContextRef = useRef<ProjectRuntimeContext>({});
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -1529,6 +1560,11 @@ function useHermesRuntime(): HermesRuntime {
   const patchRuntimeInfo = useCallback((info?: SessionRuntimeInfo) => {
     const nextModel = normalizeModel(info);
     const nextPercent = contextPercentFromInfo(info);
+    const nextProjectContext = normalizeProjectRuntimeContext({
+      cwd: info?.cwd,
+      model: nextModel || undefined,
+      profile: info?.profile_name || info?.profile,
+    });
 
     if (nextModel) {
       setModel(nextModel);
@@ -1541,6 +1577,34 @@ function useHermesRuntime(): HermesRuntime {
     if (nextPercent !== null) {
       setContextPercent(nextPercent);
     }
+
+    projectContextRef.current = {
+      ...projectContextRef.current,
+      ...nextProjectContext,
+    };
+  }, []);
+
+  const applyProjectContext = useCallback((context: ProjectRuntimeContext) => {
+    const nextContext = normalizeProjectRuntimeContext(context);
+    projectContextRef.current = {
+      ...projectContextRef.current,
+      ...nextContext,
+    };
+
+    if (nextContext.cwd) {
+      setCwd(nextContext.cwd);
+    }
+
+    if (nextContext.model) {
+      setModel(nextContext.model);
+    }
+
+    const summary = [
+      nextContext.cwd ? shortenPath(nextContext.cwd) : '',
+      nextContext.model || '',
+      nextContext.profile ? `profile ${nextContext.profile}` : '',
+    ].filter(Boolean).join(' · ');
+    setStatusText(summary ? `项目上下文已应用：${summary}` : '项目上下文已应用');
   }, []);
 
   const refreshInventory = useCallback(async () => {
@@ -2272,13 +2336,28 @@ function useHermesRuntime(): HermesRuntime {
   );
 
   const ensureRuntimeSession = useCallback(
-    async (client: JsonRpcGatewayClient, title?: string) => {
+    async (client: JsonRpcGatewayClient, title?: string, context?: ProjectRuntimeContext) => {
       const currentSessionId = activeSessionIdRef.current;
       if (currentSessionId) {
         return currentSessionId;
       }
 
-      const created = await client.request<SessionCreateResponse>('session.create', { cols: 96, title: title || '' }, 60000);
+      const sessionContext = normalizeProjectRuntimeContext({
+        ...projectContextRef.current,
+        ...context,
+      });
+      const createParams: Record<string, unknown> = { cols: 96, title: title || '' };
+      if (sessionContext.cwd) {
+        createParams.cwd = sessionContext.cwd;
+      }
+      if (sessionContext.model) {
+        createParams.model = sessionContext.model;
+      }
+      if (sessionContext.profile) {
+        createParams.profile = sessionContext.profile;
+      }
+
+      const created = await client.request<SessionCreateResponse>('session.create', createParams, 60000);
       const sessionId = created.session_id;
       const storedId = created.stored_session_id || created.session_id;
       setActiveSessionId(sessionId);
@@ -2378,10 +2457,24 @@ function useHermesRuntime(): HermesRuntime {
   );
 
   const submitPrompt = useCallback(
-    async (text: string) => {
+    async (text: string, options?: ProjectRuntimeContext) => {
       const trimmed = text.trim();
       if (!trimmed) {
         return;
+      }
+      const promptContext = normalizeProjectRuntimeContext({
+        ...projectContextRef.current,
+        ...options,
+      });
+      const effectiveCwd = promptContext.cwd || cwd;
+      const effectiveModel = promptContext.model || model;
+
+      if (promptContext.cwd && promptContext.cwd !== cwd) {
+        setCwd(promptContext.cwd);
+      }
+
+      if (promptContext.model && promptContext.model !== model) {
+        setModel(promptContext.model);
       }
 
       upsertMessage({
@@ -2394,13 +2487,13 @@ function useHermesRuntime(): HermesRuntime {
         const localResponse = buildLocalSlashResponse(trimmed, {
           connection,
           contextPercent,
-          cwd,
+          cwd: effectiveCwd,
           files,
           gatewayStatus,
           inventory,
           inventoryError,
           messages,
-          model,
+          model: effectiveModel,
           pendingApproval,
           recentSessions: recentSessionItems,
           socketState,
@@ -2437,7 +2530,7 @@ function useHermesRuntime(): HermesRuntime {
       setStatusText('正在提交消息');
 
       try {
-        sessionId = await ensureRuntimeSession(client, trimmed);
+        sessionId = await ensureRuntimeSession(client, trimmed, promptContext);
 
         if (trimmed.startsWith('/')) {
           const result = await client.request('slash.exec', { command: trimmed, session_id: sessionId }, 90000);
@@ -2624,6 +2717,7 @@ function useHermesRuntime(): HermesRuntime {
   return {
     activeSessionId,
     apiRequest,
+    applyProjectContext,
     archiveSession,
     connection,
     connectionLabel,
@@ -6259,6 +6353,32 @@ function ProjectsSurface({
     project.notes.trim() ? `项目备注：${project.notes.trim()}` : '',
     '请先确认当前目录和关键文件，再给出下一步行动。',
   ].filter(Boolean).join('\n');
+  const projectRuntimeContext = (project: HermesProjectConfig): ProjectRuntimeContext => normalizeProjectRuntimeContext({
+    cwd: project.path,
+    model: project.model,
+    profile: project.profile || 'default',
+  });
+  const projectContextSummary = (project: HermesProjectConfig) => {
+    const context = projectRuntimeContext(project);
+    return [
+      context.cwd ? shortenPath(context.cwd) : '',
+      context.model || '',
+      context.profile ? `profile ${context.profile}` : '',
+    ].filter(Boolean).join(' · ');
+  };
+  const applyProjectConfig = () => runProjectAction(
+    'project-config:apply',
+    '应用项目',
+    () => {
+      const context = projectRuntimeContext(projectDraft);
+      if (!context.cwd && !context.model && !context.profile) {
+        throw new Error('请先填写工作目录、模型或 Profile');
+      }
+      runtime.applyProjectContext(context);
+      const summary = projectContextSummary(projectDraft);
+      return `项目“${projectDraft.name.trim() || '未命名项目'}”已应用到当前界面和下一次新任务${summary ? `：${summary}。` : '。'}`;
+    },
+  );
   const selectProjectConfig = (project: HermesProjectConfig) => {
     setPendingProjectDeleteId('');
     setSelectedConfigId(project.id);
@@ -6343,9 +6463,11 @@ function ProjectsSurface({
     'project-config:start',
     '开始项目任务',
     async () => {
+      const context = projectRuntimeContext(projectDraft);
+      runtime.applyProjectContext(context);
       await Promise.resolve(onOpenNewTask());
-      await runtime.submitPrompt(projectLaunchPrompt(projectDraft));
-      return '项目启动提示已发送。';
+      await runtime.submitPrompt(projectLaunchPrompt(projectDraft), context);
+      return '项目上下文已应用，启动提示已发送。';
     },
   );
   const deleteProjectConfig = () => {
@@ -6653,6 +6775,10 @@ function ProjectsSurface({
               <button className="projectPrimaryAction" type="submit" disabled={Boolean(projectBusy)}>
                 <Check size={14} />
                 {projectBusy === 'project-config:save' ? '保存中' : '保存项目'}
+              </button>
+              <button type="button" onClick={applyProjectConfig} disabled={Boolean(projectBusy)}>
+                <CheckCircle2 size={14} />
+                {projectBusy === 'project-config:apply' ? '应用中' : '应用项目'}
               </button>
               <button type="button" onClick={openProjectDirectory} disabled={Boolean(projectBusy)}>
                 <FolderOpen size={14} />

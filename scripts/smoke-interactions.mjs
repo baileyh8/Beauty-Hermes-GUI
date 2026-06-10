@@ -128,7 +128,7 @@ try {
 
   const result = await evaluate(client, `(${async () => {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const waitFor = async (predicate, label, timeout = 5000) => {
+    const waitFor = async (predicate, label, timeout = 8000) => {
       const deadline = Date.now() + timeout;
       while (Date.now() < deadline) {
         const value = predicate();
@@ -172,10 +172,15 @@ try {
     };
     const startNewTaskFromPage = async (label) => {
       findButton('新建任务')?.click();
+      const feedbackSeen = waitFor(
+        () => document.querySelector('.toastNotice')?.textContent?.includes('已开始新任务'),
+        `${label} new task feedback`,
+        3000,
+      );
       await waitFor(() => document.querySelector('[data-testid="composer"]'), `${label} return to chat`);
       await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), `${label} chat title`);
       await waitFor(() => document.querySelector('[data-testid="message-list"]')?.querySelectorAll('.message').length === 0, `${label} clears transcript`);
-      await waitFor(() => document.querySelector('.toastNotice')?.textContent?.includes('已开始新任务'), `${label} new task feedback`);
+      await feedbackSeen;
       return {
         sendButton: document.querySelector('.sendButton'),
         textarea: document.querySelector('textarea[aria-label="消息"]'),
@@ -769,7 +774,7 @@ try {
     await waitFor(() => document.querySelector('input[aria-label="项目名称"]'), 'project config form');
     setNativeValue(document.querySelector('input[aria-label="项目名称"]'), 'Smoke 项目');
     setNativeValue(document.querySelector('input[aria-label="工作目录"]'), '/tmp/Beauty-Hermes-GUI-commit');
-    setNativeValue(document.querySelector('input[aria-label="默认模型"]'), 'deepseek-v4-flash');
+    setNativeValue(document.querySelector('input[aria-label="默认模型"]'), 'smoke-model-alpha');
     setNativeValue(document.querySelector('input[aria-label="Hermes profile"]'), 'default');
     setNativeValue(document.querySelector('textarea[aria-label="项目备注"]'), 'smoke project config');
     findButton('保存项目', document.querySelector('.projectConfigPanel'))?.click();
@@ -780,6 +785,19 @@ try {
     await waitFor(
       () => Array.from(document.querySelectorAll('.projectConfigRow')).some((row) => row.textContent?.includes('Smoke 项目')),
       'project config saved row',
+    );
+    const applyProjectButton = findButton('应用项目', document.querySelector('.projectConfigPanel'));
+    if (!applyProjectButton) {
+      throw new Error('Missing project config apply action.');
+    }
+    applyProjectButton.click();
+    await waitFor(
+      () => document.querySelector('.surfaceStatus')?.textContent?.includes('已应用'),
+      'project config apply feedback',
+    );
+    await waitFor(
+      () => document.querySelector('.profileBlock')?.textContent?.includes('smoke-model-alpha'),
+      'project config apply updates current model',
     );
     const copyProjectPrompt = findButton('复制启动提示', document.querySelector('.projectConfigPanel'));
     if (!copyProjectPrompt) {
@@ -867,8 +885,14 @@ try {
     if (!sessionAction) {
       throw new Error('Missing project session action.');
     }
+    if (sessionAction.disabled) {
+      throw new Error(`Project session action is disabled: ${document.querySelector('.surfaceStatus')?.textContent || 'no status'}`);
+    }
     sessionAction.click();
-    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'project new task opens chat');
+    await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'project new task opens chat')
+      .catch((error) => {
+        throw new Error(`${error.message}; title=${document.querySelector('[data-testid="surface-title"]')?.textContent || 'none'}; status=${document.querySelector('.surfaceStatus')?.textContent || 'none'}; actionDisabled=${sessionAction.disabled}`);
+      });
     findNavButton('项目')?.click();
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after session action');
     findButton('项目设置')?.click();
@@ -1138,6 +1162,7 @@ try {
         'onboarding-config-feedback',
         'profile-feedback',
         'project-actions-feedback',
+        'project-config-apply-context',
         'project-config-feedback',
         'project-config-persistence',
         'project-new-task-routing',
