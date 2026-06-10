@@ -2942,6 +2942,10 @@ function App() {
             activeTab={workbenchTab}
             onTabChange={setWorkbenchTab}
             onCollapse={() => setRightOpen(false)}
+            onOpenFilePreview={(fileLabel) => {
+              setSelectedWorkbenchFileLabel(fileLabel);
+              setWorkbenchTab('preview');
+            }}
             onOpenApproval={setApprovalVariant}
             runtime={runtime}
             selectedFileLabel={selectedWorkbenchFileLabel}
@@ -4538,6 +4542,7 @@ function Workbench({
   activeTab,
   onTabChange,
   onCollapse,
+  onOpenFilePreview,
   onOpenApproval,
   runtime,
   selectedFileLabel,
@@ -4545,6 +4550,7 @@ function Workbench({
   activeTab: WorkbenchTab;
   onTabChange: (tab: WorkbenchTab) => void;
   onCollapse: () => void;
+  onOpenFilePreview: (fileLabel: string) => void;
   onOpenApproval: (variant: ApprovalVariant) => void;
   runtime: HermesRuntime;
   selectedFileLabel?: string;
@@ -4577,9 +4583,16 @@ function Workbench({
       </div>
 
       {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} runtime={runtime} />}
-      {activeTab === 'files' && <WorkbenchFiles files={runtime.files} selectedFileLabel={selectedFileLabel} />}
+      {activeTab === 'files' && (
+        <WorkbenchFiles
+          files={runtime.files}
+          onOpenPreview={onOpenFilePreview}
+          runtime={runtime}
+          selectedFileLabel={selectedFileLabel}
+        />
+      )}
       {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} onStop={runtime.stopGateway} />}
-      {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} />}
+      {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} selectedFileLabel={selectedFileLabel} />}
     </aside>
   );
 }
@@ -4637,14 +4650,32 @@ function WorkbenchActivity({
   );
 }
 
-function WorkbenchFiles({ files, selectedFileLabel }: { files: GatewayFileItem[]; selectedFileLabel?: string }) {
+function WorkbenchFiles({
+  files,
+  onOpenPreview,
+  runtime,
+  selectedFileLabel,
+}: {
+  files: GatewayFileItem[];
+  onOpenPreview: (fileLabel: string) => void;
+  runtime: HermesRuntime;
+  selectedFileLabel?: string;
+}) {
   const [copyBusy, setCopyBusy] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
+  const [openBusy, setOpenBusy] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
-  const selectedFile = files[selectedFileIndex] || files[0];
+  const selectedFile = files[selectedFileIndex] || files[0] || null;
+  const selectedPath = selectedFile?.label || '';
   const diffSummary = selectedFile
     ? `${selectedFile.change === 'add' ? '+' : '~'} ${selectedFile.label} · ${selectedFile.meta}`
     : '等待 Hermes 返回文件变更。';
+
+  useEffect(() => {
+    if (selectedFileIndex >= files.length) {
+      setSelectedFileIndex(0);
+    }
+  }, [files.length, selectedFileIndex]);
 
   useEffect(() => {
     if (!selectedFileLabel) {
@@ -4659,8 +4690,13 @@ function WorkbenchFiles({ files, selectedFileLabel }: { files: GatewayFileItem[]
     }
   }, [files, selectedFileLabel]);
 
-  const copySummary = async (kind: 'entry' | 'summary') => {
-    const label = kind === 'entry' ? '条目' : '摘要';
+  const copyFileInfo = async (kind: 'path' | 'summary') => {
+    const label = kind === 'path' ? '路径' : '摘要';
+    const value = kind === 'path' ? selectedPath : diffSummary;
+    if (!value) {
+      setCopyStatus('当前没有可复制的文件。');
+      return;
+    }
     if (!navigator.clipboard?.writeText) {
       setCopyStatus('当前环境无法访问剪贴板。');
       return;
@@ -4669,13 +4705,40 @@ function WorkbenchFiles({ files, selectedFileLabel }: { files: GatewayFileItem[]
     try {
       setCopyBusy(kind);
       setCopyStatus('');
-      await navigator.clipboard.writeText(diffSummary);
+      await navigator.clipboard.writeText(value);
       setCopyStatus(`Diff ${label}已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setCopyStatus(`复制失败：${message}`);
     } finally {
       setCopyBusy('');
+    }
+  };
+
+  const openFile = async () => {
+    if (!selectedFile) {
+      setCopyStatus('当前没有可打开文件。');
+      return;
+    }
+
+    try {
+      setOpenBusy(true);
+      setCopyStatus('');
+      await runtime.apiRequest({
+        body: {
+          cwd: runtime.cwd,
+          path: selectedFile.label,
+        },
+        method: 'POST',
+        path: '/api/files/open',
+        timeoutMs: 15000,
+      });
+      setCopyStatus('文件已交给系统打开。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCopyStatus(`打开失败：${message}`);
+    } finally {
+      setOpenBusy(false);
     }
   };
 
@@ -4701,14 +4764,30 @@ function WorkbenchFiles({ files, selectedFileLabel }: { files: GatewayFileItem[]
         )}
       </section>
       <section className="railSection">
-        <h3>Diff 摘要</h3>
+        <h3>文件动作</h3>
+        <dl className="fileDetailList">
+          <div>
+            <dt>路径</dt>
+            <dd title={selectedPath}>{selectedPath || '等待文件变更'}</dd>
+          </div>
+          <div>
+            <dt>类型</dt>
+            <dd>{selectedFile?.change === 'add' ? '新增' : selectedFile ? '修改' : '未选择'}</dd>
+          </div>
+        </dl>
         <pre className="miniCode"><code>{diffSummary}</code></pre>
-        <div className="workbenchActions">
-          <button type="button" onClick={() => void copySummary('summary')} disabled={Boolean(copyBusy)}>
-            {copyBusy === 'summary' ? '复制中' : '复制摘要'}
+        <div className="workbenchActions fileActionGrid">
+          <button type="button" onClick={() => selectedFile && onOpenPreview(selectedFile.label)} disabled={!selectedFile}>
+            预览
           </button>
-          <button type="button" onClick={() => void copySummary('entry')} disabled={Boolean(copyBusy)}>
-            {copyBusy === 'entry' ? '复制中' : '复制条目'}
+          <button type="button" onClick={() => void openFile()} disabled={openBusy || !selectedFile}>
+            {openBusy ? '打开中' : '打开'}
+          </button>
+          <button type="button" onClick={() => void copyFileInfo('path')} disabled={Boolean(copyBusy) || !selectedFile}>
+            {copyBusy === 'path' ? '复制中' : '复制路径'}
+          </button>
+          <button type="button" onClick={() => void copyFileInfo('summary')} disabled={Boolean(copyBusy)}>
+            {copyBusy === 'summary' ? '复制中' : '复制摘要'}
           </button>
         </div>
         {copyStatus && <p className="railStatus" role="status">{copyStatus}</p>}
@@ -4759,7 +4838,7 @@ function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => Pro
   );
 }
 
-function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
+function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRuntime; selectedFileLabel?: string }) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const [selectedPath, setSelectedPath] = useState('');
@@ -4871,6 +4950,19 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
       void loadFilePreview(runtime.files[0]);
     }
   }, [loadFilePreview, runtime.files, selectedPath]);
+
+  useEffect(() => {
+    if (!selectedFileLabel) {
+      return;
+    }
+
+    const nextFile = runtime.files.find((file) => (
+      file.label === selectedFileLabel || `${file.label} ${file.meta}`.includes(selectedFileLabel)
+    ));
+    if (nextFile && nextFile.label !== selectedPath) {
+      void loadFilePreview(nextFile);
+    }
+  }, [loadFilePreview, runtime.files, selectedFileLabel, selectedPath]);
 
   return (
     <>

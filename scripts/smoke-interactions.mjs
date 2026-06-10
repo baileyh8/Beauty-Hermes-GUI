@@ -351,6 +351,11 @@ try {
       findButton(tab, document.querySelector('[data-testid="right-workbench"]'))?.click();
       await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes(expected), `${tab} tab`);
       if (tab === '文件') {
+        for (const label of ['预览', '打开', '复制路径', '复制摘要']) {
+          if (!findButton(label, document.querySelector('[data-testid="right-workbench"]'))) {
+            throw new Error(`Files workbench should expose ${label} action.`);
+          }
+        }
         findButton('复制摘要', document.querySelector('[data-testid="right-workbench"]'))?.click();
         await waitFor(() => {
           const text = document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent || '';

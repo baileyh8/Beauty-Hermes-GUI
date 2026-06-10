@@ -6195,6 +6195,46 @@ textarea {
   white-space: nowrap;
 }
 
+.fileDetailList {
+  display: grid;
+  gap: 7px;
+  margin: 6px 0 10px;
+}
+
+.fileDetailList div {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+}
+
+.fileDetailList dt {
+  color: #9aa1aa;
+  font-size: 11px;
+}
+
+.fileDetailList dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #536071;
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileActionGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fileActionGrid button {
+  width: 100%;
+  justify-content: center;
+  white-space: nowrap;
+}
+
 .brandMark {
   overflow: hidden;
   border: 1px solid #dfe4ea;
