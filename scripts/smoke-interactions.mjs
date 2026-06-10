@@ -373,6 +373,17 @@ try {
     document.querySelector('.overlayBackdrop')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'command center keyboard test close');
 
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        command: 'echo activity-workbench 2>&1',
+        duration_s: 0.4,
+        output: 'activity-workbench',
+        session_id: 'smoke-activity',
+        tool_id: 'smoke-activity-tool',
+      },
+      type: 'tool.complete',
+    });
+
     await waitFor(() => document.querySelector('[data-testid="right-workbench"]'), 'right workbench');
     const workbenchChecks = [
       ['文件', '变更文件'],
@@ -412,6 +423,21 @@ try {
           openGatewayButton.click();
           await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('Gateway'), 'preview open gateway feedback');
         }
+      }
+      if (tab === '活动') {
+        await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('工具详情'), 'activity tool detail panel');
+        if (!findButton('复制详情', document.querySelector('[data-testid="right-workbench"]')) || !findButton('打开终端', document.querySelector('[data-testid="right-workbench"]'))) {
+          throw new Error('Activity workbench should expose copy details and open terminal actions.');
+        }
+        findButton('复制详情', document.querySelector('[data-testid="right-workbench"]'))?.click();
+        await waitFor(() => {
+          const text = document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent || '';
+          return text.includes('已复制') || text.includes('无法访问剪贴板') || text.includes('复制失败');
+        }, 'activity copy tool feedback');
+        findButton('打开终端', document.querySelector('[data-testid="right-workbench"]'))?.click();
+        await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('Hermes Gateway'), 'activity opens terminal');
+        findButton('活动', document.querySelector('[data-testid="right-workbench"]'))?.click();
+        await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('查看审批超时态'), 'activity restored after terminal action');
       }
     }
     findButton('查看审批超时态', document.querySelector('[data-testid="right-workbench"]'))?.click();

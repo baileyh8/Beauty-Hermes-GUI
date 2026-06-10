@@ -1134,13 +1134,37 @@ kbd {
 }
 
 .workbenchItem {
+  width: 100%;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: 9px;
   min-height: 32px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
   color: #2c3340;
   font-size: 13px;
+  text-align: left;
+}
+
+button.workbenchItem {
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+button.workbenchItem:hover,
+button.workbenchItem.selected {
+  border-color: #dfe6f4;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+button.workbenchItem:focus-visible {
+  outline: 2px solid rgba(47, 107, 234, 0.22);
+  outline-offset: 2px;
 }
 
 .workbenchItemText {
@@ -1170,6 +1194,15 @@ kbd {
   font-style: normal;
   line-height: 1.35;
   white-space: nowrap;
+}
+
+.toolDetailPanel {
+  display: grid;
+  gap: 8px;
+}
+
+.toolDetailCode {
+  max-height: 190px;
 }
 
 .doneMark,

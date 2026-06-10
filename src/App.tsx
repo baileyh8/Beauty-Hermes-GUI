@@ -137,6 +137,7 @@ interface ToolDisplayInfo {
 
 interface GatewayToolItem {
   detail: string;
+  details?: string;
   id: string;
   label: string;
   state: 'done' | 'running' | 'pending';
@@ -1938,6 +1939,7 @@ function useHermesRuntime(): HermesRuntime {
             const index = current.findIndex((item) => item.id === toolId || item.detail === text);
             const item: GatewayToolItem = {
               detail: text,
+              details: display.details,
               id: toolId,
               label: display.label,
               state: isComplete ? 'done' : 'running',
@@ -4630,7 +4632,13 @@ function Workbench({
         </button>
       </div>
 
-      {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} runtime={runtime} />}
+      {activeTab === 'activity' && (
+        <WorkbenchActivity
+          onOpenApproval={onOpenApproval}
+          onOpenTerminal={() => onTabChange('terminal')}
+          runtime={runtime}
+        />
+      )}
       {activeTab === 'files' && (
         <WorkbenchFiles
           files={runtime.files}
@@ -4647,11 +4655,49 @@ function Workbench({
 
 function WorkbenchActivity({
   onOpenApproval,
+  onOpenTerminal,
   runtime,
 }: {
   onOpenApproval: (variant: ApprovalVariant) => void;
+  onOpenTerminal: () => void;
   runtime: HermesRuntime;
 }) {
+  const [selectedToolId, setSelectedToolId] = useState('');
+  const [toolStatus, setToolStatus] = useState('');
+  const selectedTool = runtime.tools.find((tool) => tool.id === selectedToolId) || runtime.tools[0] || null;
+  const selectedToolDetails = selectedTool ? selectedTool.details || selectedTool.detail || selectedTool.label : '';
+
+  useEffect(() => {
+    if (!runtime.tools.some((tool) => tool.id === selectedToolId)) {
+      setSelectedToolId(runtime.tools[0]?.id || '');
+    }
+  }, [runtime.tools, selectedToolId]);
+
+  const copySelectedTool = async () => {
+    if (!selectedTool) {
+      setToolStatus('当前没有可复制的工具调用。');
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setToolStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText([
+        selectedTool.label,
+        selectedTool.detail,
+        selectedTool.value,
+        '',
+        selectedToolDetails,
+      ].filter(Boolean).join('\n'));
+      setToolStatus('工具详情已复制。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setToolStatus(`复制失败：${message}`);
+    }
+  };
+
   return (
     <>
       <section className="taskCard">
@@ -4666,12 +4712,48 @@ function WorkbenchActivity({
         <h3>工具调用</h3>
         {runtime.tools.length > 0 ? (
           runtime.tools.map((item) => (
-            <WorkbenchItem key={item.id} detail={item.detail} state={item.state} label={item.label} value={item.value} />
+            <WorkbenchItem
+              key={item.id}
+              active={selectedTool?.id === item.id}
+              detail={item.detail}
+              onSelect={() => {
+                setSelectedToolId(item.id);
+                setToolStatus('');
+              }}
+              state={item.state}
+              label={item.label}
+              value={item.value}
+            />
           ))
         ) : (
           <div className="railEmpty">工具调用会在运行任务时出现。</div>
         )}
       </section>
+      {selectedTool && (
+        <section className="railSection toolDetailPanel">
+          <h3>工具详情</h3>
+          <dl className="fileDetailList">
+            <div>
+              <dt>名称</dt>
+              <dd title={selectedTool.label}>{selectedTool.label}</dd>
+            </div>
+            <div>
+              <dt>状态</dt>
+              <dd>{selectedTool.state === 'running' ? '运行中' : selectedTool.value}</dd>
+            </div>
+          </dl>
+          <pre className="miniCode toolDetailCode"><code>{selectedToolDetails}</code></pre>
+          <div className="workbenchActions fileActionGrid">
+            <button type="button" onClick={() => void copySelectedTool()}>
+              复制详情
+            </button>
+            <button type="button" onClick={onOpenTerminal}>
+              打开终端
+            </button>
+          </div>
+          {toolStatus && <p className="railStatus" role="status">{toolStatus}</p>}
+        </section>
+      )}
       {runtime.pendingApproval ? (
         <section className="approvalCard">
           <Shield size={17} />
@@ -5082,24 +5164,42 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
 }
 
 function WorkbenchItem({
+  active,
   detail,
+  onSelect,
   state,
   label,
   value,
 }: {
+  active?: boolean;
   detail?: string;
+  onSelect?: () => void;
   state: 'done' | 'running' | 'pending';
   label: string;
   value: string;
 }) {
-  return (
-    <div className="workbenchItem">
+  const content = (
+    <>
       <span className={`${state}Mark`} />
       <div className="workbenchItemText">
         <strong>{label}</strong>
         {detail && <small>{detail}</small>}
       </div>
       <em>{value}</em>
+    </>
+  );
+
+  if (onSelect) {
+    return (
+      <button className={active ? 'workbenchItem selected' : 'workbenchItem'} type="button" onClick={onSelect}>
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className="workbenchItem">
+      {content}
     </div>
   );
 }
