@@ -420,6 +420,11 @@ kbd {
   background: #e9edf5;
 }
 
+.rowActions button.active {
+  background: #eaf1ff;
+  color: var(--primary);
+}
+
 .sidebarFooter {
   display: grid;
   grid-template-columns: 1fr 1fr;

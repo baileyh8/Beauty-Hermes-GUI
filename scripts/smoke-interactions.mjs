@@ -121,6 +121,7 @@ try {
   await client.send('Runtime.enable');
   await evaluate(client, `(() => {
     localStorage.removeItem('beauty-hermes-ui-density');
+    localStorage.removeItem('beauty-hermes-pinned-sessions');
     localStorage.removeItem('beauty-hermes-project-configs');
     localStorage.removeItem('beauty-hermes-ui-theme');
     window.setTimeout(() => window.location.reload(), 0);
@@ -362,6 +363,39 @@ try {
           || document.querySelector('.toastNotice')?.textContent?.includes('已打开')
           || document.querySelector('.toastNotice')?.textContent?.includes('打开会话失败'),
         'session selection toast feedback',
+      );
+    }
+
+    const sidebarSection = (title) => Array.from(document.querySelectorAll('.navSection'))
+      .find((section) => section.querySelector('h2')?.textContent?.includes(title));
+    const firstRecentRow = sidebarSection('最近')?.querySelector('.sessionRow');
+    const firstPinButton = firstRecentRow?.querySelector('.rowActions button[aria-label="置顶"]');
+    if (firstRecentRow && firstPinButton) {
+      const pinnedTitle = firstRecentRow.querySelector('.sessionText strong')?.textContent?.trim();
+      const pinnedId = firstRecentRow.querySelector('.sessionMain[data-session-id]')?.getAttribute('data-session-id');
+      if (!pinnedTitle || !pinnedId) {
+        throw new Error('Recent session row should expose title and session id before pinning.');
+      }
+      firstPinButton.click();
+      await waitFor(
+        () => sidebarSection('置顶')?.textContent?.includes(pinnedTitle),
+        'sidebar pinned section receives session',
+      );
+      await waitFor(
+        () => JSON.parse(localStorage.getItem('beauty-hermes-pinned-sessions') || '[]').includes(pinnedId),
+        'sidebar pinned sessions persisted',
+      );
+      if (sidebarSection('最近')?.textContent?.includes(pinnedTitle)) {
+        throw new Error('Pinned session should move out of recent list.');
+      }
+      const unpinButton = sidebarSection('置顶')?.querySelector('.rowActions button[aria-label="取消置顶"]');
+      if (!unpinButton) {
+        throw new Error('Pinned session should expose unpin action.');
+      }
+      unpinButton.click();
+      await waitFor(
+        () => !(sidebarSection('置顶')?.textContent || '').includes(pinnedTitle),
+        'sidebar unpin removes pinned session',
       );
     }
 
@@ -1216,6 +1250,7 @@ try {
         'project-sidebar-targeting',
         'project-card-real-actions',
         'session-selection-feedback',
+        'sidebar-pinned-sessions',
         'skill-detail-actions',
         'skill-command-center-deeplink',
         'skill-copy-feedback',

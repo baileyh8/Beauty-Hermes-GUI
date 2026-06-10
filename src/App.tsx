@@ -39,6 +39,7 @@ import Network from 'lucide-react/dist/esm/icons/network.js';
 import PanelRightClose from 'lucide-react/dist/esm/icons/panel-right-close.js';
 import PanelRightOpen from 'lucide-react/dist/esm/icons/panel-right-open.js';
 import PauseCircle from 'lucide-react/dist/esm/icons/pause-circle.js';
+import Pin from 'lucide-react/dist/esm/icons/pin.js';
 import Play from 'lucide-react/dist/esm/icons/play.js';
 import Plus from 'lucide-react/dist/esm/icons/plus.js';
 import Puzzle from 'lucide-react/dist/esm/icons/puzzle.js';
@@ -104,6 +105,7 @@ interface SidebarItem {
 
 const preferenceStorageKeys = {
   density: 'beauty-hermes-ui-density',
+  pinnedSessions: 'beauty-hermes-pinned-sessions',
   projects: 'beauty-hermes-project-configs',
   theme: 'beauty-hermes-ui-theme',
 } as const;
@@ -604,8 +606,6 @@ interface HermesOnboardingConfig {
   source?: string;
   toolsets?: string[];
 }
-
-const pinnedSessions: SidebarItem[] = [];
 
 const recentSessions: SidebarItem[] = [];
 
@@ -2980,6 +2980,25 @@ function writeStoredProjects(projects: HermesProjectConfig[]) {
   }
 }
 
+function readStoredPinnedSessionIds(): string[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(preferenceStorageKeys.pinnedSessions);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function readStoredDensity(): UiDensity {
   if (typeof window === 'undefined') {
     return 'comfortable';
@@ -3029,6 +3048,7 @@ function App() {
   const [deniedRecovery, setDeniedRecovery] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [hiddenSidebarKeys, setHiddenSidebarKeys] = useState<string[]>([]);
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<string[]>(readStoredPinnedSessionIds);
   const [pendingSidebarDeleteKey, setPendingSidebarDeleteKey] = useState('');
   const [selectingSessionId, setSelectingSessionId] = useState('');
   const [selectedProjectKey, setSelectedProjectKey] = useState('project:local');
@@ -3042,6 +3062,10 @@ function App() {
   useEffect(() => {
     writeStoredPreference(preferenceStorageKeys.theme, uiTheme);
   }, [uiTheme]);
+
+  useEffect(() => {
+    writeStoredPreference(preferenceStorageKeys.pinnedSessions, JSON.stringify(pinnedSessionIds));
+  }, [pinnedSessionIds]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3091,9 +3115,16 @@ function App() {
   }, [runtime.recentSessions, runtime.selectedStoredSessionId]);
   const currentMeta = surface === 'chat' ? { ...surfaceMeta.chat, title: chatTitle } : surfaceMeta[surface];
   const projectItems = useMemo(() => projectSidebarItems(runtime, selectedProjectKey), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions, selectedProjectKey]);
+  const pinnedRecentItems = useMemo(
+    () => pinnedSessionIds
+      .map((id) => runtime.recentSessions.find((item) => item.id === id))
+      .filter((item): item is SidebarItem => Boolean(item))
+      .filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
+    [hiddenSidebarKeys, pinnedSessionIds, runtime.recentSessions],
+  );
   const visibleRecentItems = useMemo(
-    () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
-    [hiddenSidebarKeys, runtime.recentSessions],
+    () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item)) && (!item.id || !pinnedSessionIds.includes(item.id))),
+    [hiddenSidebarKeys, pinnedSessionIds, runtime.recentSessions],
   );
   const visibleProjectItems = useMemo(
     () => projectItems.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
@@ -3105,6 +3136,18 @@ function App() {
     setHiddenSidebarKeys((current) => current.includes(key) ? current : [...current, key]);
     showNotice(`${item.title} 已隐藏`);
   }, [showNotice]);
+  const handleTogglePinItem = useCallback((item: SidebarItem) => {
+    if (!item.id) {
+      showNotice('只有真实会话可以置顶');
+      return;
+    }
+
+    setPinnedSessionIds((current) => {
+      const pinned = current.includes(item.id!);
+      return pinned ? current.filter((id) => id !== item.id) : [item.id!, ...current].slice(0, 8);
+    });
+    showNotice(`${item.title} ${pinnedSessionIds.includes(item.id) ? '已取消置顶' : '已置顶'}`);
+  }, [pinnedSessionIds, showNotice]);
   const handleArchiveItem = useCallback((item: SidebarItem) => {
     if (!item.id) {
       hideSidebarItem(item);
@@ -3112,7 +3155,10 @@ function App() {
     }
 
     void runtime.archiveSession(item)
-      .then(() => showNotice(`${item.title} 已归档`))
+      .then(() => {
+        setPinnedSessionIds((current) => current.filter((id) => id !== item.id));
+        showNotice(`${item.title} 已归档`);
+      })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         showNotice(`归档失败：${message}`);
@@ -3133,7 +3179,10 @@ function App() {
     }
 
     void runtime.deleteSession(item)
-      .then(() => showNotice(`${item.title} 已删除`))
+      .then(() => {
+        setPinnedSessionIds((current) => current.filter((id) => id !== item.id));
+        showNotice(`${item.title} 已删除`);
+      })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         showNotice(`删除失败：${message}`);
@@ -3215,12 +3264,15 @@ function App() {
           setCommandQuery(item.title);
           setCommandOpen(true);
         }}
-        recentItems={visibleRecentItems}
-        projectItems={visibleProjectItems}
         pendingDeleteKey={pendingSidebarDeleteKey}
+        pinnedItems={pinnedRecentItems}
+        pinnedSessionIds={pinnedSessionIds}
+        projectItems={visibleProjectItems}
+        recentItems={visibleRecentItems}
         selectedStoredSessionId={runtime.selectedStoredSessionId}
         selectingSessionId={selectingSessionId}
         statusText={runtime.connectionLabel}
+        onTogglePinItem={handleTogglePinItem}
       />
 
       <main className={rightOpen && showWorkbench ? 'content withWorkbench' : 'content'}>
@@ -3436,7 +3488,10 @@ function Sidebar({
   onDeleteItem,
   onMoreItem,
   onSelectSession,
+  onTogglePinItem,
   pendingDeleteKey,
+  pinnedItems,
+  pinnedSessionIds,
   projectItems,
   recentItems,
   selectedStoredSessionId,
@@ -3455,7 +3510,10 @@ function Sidebar({
   onDeleteItem: (item: SidebarItem) => void;
   onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
+  onTogglePinItem: (item: SidebarItem) => void;
   pendingDeleteKey: string;
+  pinnedItems: SidebarItem[];
+  pinnedSessionIds: string[];
   projectItems: SidebarItem[];
   recentItems: SidebarItem[];
   selectedStoredSessionId: null | string;
@@ -3498,13 +3556,16 @@ function Sidebar({
       <nav className="sidebarScroll" aria-label="会话导航">
         <SidebarSection
           title="置顶"
-          items={pinnedSessions}
+          emptyText="暂无置顶会话"
+          items={pinnedItems}
           onOpenChat={() => onSurfaceChange('chat')}
           onSelectSession={onSelectSession}
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
+          onTogglePinItem={onTogglePinItem}
           pendingDeleteKey={pendingDeleteKey}
+          pinnedSessionIds={pinnedSessionIds}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
           selectingSessionId={selectingSessionId}
         />
@@ -3526,7 +3587,9 @@ function Sidebar({
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
+          onTogglePinItem={onTogglePinItem}
           pendingDeleteKey={pendingDeleteKey}
+          pinnedSessionIds={pinnedSessionIds}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
           selectingSessionId={selectingSessionId}
         />
@@ -3591,7 +3654,9 @@ function SidebarSection({
   onOpenChat,
   onMoreItem,
   onSelectSession,
+  onTogglePinItem,
   pendingDeleteKey,
+  pinnedSessionIds,
   selectedSessionId,
   selectingSessionId,
 }: {
@@ -3604,7 +3669,9 @@ function SidebarSection({
   onOpenChat: () => void;
   onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
+  onTogglePinItem: (item: SidebarItem) => void;
   pendingDeleteKey: string;
+  pinnedSessionIds: string[];
   selectedSessionId: null | string;
   selectingSessionId: string;
 }) {
@@ -3633,6 +3700,7 @@ function SidebarSection({
           active={item.id ? item.id === selectedSessionId : !selectedSessionId && !muted && index === 0}
           busy={Boolean(item.id && item.id === selectingSessionId)}
           confirmingDelete={pendingDeleteKey === sidebarItemKey(item)}
+          pinned={Boolean(item.id && pinnedSessionIds.includes(item.id))}
           onSelect={() => {
             onOpenChat();
             if (item.id) {
@@ -3642,6 +3710,7 @@ function SidebarSection({
           onArchive={() => onArchiveItem(item)}
           onDelete={() => onDeleteItem(item)}
           onMore={() => onMoreItem(item)}
+          onPin={() => onTogglePinItem(item)}
         />
       ))}
     </section>
@@ -3693,9 +3762,11 @@ function SessionRow({
   busy,
   confirmingDelete,
   muted,
+  pinned,
   onArchive,
   onDelete,
   onMore,
+  onPin,
   onSelect,
 }: {
   item: SidebarItem;
@@ -3703,9 +3774,11 @@ function SessionRow({
   busy?: boolean;
   confirmingDelete?: boolean;
   muted?: boolean;
+  pinned?: boolean;
   onArchive?: () => void;
   onDelete?: () => void;
   onMore?: () => void;
+  onPin?: () => void;
   onSelect: () => void;
 }) {
   const secondaryText = confirmingDelete
@@ -3722,6 +3795,21 @@ function SessionRow({
         </span>
       </button>
       <div className="rowActions" aria-label="会话操作">
+        {onPin && (
+          <button
+            className={pinned ? 'active' : undefined}
+            type="button"
+            aria-label={pinned ? '取消置顶' : '置顶'}
+            title={pinned ? '取消置顶' : '置顶'}
+            disabled={busy}
+            onClick={(event) => {
+              event.stopPropagation();
+              onPin();
+            }}
+          >
+            <Pin size={14} />
+          </button>
+        )}
         <button
           type="button"
           aria-label="归档"
