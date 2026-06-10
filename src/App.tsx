@@ -541,6 +541,21 @@ interface HermesMcpServerInfo {
   url?: string;
 }
 
+interface HermesFilePreviewInfo {
+  data_url?: string;
+  ext?: string;
+  kind: 'html' | 'image' | 'text' | 'unsupported';
+  mime?: string;
+  name?: string;
+  ok?: boolean;
+  path?: string;
+  requested_path?: string;
+  size?: number;
+  source?: string;
+  text?: string;
+  truncated?: boolean;
+}
+
 type OnboardingMode = 'local' | 'remote' | 'status';
 
 interface HermesOnboardingConfig {
@@ -1478,7 +1493,7 @@ function useHermesRuntime(): HermesRuntime {
     }
 
     if (info?.cwd) {
-      setCwd(compactCwd(info.cwd));
+      setCwd(info.cwd);
     }
 
     if (nextPercent !== null) {
@@ -4747,15 +4762,49 @@ function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => Pro
 function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
-  const previewText = runtime.connection?.baseUrl
-    ? `Gateway: ${runtime.connection.baseUrl}`
-    : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
+  const [selectedPath, setSelectedPath] = useState('');
+  const [preview, setPreview] = useState<HermesFilePreviewInfo | null>(null);
+  const selectedFile = runtime.files.find((file) => file.label === selectedPath) || runtime.files[0] || null;
+  const previewText = selectedFile
+    ? `${selectedFile.label} · ${selectedFile.meta}`
+    : runtime.connection?.baseUrl
+      ? `Gateway: ${runtime.connection.baseUrl}`
+      : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
+  const loadFilePreview = useCallback(async (file: GatewayFileItem | null = selectedFile) => {
+    if (!file) {
+      setPreview(null);
+      setStatus('当前会话还没有可预览文件。');
+      return;
+    }
+
+    try {
+      setBusy(true);
+      setStatus('');
+      const result = await runtime.apiRequest<HermesFilePreviewInfo>({
+        path: `/api/files/preview?path=${encodeURIComponent(file.label)}&cwd=${encodeURIComponent(runtime.cwd || '')}`,
+        timeoutMs: 15000,
+      });
+      setPreview(result);
+      setSelectedPath(file.label);
+      setStatus(`${result.name || file.label} 预览已加载。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setPreview(null);
+      setStatus(`预览失败：${message}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [runtime, selectedFile]);
   const refreshPreview = async () => {
     try {
       setBusy(true);
       setStatus('');
       await runtime.refreshInventory();
-      setStatus(runtime.connection?.baseUrl ? '预览状态已刷新。' : '已刷新，本机 Gateway 暂无可打开地址。');
+      if (selectedFile) {
+        await loadFilePreview(selectedFile);
+      } else {
+        setStatus(runtime.connection?.baseUrl ? '预览状态已刷新。' : '已刷新，本机 Gateway 暂无可打开地址。');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`刷新失败：${message}`);
@@ -4772,22 +4821,111 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
     const previewWindow = window.open(runtime.connection.baseUrl, '_blank', 'noopener,noreferrer');
     setStatus(previewWindow ? 'Gateway 已在新窗口打开。' : 'Gateway 窗口可能被拦截。');
   };
+  const openPreviewFile = async () => {
+    if (!selectedFile) {
+      setStatus('当前没有可打开文件。');
+      return;
+    }
+
+    try {
+      setBusy(true);
+      await runtime.apiRequest({
+        body: {
+          cwd: runtime.cwd,
+          path: selectedFile.label,
+        },
+        method: 'POST',
+        path: '/api/files/open',
+        timeoutMs: 15000,
+      });
+      setStatus('文件已交给系统打开。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`打开失败：${message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copyPreviewPath = async () => {
+    const value = preview?.path || selectedFile?.label || '';
+    if (!value) {
+      setStatus('当前没有可复制路径。');
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(value);
+      setStatus('文件路径已复制。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`复制失败：${message}`);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedPath && runtime.files.length > 0) {
+      void loadFilePreview(runtime.files[0]);
+    }
+  }, [loadFilePreview, runtime.files, selectedPath]);
 
   return (
     <>
       <section className="previewPanel">
-        <div className="previewEmpty">
-          <Eye size={22} />
-          <strong>暂无预览产物</strong>
-          <span>{previewText}</span>
-        </div>
+        {preview?.kind === 'image' && preview.data_url ? (
+          <div className="previewMediaFrame">
+            <img src={preview.data_url} alt={preview.name || selectedFile?.label || '预览图片'} />
+          </div>
+        ) : preview?.kind === 'html' ? (
+          <iframe className="previewHtmlFrame" sandbox="" srcDoc={preview.text || ''} title={preview.name || 'HTML 预览'} />
+        ) : preview?.kind === 'text' ? (
+          <pre className="previewTextFrame"><code>{preview.text || ''}</code></pre>
+        ) : (
+          <div className="previewEmpty">
+            <Eye size={22} />
+            <strong>{selectedFile ? '选择文件预览' : '暂无预览产物'}</strong>
+            <span>{previewText}</span>
+          </div>
+        )}
       </section>
       <section className="railSection">
         <h3>预览产物</h3>
         <p>{previewText}</p>
-        <div className="workbenchActions">
+        {runtime.files.length > 0 && (
+          <div className="previewFilePicker">
+            {runtime.files.slice(0, 8).map((file) => (
+              <button
+                className={selectedFile?.label === file.label ? 'selected' : undefined}
+                key={`${file.label}-${file.meta}`}
+                type="button"
+                onClick={() => void loadFilePreview(file)}
+              >
+                <File size={14} />
+                <span>{file.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {preview && (
+          <div className="previewMeta">
+            <span>{preview.kind}</span>
+            <span>{preview.mime || 'unknown'}</span>
+            <span>{typeof preview.size === 'number' ? `${Math.ceil(preview.size / 1024)} KB` : 'size unknown'}</span>
+            {preview.truncated && <span>已截断</span>}
+          </div>
+        )}
+        <div className="workbenchActions previewActions">
           <button type="button" onClick={() => void refreshPreview()} disabled={busy}>
             {busy ? '刷新中' : '刷新'}
+          </button>
+          <button type="button" onClick={() => void openPreviewFile()} disabled={busy || !selectedFile}>
+            打开文件
+          </button>
+          <button type="button" onClick={() => void copyPreviewPath()} disabled={busy || !selectedFile}>
+            复制路径
           </button>
           <button
             type="button"

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -382,6 +382,71 @@ function safeReadJson(filePath) {
   } catch {
     return null;
   }
+}
+
+function expandLocalPath(value) {
+  const raw = String(value || '').trim().replace(/^@+/, '');
+  if (!raw) {
+    return '';
+  }
+  if (raw === '~') {
+    return os.homedir();
+  }
+  if (raw.startsWith('~/')) {
+    return path.join(os.homedir(), raw.slice(2));
+  }
+  return raw;
+}
+
+function resolveLocalPreviewPath(rawPath, cwd = '') {
+  const target = expandLocalPath(rawPath);
+  if (!target) {
+    return '';
+  }
+
+  if (path.isAbsolute(target)) {
+    return path.normalize(target);
+  }
+
+  const baseCandidates = [
+    expandLocalPath(cwd),
+    process.env.BEAUTY_HERMES_WORKDIR,
+    process.cwd(),
+    resolveHermesHome(),
+  ].filter(Boolean);
+  const candidates = baseCandidates.map((base) => path.resolve(base, target));
+  return candidates.find((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) || candidates[0] || path.resolve(target);
+}
+
+function mimeFromPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const table = {
+    '.css': 'text/css',
+    '.gif': 'image/gif',
+    '.htm': 'text/html',
+    '.html': 'text/html',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.js': 'text/javascript',
+    '.json': 'application/json',
+    '.md': 'text/markdown',
+    '.mjs': 'text/javascript',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.ts': 'text/typescript',
+    '.tsx': 'text/typescript',
+    '.txt': 'text/plain',
+    '.webp': 'image/webp',
+    '.yaml': 'text/yaml',
+    '.yml': 'text/yaml',
+  };
+  return table[ext] || 'application/octet-stream';
 }
 
 function resolveHermesHome() {
@@ -1743,6 +1808,89 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps(result))
   return null;
 }
 
+async function localFilesApi(method, url, body) {
+  if (method === 'GET' && url.pathname === '/api/files/preview') {
+    const requestedPath = url.searchParams.get('path') || '';
+    const cwd = url.searchParams.get('cwd') || '';
+    const filePath = resolveLocalPreviewPath(requestedPath, cwd);
+    if (!filePath) {
+      throw new Error('File path is required');
+    }
+
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      throw new Error(`File not found: ${requestedPath}`);
+    }
+
+    if (!stat.isFile()) {
+      throw new Error(`Not a file: ${requestedPath}`);
+    }
+
+    const mime = mimeFromPath(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const base = {
+      ext,
+      mime,
+      name: path.basename(filePath),
+      path: filePath,
+      requested_path: requestedPath,
+      size: stat.size,
+      source: 'desktop-local-bridge',
+    };
+
+    if (mime.startsWith('image/') && stat.size <= 8 * 1024 * 1024) {
+      const data = fs.readFileSync(filePath);
+      return {
+        ...base,
+        data_url: `data:${mime};base64,${data.toString('base64')}`,
+        kind: 'image',
+        ok: true,
+      };
+    }
+
+    if (
+      mime.startsWith('text/')
+      || ['.cjs', '.jsx', '.log', '.py', '.rs', '.sh', '.toml', '.xml'].includes(ext)
+    ) {
+      const maxBytes = 240000;
+      return {
+        ...base,
+        kind: mime === 'text/html' ? 'html' : 'text',
+        ok: true,
+        text: safeReadText(filePath, maxBytes),
+        truncated: stat.size > maxBytes,
+      };
+    }
+
+    return {
+      ...base,
+      kind: 'unsupported',
+      ok: true,
+    };
+  }
+
+  if (method === 'POST' && url.pathname === '/api/files/open') {
+    const filePath = resolveLocalPreviewPath(body?.path || '', body?.cwd || '');
+    if (!filePath || !fs.existsSync(filePath)) {
+      throw new Error('File not found');
+    }
+    const error = await shell.openPath(filePath);
+    if (error) {
+      throw new Error(error);
+    }
+
+    return {
+      ok: true,
+      path: filePath,
+      source: 'desktop-local-bridge',
+    };
+  }
+
+  return null;
+}
+
 function walkFiles(root, matcher, limit = 120) {
   const files = [];
 
@@ -2351,6 +2499,7 @@ async function localApiFallback(request, error) {
     localMessagingApi,
     localOnboardingApi,
     localSettingsApi,
+    localFilesApi,
   ];
 
   for (const api of localApis) {

@@ -21,6 +21,7 @@ writeFileSync(
     '',
   ].join('\n'),
 );
+writeFileSync(join(hermesHome, 'preview-smoke.md'), '# Preview Smoke\n\n- file preview works\n');
 
 const hermesPython = existsSync(join(hermesAgentRepo, 'venv', 'bin', 'python'))
   ? join(hermesAgentRepo, 'venv', 'bin', 'python')
@@ -165,6 +166,7 @@ try {
   client = createCdpClient(wsUrl);
   await client.send('Runtime.enable');
   const result = await evaluate(client, `(${async () => {
+    const smokeHermesHome = '__SMOKE_HERMES_HOME__';
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const waitFor = async (predicate, label, timeout = 15000) => {
       const deadline = Date.now() + timeout;
@@ -338,6 +340,13 @@ try {
     });
     if (!onboardingCheck.message || onboardingCheck.ok !== true) {
       throw new Error('Onboarding local check did not report ready state');
+    }
+    const filePreview = await api({
+      path: `/api/files/preview?path=${encodeURIComponent('preview-smoke.md')}&cwd=${encodeURIComponent(smokeHermesHome)}`,
+      timeoutMs: 30000,
+    });
+    if (filePreview.kind !== 'text' || !filePreview.text?.includes('Preview Smoke') || !filePreview.path?.endsWith('preview-smoke.md')) {
+      throw new Error('File preview fallback did not return readable text content');
     }
     const onboardingLocal = await api({
       body: {
@@ -585,6 +594,7 @@ try {
       messaging: 'env-save-clear-onboarding',
       model: 'saved',
       onboarding: 'read-save-check',
+      preview: 'file-read',
       profiles: 'create-edit-soul-rename-delete',
       sessions: 'list-search-rename-archive-export-clean-delete',
       system: 'status-gateway-update-check',
@@ -592,7 +602,7 @@ try {
       toolset: firstToolset.name,
       toolsetConfig: 'provider-env',
     };
-  }})()`);
+  }})()`.replace('__SMOKE_HERMES_HOME__', hermesHome.replace(/\\/g, '\\\\').replace(/'/g, "\\'")));
 
   console.log(`Settings bridge smoke passed. ${JSON.stringify({ hermesHome, ...result })}`);
 } catch (error) {

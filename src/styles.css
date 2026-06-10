@@ -6094,6 +6094,107 @@ textarea {
   line-height: 1.45;
 }
 
+.previewMediaFrame,
+.previewHtmlFrame,
+.previewTextFrame {
+  width: 100%;
+  min-height: 220px;
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  border: 1px solid #dfe5ee;
+  border-radius: 14px;
+  background: #f7f9fc;
+}
+
+.previewMediaFrame {
+  display: grid;
+  place-items: center;
+  padding: 12px;
+}
+
+.previewMediaFrame img {
+  max-width: 100%;
+  max-height: min(48vh, 480px);
+  border-radius: 10px;
+  object-fit: contain;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+}
+
+.previewHtmlFrame {
+  height: min(52vh, 520px);
+  background: #fff;
+}
+
+.previewTextFrame {
+  margin: 0;
+  padding: 12px;
+  color: #344054;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.previewFilePicker {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+}
+
+.previewFilePicker button {
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #536071;
+  font-size: 12px;
+  text-align: left;
+}
+
+.previewFilePicker button:hover,
+.previewFilePicker button.selected {
+  border-color: #dfe6f4;
+  background: #f5f7fb;
+  color: #1f2937;
+}
+
+.previewFilePicker button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previewMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.previewMeta span {
+  padding: 3px 7px;
+  border-radius: 8px;
+  background: #f1f4f8;
+  color: #667085;
+  font-size: 11px;
+}
+
+.previewActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.previewActions button {
+  width: 100%;
+  justify-content: center;
+  white-space: nowrap;
+}
+
 .brandMark {
   overflow: hidden;
   border: 1px solid #dfe4ea;

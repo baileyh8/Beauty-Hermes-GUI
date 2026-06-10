@@ -362,6 +362,11 @@ try {
         await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('停止'), 'terminal stop feedback');
       }
       if (tab === '预览') {
+        for (const label of ['打开文件', '复制路径']) {
+          if (!findButton(label, document.querySelector('[data-testid="right-workbench"]'))) {
+            throw new Error(`Preview workbench should expose ${label} action.`);
+          }
+        }
         findButton('刷新', document.querySelector('[data-testid="right-workbench"]'))?.click();
         await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('刷新'), 'preview refresh feedback');
         const openGatewayButton = findButton('打开 Gateway', document.querySelector('[data-testid="right-workbench"]'));
