@@ -2734,6 +2734,85 @@ kbd {
   line-height: 1.5;
 }
 
+.onboardingConfigGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 12px;
+  text-align: left;
+}
+
+.onboardingConfigGrid label {
+  display: grid;
+  gap: 6px;
+}
+
+.onboardingConfigGrid label.muted {
+  opacity: 0.64;
+}
+
+.onboardingConfigGrid span,
+.onboardingToggle span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.onboardingToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 12px;
+  text-align: left;
+}
+
+.onboardingToggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--blue);
+}
+
+.onboardingChecklist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.onboardingChecklist span {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: #f4f6fa;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.onboardingChecklist .ok {
+  color: #137a3a;
+  background: #ecfdf3;
+}
+
+.onboardingChecklist .warn {
+  color: #99620f;
+  background: #fff7df;
+}
+
+.onboardingActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.onboardingStatus {
+  margin: 0 0 12px;
+  text-align: left;
+}
+
 .primaryButtonInline,
 .secondaryButton {
   min-height: 36px;
@@ -6156,6 +6235,57 @@ textarea {
   border-color: #b8c9ff;
   background: #f3f6ff;
   box-shadow: inset 0 0 0 1px rgba(47, 103, 232, 0.08);
+}
+
+.onboardingSurface {
+  padding: 18px 24px;
+  align-items: center;
+}
+
+.onboardingPanel {
+  width: min(740px, 100%);
+  padding: 20px 22px;
+}
+
+.onboardingPanel .brandMark {
+  width: 42px;
+  height: 42px;
+  margin-bottom: 10px;
+  border-radius: 14px;
+}
+
+.onboardingPanel h2 {
+  font-size: 20px;
+}
+
+.onboardingPanel p {
+  margin: 6px 0 14px;
+  font-size: 13px;
+}
+
+.onboardingPanel .choiceGrid {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.onboardingPanel .choiceGrid button {
+  min-height: 112px;
+  padding: 12px;
+  border-radius: 14px;
+}
+
+.onboardingPanel .choiceGrid svg {
+  width: 19px;
+  height: 19px;
+}
+
+.onboardingPanel .onboardingConfigGrid {
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.onboardingPanel .onboardingChecklist {
+  margin-bottom: 10px;
 }
 
 /* Runtime interaction polish: closer to Codex's text-first transcript. */

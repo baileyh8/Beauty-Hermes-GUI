@@ -387,6 +387,38 @@ function resolveHermesHome() {
   return process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
 }
 
+function readDesktopConfig() {
+  const hermesHome = resolveHermesHome();
+  const configPath = path.join(hermesHome, 'desktop.json');
+  const value = safeReadJson(configPath);
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function writeDesktopConfig(nextConfig) {
+  const hermesHome = resolveHermesHome();
+  const configPath = path.join(hermesHome, 'desktop.json');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, { mode: 0o600 });
+  return configPath;
+}
+
+async function fetchText(url, options = {}, timeoutMs = 3000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      cache: 'no-store',
+      ...options,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    return { ok: response.ok, status: response.status, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function resolveHermesAgentRepo() {
   const candidates = [
     process.env.HERMES_AGENT_REPO,
@@ -1171,6 +1203,136 @@ else:
 print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": ok, "state": item.get("state"), "message": message, "source": "desktop-local-bridge"}))
 `, { id }, 20000);
     }
+  }
+
+  return null;
+}
+
+async function localOnboardingApi(method, url, body) {
+  const summary = () => {
+    const inventory = readHermesInventory();
+    const desktopConfig = readDesktopConfig();
+    const mode = desktopConfig.connectionMode === 'remote' ? 'remote' : 'local';
+    return {
+      mode,
+      remote_url: typeof desktopConfig.remoteGatewayUrl === 'string' ? desktopConfig.remoteGatewayUrl : '',
+      auto_start_gateway: desktopConfig.autoStartGateway !== false,
+      desktop_config_path: path.join(resolveHermesHome(), 'desktop.json'),
+      hermes_home: inventory.diagnostics.hermesHome,
+      config_exists: inventory.diagnostics.configExists,
+      agent_repo_exists: inventory.diagnostics.agentRepoExists,
+      gateway_pid: inventory.diagnostics.gatewayPid,
+      gateway_state: inventory.diagnostics.gatewayState,
+      provider: inventory.config.provider,
+      model: inventory.config.defaultModel,
+      toolsets: inventory.config.toolsets,
+      source: 'desktop-local-bridge',
+    };
+  };
+
+  if (method === 'GET' && url.pathname === '/api/onboarding/config') {
+    return summary();
+  }
+
+  if (method === 'POST' && url.pathname === '/api/onboarding/check') {
+    const mode = body?.mode === 'remote' ? 'remote' : 'local';
+    const remoteUrl = String(body?.remote_url || '').trim();
+    const result = summary();
+
+    if (mode === 'remote') {
+      if (!remoteUrl) {
+        return { ...result, ok: false, message: '请输入远程 Gateway URL。' };
+      }
+      if (!/^https?:\/\//i.test(remoteUrl)) {
+        return { ...result, ok: false, message: '远程 Gateway URL 需要以 http:// 或 https:// 开头。' };
+      }
+
+      try {
+        const health = await fetchText(new URL('/api/status', remoteUrl).toString(), { headers: { Accept: 'application/json' } }, 2500);
+        return {
+          ...result,
+          ok: health.ok,
+          mode,
+          remote_url: remoteUrl,
+          message: health.ok ? '远程 Gateway 可以访问。' : `远程 Gateway 返回 HTTP ${health.status}。`,
+        };
+      } catch (error) {
+        return {
+          ...result,
+          ok: false,
+          mode,
+          remote_url: remoteUrl,
+          message: `远程 Gateway 检查失败：${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+
+    const localReady = Boolean(result.config_exists && (result.agent_repo_exists || resolveHermesPython()));
+    return {
+      ...result,
+      ok: localReady,
+      message: localReady
+        ? `本机 Hermes 已就绪${result.gateway_pid ? `，Gateway pid ${result.gateway_pid}` : '，Gateway 可启动'}。`
+        : '本机 Hermes 配置或 agent repo 不完整，请进入诊断修复。',
+    };
+  }
+
+  if (method === 'PUT' && url.pathname === '/api/onboarding/config') {
+    const mode = body?.mode === 'remote' ? 'remote' : 'local';
+    const remoteUrl = String(body?.remote_url || '').trim();
+    const provider = String(body?.provider || '').trim();
+    const model = String(body?.model || '').trim();
+    const autoStartGateway = body?.auto_start_gateway !== false;
+
+    if (mode === 'remote' && remoteUrl && !/^https?:\/\//i.test(remoteUrl)) {
+      throw new Error('Remote gateway URL must start with http:// or https://');
+    }
+
+    const current = readDesktopConfig();
+    const configPath = writeDesktopConfig({
+      ...current,
+      autoStartGateway,
+      connectionMode: mode,
+      remoteGatewayUrl: remoteUrl,
+      updatedAt: new Date().toISOString(),
+    });
+
+    let modelResult = null;
+    if (provider && model) {
+      modelResult = await runHermesPython(`
+import json, sys
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli.config import load_config, save_config
+provider = str(payload.get("provider") or "").strip()
+model = str(payload.get("model") or "").strip()
+if not provider or not model:
+    raise SystemExit("provider and model are required")
+cfg = load_config()
+model_cfg = cfg.get("model", {})
+if not isinstance(model_cfg, dict):
+    model_cfg = {}
+model_cfg["provider"] = provider
+model_cfg["default"] = model
+model_cfg["name"] = model
+cfg["model"] = model_cfg
+save_config(cfg)
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"provider": provider, "model": model}))
+`, { provider, model }, 20000);
+    }
+
+    return {
+      ...summary(),
+      ok: true,
+      desktop_config_path: configPath,
+      mode,
+      remote_url: remoteUrl,
+      auto_start_gateway: autoStartGateway,
+      provider: modelResult?.provider || provider || summary().provider,
+      model: modelResult?.model || model || summary().model,
+      message: mode === 'remote'
+        ? '连接配置已保存。远程接入需要在集成页确认凭据和 token。'
+        : '本机 Hermes 启动配置已保存。',
+    };
   }
 
   return null;
@@ -2106,6 +2268,7 @@ async function localApiFallback(request, error) {
     localSkillsApi,
     localCronApi,
     localMessagingApi,
+    localOnboardingApi,
     localSettingsApi,
   ];
 

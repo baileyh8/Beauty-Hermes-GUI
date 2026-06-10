@@ -541,6 +541,26 @@ interface HermesMcpServerInfo {
   url?: string;
 }
 
+type OnboardingMode = 'local' | 'remote' | 'status';
+
+interface HermesOnboardingConfig {
+  agent_repo_exists?: boolean;
+  auto_start_gateway?: boolean;
+  config_exists?: boolean;
+  desktop_config_path?: string;
+  gateway_pid?: null | number;
+  gateway_state?: string;
+  hermes_home?: string;
+  message?: string;
+  mode?: 'local' | 'remote';
+  model?: string;
+  ok?: boolean;
+  provider?: string;
+  remote_url?: string;
+  source?: string;
+  toolsets?: string[];
+}
+
 const pinnedSessions: SidebarItem[] = [];
 
 const recentSessions: SidebarItem[] = [];
@@ -2882,6 +2902,7 @@ function App() {
         {surface === 'diagnostics' && <DiagnosticsSurface runtime={runtime} onOpenPermission={() => setApprovalVariant('permission')} />}
         {surface === 'onboarding' && (
           <OnboardingSurface
+            runtime={runtime}
             onFinish={(target) => {
               if (target === 'integrations') {
                 setSettingsSection('integrations');
@@ -8577,9 +8598,114 @@ function DiagnosticCard({
   );
 }
 
-function OnboardingSurface({ onFinish }: { onFinish: (target: 'chat' | 'diagnostics' | 'integrations') => void }) {
-  const [selectedMode, setSelectedMode] = useState<'local' | 'remote' | 'status'>('local');
+function OnboardingSurface({
+  runtime,
+  onFinish,
+}: {
+  runtime: HermesRuntime;
+  onFinish: (target: 'chat' | 'diagnostics' | 'integrations') => void;
+}) {
+  const [selectedMode, setSelectedMode] = useState<OnboardingMode>('local');
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [providerDraft, setProviderDraft] = useState('');
+  const [modelDraft, setModelDraft] = useState('');
+  const [autoStartGateway, setAutoStartGateway] = useState(true);
+  const [onboardingConfig, setOnboardingConfig] = useState<HermesOnboardingConfig | null>(null);
+  const [onboardingBusy, setOnboardingBusy] = useState('');
+  const [onboardingStatus, setOnboardingStatus] = useState('');
   const finishTarget = selectedMode === 'remote' ? 'integrations' : selectedMode === 'status' ? 'diagnostics' : 'chat';
+  const config = runtime.inventory?.config;
+  const diagnostics = runtime.inventory?.diagnostics;
+  const apiRequest = runtime.apiRequest;
+  const refreshInventory = runtime.refreshInventory;
+  const startGateway = runtime.startGateway;
+  const loadOnboardingConfig = useCallback(async () => {
+    try {
+      setOnboardingBusy('load');
+      const result = await apiRequest<HermesOnboardingConfig>({ path: '/api/onboarding/config', timeoutMs: 12000 });
+      setOnboardingConfig(result);
+      setSelectedMode(result.mode === 'remote' ? 'remote' : 'local');
+      setRemoteUrl(result.remote_url || '');
+      setProviderDraft(result.provider || config?.provider || '');
+      setModelDraft(result.model || config?.defaultModel || runtime.model || '');
+      setAutoStartGateway(result.auto_start_gateway !== false);
+      setOnboardingStatus('首次启动配置已读取。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setOnboardingStatus(`读取首次启动配置失败：${message}`);
+      setProviderDraft(config?.provider || '');
+      setModelDraft(config?.defaultModel || runtime.model || '');
+    } finally {
+      setOnboardingBusy('');
+    }
+  }, [apiRequest, config?.defaultModel, config?.provider, runtime.model]);
+  const runOnboardingAction = async (key: string, label: string, action: () => Promise<string | void>) => {
+    try {
+      setOnboardingBusy(key);
+      setOnboardingStatus(`${label}处理中...`);
+      const message = await action();
+      setOnboardingStatus(message || `${label}已完成。`);
+    } catch (error) {
+      setOnboardingStatus(`${label}失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setOnboardingBusy('');
+    }
+  };
+  const saveOnboardingConfig = () => {
+    void runOnboardingAction('save', '保存首次启动配置', async () => {
+      const result = await apiRequest<HermesOnboardingConfig>({
+        body: {
+          auto_start_gateway: autoStartGateway,
+          mode: selectedMode === 'remote' ? 'remote' : 'local',
+          model: modelDraft.trim(),
+          provider: providerDraft.trim(),
+          remote_url: remoteUrl.trim(),
+        },
+        method: 'PUT',
+        path: '/api/onboarding/config',
+        timeoutMs: 30000,
+      });
+      setOnboardingConfig(result);
+      await refreshInventory();
+      return result.message || '首次启动配置已保存。';
+    });
+  };
+  const checkOnboarding = () => {
+    void runOnboardingAction('check', '检查连接', async () => {
+      const result = await apiRequest<HermesOnboardingConfig>({
+        body: {
+          mode: selectedMode === 'remote' ? 'remote' : 'local',
+          remote_url: remoteUrl.trim(),
+        },
+        method: 'POST',
+        path: '/api/onboarding/check',
+        timeoutMs: 12000,
+      });
+      setOnboardingConfig(result);
+      return result.message || (result.ok ? '检查通过。' : '检查未通过。');
+    });
+  };
+  const startLocalGateway = () => {
+    void runOnboardingAction('gateway:start', '启动 Gateway', async () => {
+      await startGateway();
+      await refreshInventory();
+      return 'Gateway 启动请求已发送。';
+    });
+  };
+  const openSetupTerminal = () => {
+    void runOnboardingAction('setup:terminal', '打开 setup 终端', async () => {
+      const result = await apiRequest<{ command?: string }>({
+        method: 'POST',
+        path: '/api/profiles/default/open-terminal',
+        timeoutMs: 20000,
+      });
+      return `已打开终端：${result.command || 'hermes setup'}`;
+    });
+  };
+
+  useEffect(() => {
+    void loadOnboardingConfig();
+  }, [loadOnboardingConfig]);
 
   return (
     <section className="onboardingSurface">
@@ -8588,17 +8714,17 @@ function OnboardingSurface({ onFinish }: { onFinish: (target: 'chat' | 'diagnost
           <img src={hermesAgentLogo} alt="" />
         </div>
         <h2>连接 Hermes 工作方式</h2>
-        <p>优先复用本机 Hermes Gateway；连接失败时再进入诊断和权限恢复。</p>
+        <p>选择连接方式、确认本机环境，并把默认模型和桌面启动配置保存到 Hermes 配置。</p>
         <div className="choiceGrid">
           <button className={selectedMode === 'local' ? 'selected' : undefined} type="button" onClick={() => setSelectedMode('local')}>
             <Monitor size={22} />
             <strong>复用本地 Hermes</strong>
-            <span>读取本地配置和项目路径</span>
+            <span>{diagnostics?.gatewayPid ? `Gateway pid ${diagnostics.gatewayPid}` : '启动或复用本机 Gateway'}</span>
           </button>
           <button className={selectedMode === 'remote' ? 'selected' : undefined} type="button" onClick={() => setSelectedMode('remote')}>
             <Network size={22} />
             <strong>连接远程 Gateway</strong>
-            <span>使用团队共享 Agent 服务</span>
+            <span>保存远程地址并进入集成配置</span>
           </button>
           <button className={selectedMode === 'status' ? 'selected' : undefined} type="button" onClick={() => setSelectedMode('status')}>
             <Eye size={22} />
@@ -8606,9 +8732,64 @@ function OnboardingSurface({ onFinish }: { onFinish: (target: 'chat' | 'diagnost
             <span>确认 Gateway、会话和审批事件</span>
           </button>
         </div>
-        <button className="primaryButtonInline wide" type="button" onClick={() => onFinish(finishTarget)}>
-          {selectedMode === 'remote' ? '配置 Gateway' : selectedMode === 'status' ? '查看诊断' : '进入工作台'}
-        </button>
+        <div className="onboardingConfigGrid">
+          <label>
+            <span>Hermes Home</span>
+            <input className="settingInput" readOnly value={onboardingConfig?.hermes_home || diagnostics?.hermesHome || '浏览器预览不可用'} />
+          </label>
+          <label>
+            <span>Provider</span>
+            <input className="settingInput" disabled={Boolean(onboardingBusy)} placeholder="provider" value={providerDraft} onChange={(event) => setProviderDraft(event.target.value)} />
+          </label>
+          <label>
+            <span>Model</span>
+            <input className="settingInput" disabled={Boolean(onboardingBusy)} placeholder="model" value={modelDraft} onChange={(event) => setModelDraft(event.target.value)} />
+          </label>
+          <label className={selectedMode === 'remote' ? undefined : 'muted'}>
+            <span>远程 Gateway URL</span>
+            <input className="settingInput" disabled={Boolean(onboardingBusy) || selectedMode !== 'remote'} placeholder="https://gateway.example.com" value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} />
+          </label>
+        </div>
+        <label className="onboardingToggle">
+          <input
+            checked={autoStartGateway}
+            disabled={Boolean(onboardingBusy)}
+            type="checkbox"
+            onChange={(event) => setAutoStartGateway(event.target.checked)}
+          />
+          <span>启动应用时自动启动或复用本机 Gateway</span>
+        </label>
+        <div className="onboardingChecklist" aria-label="首次启动检查">
+          <span className={onboardingConfig?.config_exists ?? diagnostics?.configExists ? 'ok' : 'warn'}>配置文件</span>
+          <span className={onboardingConfig?.agent_repo_exists ?? diagnostics?.agentRepoExists ? 'ok' : 'warn'}>Hermes Agent</span>
+          <span className={runtime.gatewayStatus === 'connected' ? 'ok' : 'warn'}>{runtime.connectionLabel}</span>
+          <span>{onboardingConfig?.desktop_config_path ? shortenPath(onboardingConfig.desktop_config_path) : 'desktop.json'}</span>
+        </div>
+        {onboardingStatus && <p className="surfaceStatus onboardingStatus" role="status">{onboardingStatus}</p>}
+        <div className="onboardingActions">
+          <button className="lightButton" type="button" disabled={Boolean(onboardingBusy)} onClick={() => void loadOnboardingConfig()}>
+            <RefreshCw className={onboardingBusy === 'load' ? 'spinIcon' : undefined} size={15} />
+            读取配置
+          </button>
+          <button className="lightButton" type="button" disabled={Boolean(onboardingBusy)} onClick={checkOnboarding}>
+            <Eye size={15} />
+            检查连接
+          </button>
+          <button className="lightButton" type="button" disabled={Boolean(onboardingBusy) || selectedMode !== 'local'} onClick={startLocalGateway}>
+            <Play size={15} />
+            启动 Gateway
+          </button>
+          <button className="lightButton" type="button" disabled={Boolean(onboardingBusy)} onClick={openSetupTerminal}>
+            <TerminalSquare size={15} />
+            Setup
+          </button>
+          <button className="primaryButtonInline" type="button" disabled={Boolean(onboardingBusy)} onClick={saveOnboardingConfig}>
+            {onboardingBusy === 'save' ? '保存中' : '保存配置'}
+          </button>
+          <button className="primaryButtonInline" type="button" onClick={() => onFinish(finishTarget)}>
+            {selectedMode === 'remote' ? '配置集成' : selectedMode === 'status' ? '查看诊断' : '进入工作台'}
+          </button>
+        </div>
       </div>
     </section>
   );

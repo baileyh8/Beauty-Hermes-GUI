@@ -307,6 +307,49 @@ try {
       path: '/api/model/set',
       timeoutMs: 30000,
     });
+    const onboardingBefore = await api({ path: '/api/onboarding/config', timeoutMs: 30000 });
+    if (!onboardingBefore.hermes_home || onboardingBefore.mode !== 'local') {
+      throw new Error('Onboarding config did not expose local Hermes state');
+    }
+    const onboardingRemote = await api({
+      body: {
+        auto_start_gateway: false,
+        mode: 'remote',
+        model: 'smoke-model-onboarding',
+        provider: 'smoke-provider-onboarding',
+        remote_url: 'https://gateway.smoke.local',
+      },
+      method: 'PUT',
+      path: '/api/onboarding/config',
+      timeoutMs: 30000,
+    });
+    if (onboardingRemote.mode !== 'remote' || onboardingRemote.remote_url !== 'https://gateway.smoke.local' || onboardingRemote.auto_start_gateway !== false) {
+      throw new Error('Onboarding remote config did not persist desktop settings');
+    }
+    const onboardingCheck = await api({
+      body: { mode: 'local' },
+      method: 'POST',
+      path: '/api/onboarding/check',
+      timeoutMs: 30000,
+    });
+    if (!onboardingCheck.message || onboardingCheck.ok !== true) {
+      throw new Error('Onboarding local check did not report ready state');
+    }
+    const onboardingLocal = await api({
+      body: {
+        auto_start_gateway: true,
+        mode: 'local',
+        model: 'smoke-model-final',
+        provider: 'smoke-provider-final',
+        remote_url: '',
+      },
+      method: 'PUT',
+      path: '/api/onboarding/config',
+      timeoutMs: 30000,
+    });
+    if (onboardingLocal.mode !== 'local' || onboardingLocal.provider !== 'smoke-provider-final' || onboardingLocal.model !== 'smoke-model-final') {
+      throw new Error('Onboarding local config did not persist model settings');
+    }
 
     const messagingBefore = await api({ path: '/api/messaging/platforms', timeoutMs: 30000 });
     const telegramBefore = messagingBefore.platforms?.find((platform) => platform.id === 'telegram');
@@ -537,6 +580,7 @@ try {
       mcp: 'create-toggle-delete',
       messaging: 'env-save-clear-onboarding',
       model: 'saved',
+      onboarding: 'read-save-check',
       profiles: 'create-edit-soul-rename-delete',
       sessions: 'list-search-rename-archive-export-clean-delete',
       system: 'status-gateway-update-check',

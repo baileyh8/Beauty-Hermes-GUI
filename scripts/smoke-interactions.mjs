@@ -552,6 +552,31 @@ try {
       70000,
     );
 
+    findNavButton('首次启动')?.click();
+    await waitFor(() => document.body.innerText.includes('连接 Hermes 工作方式'), 'onboarding page');
+    const onboarding = await waitFor(() => document.querySelector('.onboardingPanel'), 'onboarding panel');
+    for (const label of ['Hermes Home', 'Provider', 'Model', '远程 Gateway URL']) {
+      if (!Array.from(onboarding.querySelectorAll('label span')).some((item) => item.textContent?.includes(label))) {
+        throw new Error(`Missing onboarding config field ${label}`);
+      }
+    }
+    for (const label of ['读取配置', '检查连接', '启动 Gateway', 'Setup', '保存配置']) {
+      if (!findButton(label, onboarding)) {
+        throw new Error(`Missing onboarding action ${label}`);
+      }
+    }
+    const remoteChoice = findButton('连接远程 Gateway', onboarding);
+    if (!remoteChoice) {
+      throw new Error('Missing onboarding remote mode selector.');
+    }
+    remoteChoice.click();
+    await waitFor(() => !onboarding.querySelector('input[placeholder="https://gateway.example.com"]')?.disabled, 'onboarding remote url enabled');
+    findButton('检查连接', onboarding)?.click();
+    await waitFor(
+      () => document.querySelector('.onboardingStatus')?.textContent?.includes('请输入远程 Gateway URL'),
+      'onboarding remote validation feedback',
+    );
+
     findNavButton('技能库')?.click();
     await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'skills copy page');
     const skillToggleButton = await waitFor(
@@ -808,8 +833,8 @@ try {
     findCommandRow('首次启动')?.click();
     await waitFor(() => document.querySelector('.onboardingSurface'), 'onboarding page');
     document.querySelector('.choiceGrid button:nth-child(2)')?.click();
-    await waitFor(() => document.querySelector('.primaryButtonInline.wide')?.textContent?.includes('配置 Gateway'), 'remote onboarding action');
-    document.querySelector('.primaryButtonInline.wide')?.click();
+    await waitFor(() => findButton('配置集成', document.querySelector('.onboardingActions')), 'remote onboarding action');
+    findButton('配置集成', document.querySelector('.onboardingActions'))?.click();
     await waitFor(() => document.body.innerText.includes('Hermes Agent 与本地服务') && document.body.innerText.includes('Gateway'), 'remote onboarding target');
 
     await openCommandCenter('首次启动');
@@ -817,8 +842,8 @@ try {
     findCommandRow('首次启动')?.click();
     await waitFor(() => document.querySelector('.onboardingSurface'), 'onboarding page again');
     document.querySelector('.choiceGrid button:nth-child(3)')?.click();
-    await waitFor(() => document.querySelector('.primaryButtonInline.wide')?.textContent?.includes('查看诊断'), 'status onboarding action');
-    document.querySelector('.primaryButtonInline.wide')?.click();
+    await waitFor(() => findButton('查看诊断', document.querySelector('.onboardingActions')), 'status onboarding action');
+    findButton('查看诊断', document.querySelector('.onboardingActions'))?.click();
     await waitFor(() => document.body.innerText.includes('诊断与更新'), 'status onboarding target');
 
     return {
@@ -841,6 +866,7 @@ try {
         'empty-prompt-actions',
         'inline-delete-confirmation',
         'markdown-table-rendering',
+        'onboarding-config-feedback',
         'profile-feedback',
         'project-actions-feedback',
         'project-new-task-routing',
