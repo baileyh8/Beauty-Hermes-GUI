@@ -147,6 +147,12 @@ try {
       .find((item) => item.textContent?.includes(label) || item.getAttribute('aria-label')?.includes(label));
     const findNavButton = (label) => Array.from(document.querySelectorAll('.sidebar button, .sidebarFooter button'))
       .find((item) => item.textContent?.includes(label) || item.getAttribute('aria-label')?.includes(label));
+    const findSidebarProject = (label) => {
+      const section = Array.from(document.querySelectorAll('.navSection'))
+        .find((item) => item.querySelector('h2')?.textContent?.trim() === '项目');
+      return section ? Array.from(section.querySelectorAll('.sessionMain'))
+        .find((item) => item.textContent?.includes(label)) : null;
+    };
     const findCommandRow = (title) => Array.from(document.querySelectorAll('.commandRow'))
       .find((item) => item.querySelector('strong')?.textContent?.trim() === title);
     const findProjectCard = (title) => Array.from(document.querySelectorAll('.projectCard'))
@@ -677,6 +683,16 @@ try {
     findCommandRow('项目')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'project command center auto close');
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page');
+    findSidebarProject('会话')?.click();
+    await waitFor(
+      () => findProjectCard('会话')?.classList.contains('selected'),
+      'project sidebar selection targets session card',
+    );
+    findSidebarProject('本地 Hermes')?.click();
+    await waitFor(
+      () => findProjectCard('本地 Hermes 工作区')?.classList.contains('selected'),
+      'project sidebar selection targets local card',
+    );
     const projectMoreButton = Array.from(document.querySelectorAll('.projectCard .iconButton'))
       .find((item) => item.getAttribute('aria-label')?.includes('Hermes Gateway 更多操作'));
     projectMoreButton?.click();
@@ -690,6 +706,21 @@ try {
     const workspaceAction = findProjectAction('本地 Hermes 工作区', '查看文件');
     if (!workspaceAction) {
       throw new Error('Missing project workspace file action.');
+    }
+    for (const label of ['复制路径', '打开目录', '项目设置']) {
+      if (!findProjectAction('本地 Hermes 工作区', label)) {
+        throw new Error(`Missing project workspace action ${label}.`);
+      }
+    }
+    for (const label of ['重启', '停止', '打开日志']) {
+      if (!findProjectAction('Hermes Gateway', label)) {
+        throw new Error(`Missing project gateway action ${label}.`);
+      }
+    }
+    for (const label of ['刷新会话', '新建任务']) {
+      if (!findProjectAction('会话', label)) {
+        throw new Error(`Missing project sessions action ${label}.`);
+      }
     }
     workspaceAction.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'workspace action opens chat');
@@ -968,6 +999,8 @@ try {
         'project-actions-feedback',
         'project-new-task-routing',
         'project-workspace-routing',
+        'project-sidebar-targeting',
+        'project-card-real-actions',
         'session-selection-feedback',
         'skill-copy-feedback',
         'slash-aria-selected',

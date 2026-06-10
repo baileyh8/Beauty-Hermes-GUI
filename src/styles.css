@@ -1562,6 +1562,12 @@ button.workbenchItem:focus-visible {
   padding: 16px;
 }
 
+.projectCard.selected {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: linear-gradient(180deg, #fbfdff 0%, #fff 72%);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.04);
+}
+
 .cardTop {
   display: flex;
   align-items: center;
@@ -1607,8 +1613,9 @@ button.workbenchItem:focus-visible {
 
 .projectActions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  opacity: 0;
+  opacity: 1;
   transition: 160ms ease;
 }
 
@@ -1627,6 +1634,12 @@ button.workbenchItem:focus-visible {
   border-radius: 10px;
   background: #fff;
   color: #596273;
+}
+
+.projectActions .projectPrimaryAction {
+  color: #1f4fa8;
+  border-color: rgba(37, 99, 235, 0.22);
+  background: #f8fbff;
 }
 
 .projectSessionManager {

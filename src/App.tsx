@@ -93,6 +93,7 @@ interface SidebarItem {
   color?: string;
   id?: string;
   meta: string;
+  projectKey?: string;
   title: string;
 }
 
@@ -2630,27 +2631,30 @@ function useHermesRuntime(): HermesRuntime {
   };
 }
 
-function projectSidebarItems(runtime: HermesRuntime): SidebarItem[] {
+function projectSidebarItems(runtime: HermesRuntime, selectedProjectKey: string): SidebarItem[] {
   const cwdLabel = runtime.cwd ? shortenPath(runtime.cwd) : '未选择目录';
   const sessionCount = runtime.recentSessions.length;
 
   return [
     {
-      active: true,
+      active: selectedProjectKey === 'project:local',
       color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : 'gray',
       meta: `${runtime.connectionLabel} · ${cwdLabel}`,
+      projectKey: 'project:local',
       title: '本地 Hermes',
     },
     {
+      active: selectedProjectKey === 'project:sessions',
       color: sessionCount > 0 ? 'blue' : 'gray',
       meta: sessionCount > 0 ? `${sessionCount} 个最近会话` : '等待真实会话',
+      projectKey: 'project:sessions',
       title: '会话',
     },
   ];
 }
 
 function sidebarItemKey(item: SidebarItem) {
-  return item.id || item.title;
+  return item.id || item.projectKey || item.title;
 }
 
 function readStoredDensity(): UiDensity {
@@ -2704,6 +2708,7 @@ function App() {
   const [hiddenSidebarKeys, setHiddenSidebarKeys] = useState<string[]>([]);
   const [pendingSidebarDeleteKey, setPendingSidebarDeleteKey] = useState('');
   const [selectingSessionId, setSelectingSessionId] = useState('');
+  const [selectedProjectKey, setSelectedProjectKey] = useState('project:local');
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
@@ -2761,7 +2766,7 @@ function App() {
     return runtime.recentSessions.find((item) => item.id === runtime.selectedStoredSessionId)?.title || surfaceMeta.chat.title;
   }, [runtime.recentSessions, runtime.selectedStoredSessionId]);
   const currentMeta = surface === 'chat' ? { ...surfaceMeta.chat, title: chatTitle } : surfaceMeta[surface];
-  const projectItems = useMemo(() => projectSidebarItems(runtime), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions]);
+  const projectItems = useMemo(() => projectSidebarItems(runtime, selectedProjectKey), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions, selectedProjectKey]);
   const visibleRecentItems = useMemo(
     () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
     [hiddenSidebarKeys, runtime.recentSessions],
@@ -2837,6 +2842,10 @@ function App() {
         showNotice(`新建任务失败：${message}`);
       });
   }, [runtime, showNotice]);
+  const handleOpenProjects = useCallback((projectKey = 'project:local') => {
+    setSelectedProjectKey(projectKey);
+    setSurface('projects');
+  }, []);
 
   return (
     <div
@@ -2851,7 +2860,14 @@ function App() {
         gatewayStatus={runtime.gatewayStatus}
         model={runtime.model}
         onNewTask={handleStartNewTask}
-        onSurfaceChange={setSurface}
+        onOpenProjects={handleOpenProjects}
+        onSurfaceChange={(nextSurface) => {
+          if (nextSurface === 'projects') {
+            handleOpenProjects();
+            return;
+          }
+          setSurface(nextSurface);
+        }}
         onOpenCommand={() => setCommandOpen(true)}
         onSelectSession={handleSelectSession}
         onArchiveItem={handleArchiveItem}
@@ -2914,7 +2930,7 @@ function App() {
             setAttachmentOpen={setAttachmentOpen}
             onOpenApproval={() => setApprovalVariant('risk')}
             onNavigate={(nextSurface) => setSurface(nextSurface)}
-            onOpenProjects={() => setSurface('projects')}
+            onOpenProjects={() => handleOpenProjects()}
             onOpenSettingsSection={(section) => {
               setSettingsSection(section);
               setSurface('settings');
@@ -2928,6 +2944,7 @@ function App() {
         {surface === 'projects' && (
           <ProjectsSurface
             runtime={runtime}
+            selectedProjectKey={selectedProjectKey}
             onOpenDiagnostics={() => setSurface('diagnostics')}
             onOpenSession={handleSelectSession}
             onOpenNewTask={handleStartNewTask}
@@ -3068,6 +3085,7 @@ function Sidebar({
   gatewayStatus,
   model,
   onNewTask,
+  onOpenProjects,
   onSurfaceChange,
   onOpenCommand,
   onArchiveItem,
@@ -3086,6 +3104,7 @@ function Sidebar({
   gatewayStatus: GatewayStatus;
   model: string;
   onNewTask: () => void;
+  onOpenProjects: (projectKey?: string) => void;
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
   onArchiveItem: (item: SidebarItem) => void;
@@ -3147,7 +3166,7 @@ function Sidebar({
         />
         <ProjectSection
           items={projectItems}
-          onOpenProjects={() => onSurfaceChange('projects')}
+          onOpenProjects={onOpenProjects}
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
@@ -3297,14 +3316,14 @@ function ProjectSection({
   onArchiveItem: (item: SidebarItem) => void;
   onDeleteItem: (item: SidebarItem) => void;
   onMoreItem: (item: SidebarItem) => void;
-  onOpenProjects: () => void;
+  onOpenProjects: (projectKey?: string) => void;
   pendingDeleteKey: string;
 }) {
   return (
     <section className="navSection">
       <div className="sectionTitleRow">
         <h2>项目</h2>
-        <button className="sectionAction" type="button" aria-label="查看全部项目" onClick={onOpenProjects}>
+        <button className="sectionAction" type="button" aria-label="查看全部项目" onClick={() => onOpenProjects()}>
           <ChevronRight size={14} />
         </button>
       </div>
@@ -3314,7 +3333,7 @@ function ProjectSection({
           item={{ ...item, color: item.active ? 'indigo' : 'gray' }}
           active={item.active}
           confirmingDelete={pendingDeleteKey === sidebarItemKey(item)}
-          onSelect={onOpenProjects}
+          onSelect={() => onOpenProjects(item.projectKey || item.title)}
           onArchive={() => onArchiveItem(item)}
           onDelete={() => onDeleteItem(item)}
           onMore={() => onMoreItem(item)}
@@ -5708,6 +5727,7 @@ function ApprovalModal({
 
 function ProjectsSurface({
   runtime,
+  selectedProjectKey,
   onOpenDiagnostics,
   onOpenNewTask,
   onOpenProjectMenu,
@@ -5716,6 +5736,7 @@ function ProjectsSurface({
   onOpenWorkbenchTab,
 }: {
   runtime: HermesRuntime;
+  selectedProjectKey: string;
   onOpenDiagnostics: () => void;
   onOpenNewTask: () => void;
   onOpenProjectMenu: (projectTitle: string) => void;
@@ -5737,6 +5758,12 @@ function ProjectsSurface({
   const gatewayReady = runtime.gatewayStatus === 'connected';
   const firstRecentSession = runtime.recentSessions.find((session) => Boolean(session.id));
   const apiRequest = runtime.apiRequest;
+
+  useEffect(() => {
+    const target = document.querySelector(`[data-project-key="${selectedProjectKey}"]`);
+    target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [selectedProjectKey]);
+
   const runProjectAction = async (
     key: string,
     label: string,
@@ -5977,15 +6004,61 @@ function ProjectsSurface({
       return '会话 JSON 已复制。';
     },
   );
+  const copyProjectText = async (value: string, label: string) => {
+    if (!value.trim()) {
+      throw new Error(`${label}为空`);
+    }
+    if (!navigator.clipboard?.writeText) {
+      throw new Error('当前环境无法访问剪贴板');
+    }
+    await navigator.clipboard.writeText(value);
+  };
+  const openWorkspaceDirectory = async () => {
+    if (!runtime.cwd.trim()) {
+      throw new Error('当前会话还没有工作目录');
+    }
+    await apiRequest({
+      body: {
+        cwd: runtime.cwd,
+        path: runtime.cwd,
+      },
+      method: 'POST',
+      path: '/api/files/open',
+      timeoutMs: 15000,
+    });
+  };
 
   const projectCards = [
     {
       action: '查看文件',
+      actions: [
+        {
+          icon: <Copy size={14} />,
+          key: 'workspace:copy',
+          label: '复制路径',
+          onClick: () => runProjectAction('workspace:copy', '复制工作目录', async () => {
+            await copyProjectText(runtime.cwd, '工作目录');
+            return '工作目录已复制。';
+          }),
+        },
+        {
+          icon: <FolderOpen size={14} />,
+          key: 'workspace:open',
+          label: '打开目录',
+          onClick: () => runProjectAction('workspace:open', '打开工作目录', openWorkspaceDirectory, '工作目录已交给系统打开。'),
+        },
+        {
+          icon: <Settings size={14} />,
+          key: 'workspace:settings',
+          label: '项目设置',
+          onClick: () => runProjectAction('workspace:settings', '项目设置', onOpenSettings, '项目设置已打开。'),
+        },
+      ],
       icon: <Folder size={20} />,
-      key: 'workspace',
+      key: 'project:local',
       meta: runtime.cwd ? shortenPath(runtime.cwd) : '尚未从会话读取工作目录',
       onClick: () => runProjectAction(
-        'workspace',
+        'project:local',
         '文件工作区',
         () => onOpenWorkbenchTab('files'),
         '文件工作区已打开。',
@@ -5995,11 +6068,31 @@ function ProjectsSurface({
     },
     {
       action: gatewayReady ? '查看诊断' : '修复连接',
+      actions: [
+        {
+          icon: <RefreshCw size={14} />,
+          key: 'gateway:restart',
+          label: '重启',
+          onClick: () => runProjectAction('gateway:restart', '重启 Gateway', runtime.restartGateway, 'Gateway 重启命令已发送。'),
+        },
+        {
+          icon: <XCircle size={14} />,
+          key: 'gateway:stop',
+          label: '停止',
+          onClick: () => runProjectAction('gateway:stop', '停止 Gateway', runtime.stopGateway, 'Gateway 停止命令已发送。'),
+        },
+        {
+          icon: <TerminalSquare size={14} />,
+          key: 'gateway:logs',
+          label: '打开日志',
+          onClick: () => runProjectAction('gateway:logs', 'Gateway 日志', () => onOpenWorkbenchTab('terminal'), 'Gateway 日志已打开。'),
+        },
+      ],
       icon: <Network size={20} />,
-      key: 'gateway',
+      key: 'project:gateway',
       meta: runtime.connection?.baseUrl || runtime.connectionLabel,
       onClick: () => runProjectAction(
-        'gateway',
+        'project:gateway',
         gatewayReady ? 'Gateway 诊断' : 'Gateway 修复',
         gatewayReady ? onOpenDiagnostics : runtime.restartGateway,
         gatewayReady ? 'Gateway 诊断已打开。' : 'Gateway 修复命令已发送。',
@@ -6008,21 +6101,44 @@ function ProjectsSurface({
       title: 'Hermes Gateway',
     },
     {
-      action: firstRecentSession?.id ? '打开最近' : '新建任务',
+      action: firstRecentSession?.id ? '打开最近' : '刷新会话',
+      actions: [
+        ...(firstRecentSession?.id ? [{
+          icon: <RefreshCw size={14} />,
+          key: 'sessions:refresh',
+          label: '刷新会话',
+          onClick: () => runProjectAction('sessions:refresh', '刷新会话', () => loadProjectSessions(), '会话已刷新。'),
+        }] : []),
+        {
+          icon: <Plus size={14} />,
+          key: 'sessions:new',
+          label: '新建任务',
+          onClick: () => runProjectAction('sessions:new', '新建任务', onOpenNewTask, '新任务已创建。'),
+        },
+        {
+          icon: <Archive size={14} />,
+          key: 'sessions:archive-toggle',
+          label: includeArchived ? '隐藏归档' : '显示归档',
+          onClick: () => runProjectAction('sessions:archive-toggle', includeArchived ? '隐藏归档' : '显示归档', () => {
+            setIncludeArchived((value) => !value);
+            return includeArchived ? '已隐藏归档会话。' : '已显示归档会话。';
+          }),
+        },
+      ],
       icon: <MessageSquare size={20} />,
-      key: 'sessions',
+      key: 'project:sessions',
       meta: `${projectStats?.total ?? runtime.recentSessions.length} 个会话 · ${projectStats?.messages ?? 0} 条消息`,
       onClick: () => runProjectAction(
-        'sessions',
-        firstRecentSession?.id ? '最近会话' : '新建任务',
+        'project:sessions',
+        firstRecentSession?.id ? '最近会话' : '刷新会话',
         () => {
           if (firstRecentSession?.id) {
             onOpenSession(firstRecentSession.id);
             return;
           }
-          onOpenNewTask();
+          return loadProjectSessions();
         },
-        firstRecentSession?.id ? '最近会话正在打开。' : '新任务已创建。',
+        firstRecentSession?.id ? '最近会话正在打开。' : '会话已刷新。',
       ),
       stats: [
         `${projectStats?.active_store ?? projectSessions.length} 可见`,
@@ -6048,7 +6164,11 @@ function ProjectsSurface({
 
       <div className="projectGrid">
         {projectCards.map((project) => (
-          <article className="projectCard" key={project.title}>
+          <article
+            className={selectedProjectKey === project.key ? 'projectCard selected' : 'projectCard'}
+            data-project-key={project.key}
+            key={project.title}
+          >
             <div className="cardTop">
               <div className="projectIcon">
                 {project.icon}
@@ -6071,10 +6191,16 @@ function ProjectsSurface({
               {project.stats.length > 0 ? project.stats.map((stat) => <span key={stat}>{stat}</span>) : <span>等待数据</span>}
             </div>
             <div className="projectActions">
-              <button type="button" disabled={projectBusy !== null} onClick={project.onClick}>
+              <button className="projectPrimaryAction" type="button" disabled={projectBusy !== null} onClick={project.onClick}>
                 <ChevronRight size={15} />
                 {projectBusy === project.key ? '处理中' : project.action}
               </button>
+              {project.actions.map((action) => (
+                <button type="button" key={action.key} disabled={projectBusy !== null} onClick={action.onClick}>
+                  {action.icon}
+                  {projectBusy === action.key ? '处理中' : action.label}
+                </button>
+              ))}
             </div>
           </article>
         ))}
