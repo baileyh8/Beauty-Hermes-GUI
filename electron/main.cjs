@@ -2479,6 +2479,16 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({
   return null;
 }
 
+async function localClipboardApi(method, url, body) {
+  if (method === 'POST' && url.pathname === '/api/clipboard/write') {
+    const text = typeof body.text === 'string' ? body.text : '';
+    clipboard.writeText(text);
+    return { ok: true, bytes: Buffer.byteLength(text, 'utf8'), source: 'desktop-local-bridge' };
+  }
+
+  return null;
+}
+
 async function localApiFallback(request, error) {
   const rawPath = String(request?.path || '');
   const method = String(request?.method || 'GET').toUpperCase();
@@ -2499,6 +2509,7 @@ async function localApiFallback(request, error) {
     localMessagingApi,
     localOnboardingApi,
     localSettingsApi,
+    localClipboardApi,
     localFilesApi,
   ];
 

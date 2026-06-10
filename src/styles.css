@@ -1693,6 +1693,186 @@ button.workbenchItem:focus-visible {
   background: #f8fbff;
 }
 
+.projectConfigPanel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.projectConfigPanel.selected {
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.04);
+}
+
+.projectConfigHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.projectConfigHeader h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.projectConfigHeader p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.projectConfigHeader button,
+.projectConfigActions button,
+.projectPathControl button {
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #4f5b6d;
+  background: #fff;
+}
+
+.projectConfigLayout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.42fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.projectConfigList {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.projectConfigRow {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  color: inherit;
+  background: #fbfcfe;
+  text-align: left;
+}
+
+.projectConfigRow.selected {
+  border-color: rgba(37, 99, 235, 0.26);
+  background: #f4f7ff;
+}
+
+.projectConfigRow strong,
+.projectConfigRow small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectConfigRow strong {
+  font-size: 13px;
+}
+
+.projectConfigRow small,
+.projectConfigRow em {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-style: normal;
+}
+
+.projectConfigEmpty {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px dashed #dbe2ec;
+  border-radius: 14px;
+  color: var(--muted);
+  background: #fbfcfe;
+}
+
+.projectConfigEmpty strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.projectConfigForm {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.projectConfigForm label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.projectConfigForm label > span {
+  color: #707988;
+  font-size: 11.5px;
+}
+
+.projectConfigForm input,
+.projectConfigForm textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  background: #fff;
+}
+
+.projectConfigForm input {
+  height: 34px;
+  padding: 0 10px;
+}
+
+.projectConfigForm textarea {
+  min-height: 76px;
+  resize: vertical;
+  padding: 9px 10px;
+}
+
+.projectConfigPath,
+.projectConfigNotes,
+.projectConfigActions {
+  grid-column: 1 / -1;
+}
+
+.projectPathControl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.projectConfigActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.projectConfigActions .projectPrimaryAction {
+  color: #1f4fa8;
+  border-color: rgba(37, 99, 235, 0.22);
+  background: #f8fbff;
+}
+
+.projectConfigActions .danger {
+  color: #b42318;
+}
+
 .projectSessionManager {
   margin-top: 18px;
   padding: 16px;
@@ -3692,6 +3872,11 @@ kbd {
 
   .projectGrid {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+
+  .projectConfigLayout,
+  .projectConfigForm {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .sessionManagerHeader {

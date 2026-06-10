@@ -119,6 +119,7 @@ try {
   await client.send('Runtime.enable');
   await evaluate(client, `(() => {
     localStorage.removeItem('beauty-hermes-ui-density');
+    localStorage.removeItem('beauty-hermes-project-configs');
     localStorage.removeItem('beauty-hermes-ui-theme');
     window.setTimeout(() => window.location.reload(), 0);
     return true;
@@ -715,6 +716,56 @@ try {
       () => findProjectCard('本地 Hermes 工作区')?.classList.contains('selected'),
       'project sidebar selection targets local card',
     );
+    findSidebarProject('项目档案')?.click();
+    await waitFor(
+      () => document.querySelector('.projectConfigPanel')?.classList.contains('selected'),
+      'project sidebar selection targets config panel',
+    );
+    const newProjectButton = findButton('新建项目', document.querySelector('.projectConfigPanel'));
+    if (!newProjectButton) {
+      throw new Error('Missing project config new action.');
+    }
+    newProjectButton.click();
+    await waitFor(() => document.querySelector('input[aria-label="项目名称"]'), 'project config form');
+    setNativeValue(document.querySelector('input[aria-label="项目名称"]'), 'Smoke 项目');
+    setNativeValue(document.querySelector('input[aria-label="工作目录"]'), '/tmp/Beauty-Hermes-GUI-commit');
+    setNativeValue(document.querySelector('input[aria-label="默认模型"]'), 'deepseek-v4-flash');
+    setNativeValue(document.querySelector('input[aria-label="Hermes profile"]'), 'default');
+    setNativeValue(document.querySelector('textarea[aria-label="项目备注"]'), 'smoke project config');
+    findButton('保存项目', document.querySelector('.projectConfigPanel'))?.click();
+    await waitFor(
+      () => document.querySelector('.surfaceStatus')?.textContent?.includes('已保存'),
+      'project config save feedback',
+    );
+    await waitFor(
+      () => Array.from(document.querySelectorAll('.projectConfigRow')).some((row) => row.textContent?.includes('Smoke 项目')),
+      'project config saved row',
+    );
+    const copyProjectPrompt = findButton('复制启动提示', document.querySelector('.projectConfigPanel'));
+    if (!copyProjectPrompt) {
+      throw new Error('Missing project config copy prompt action.');
+    }
+    copyProjectPrompt.click();
+    await waitFor(
+      () => document.querySelector('.surfaceStatus')?.textContent?.includes('已复制')
+        || document.querySelector('.surfaceStatus')?.textContent?.includes('无法访问剪贴板')
+        || document.querySelector('.surfaceStatus')?.textContent?.includes('复制失败'),
+      'project config copy prompt feedback',
+    );
+    const deleteProjectButton = findButton('删除项目', document.querySelector('.projectConfigPanel'));
+    if (!deleteProjectButton) {
+      throw new Error('Missing project config delete action.');
+    }
+    deleteProjectButton.click();
+    await waitFor(
+      () => document.querySelector('.surfaceStatus')?.textContent?.includes('再次点击删除'),
+      'project config delete confirmation',
+    );
+    findButton('确认删除', document.querySelector('.projectConfigPanel'))?.click();
+    await waitFor(
+      () => document.querySelector('.surfaceStatus')?.textContent?.includes('已删除'),
+      'project config delete feedback',
+    );
     const projectMoreButton = Array.from(document.querySelectorAll('.projectCard .iconButton'))
       .find((item) => item.getAttribute('aria-label')?.includes('Hermes Gateway 更多操作'));
     projectMoreButton?.click();
@@ -750,7 +801,10 @@ try {
     findNavButton('项目')?.click();
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after workspace action');
     await waitFor(() => document.querySelector('.projectSessionManager'), 'project session manager');
-    for (const label of ['搜索/刷新', '显示归档', '全选']) {
+    if (!findButton('搜索/刷新', document.querySelector('.projectSessionManager')) && !findButton('同步中', document.querySelector('.projectSessionManager'))) {
+      throw new Error('Missing project session manager action 搜索/刷新');
+    }
+    for (const label of ['显示归档', '全选']) {
       if (!findButton(label, document.querySelector('.projectSessionManager'))) {
         throw new Error(`Missing project session manager action ${label}`);
       }
@@ -1044,6 +1098,8 @@ try {
         'onboarding-config-feedback',
         'profile-feedback',
         'project-actions-feedback',
+        'project-config-feedback',
+        'project-config-persistence',
         'project-new-task-routing',
         'project-workspace-routing',
         'project-sidebar-targeting',

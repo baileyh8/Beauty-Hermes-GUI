@@ -99,8 +99,19 @@ interface SidebarItem {
 
 const preferenceStorageKeys = {
   density: 'beauty-hermes-ui-density',
+  projects: 'beauty-hermes-project-configs',
   theme: 'beauty-hermes-ui-theme',
 } as const;
+
+interface HermesProjectConfig {
+  id: string;
+  model: string;
+  name: string;
+  notes: string;
+  path: string;
+  profile: string;
+  updatedAt: number;
+}
 
 interface ChatArtifactModel {
   kind: 'file' | 'terminal' | 'preview';
@@ -2650,11 +2661,69 @@ function projectSidebarItems(runtime: HermesRuntime, selectedProjectKey: string)
       projectKey: 'project:sessions',
       title: '会话',
     },
+    {
+      active: selectedProjectKey === 'project:configs',
+      color: 'green',
+      meta: '目录、模型与启动提示',
+      projectKey: 'project:configs',
+      title: '项目档案',
+    },
   ];
 }
 
 function sidebarItemKey(item: SidebarItem) {
   return item.id || item.projectKey || item.title;
+}
+
+function normalizeProjectConfig(value: unknown): HermesProjectConfig | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Partial<HermesProjectConfig>;
+  const name = String(record.name || '').trim();
+  const id = String(record.id || '').trim() || makeId('project');
+  if (!name) {
+    return null;
+  }
+
+  return {
+    id,
+    model: String(record.model || '').trim(),
+    name,
+    notes: String(record.notes || '').trim(),
+    path: String(record.path || '').trim(),
+    profile: String(record.profile || '').trim(),
+    updatedAt: Number(record.updatedAt || Date.now()),
+  };
+}
+
+function readStoredProjects(): HermesProjectConfig[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(preferenceStorageKeys.projects);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map(normalizeProjectConfig).filter((item): item is HermesProjectConfig => Boolean(item));
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredProjects(projects: HermesProjectConfig[]) {
+  try {
+    window.localStorage.setItem(preferenceStorageKeys.projects, JSON.stringify(projects));
+  } catch {
+    // Project persistence is a GUI convenience and should not block core chat.
+  }
 }
 
 function readStoredDensity(): UiDensity {
@@ -2829,18 +2898,20 @@ function App() {
       })
       .finally(() => setSelectingSessionId(''));
   }, [runtime, showNotice]);
-  const handleStartNewTask = useCallback(() => {
+  const handleStartNewTask = useCallback(async () => {
     setSurface('chat');
     setRightOpen(true);
     setPendingSidebarDeleteKey('');
     setSelectingSessionId('');
 
-    void runtime.startNewTask()
-      .then(() => showNotice('已开始新任务'))
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        showNotice(`新建任务失败：${message}`);
-      });
+    try {
+      await runtime.startNewTask();
+      showNotice('已开始新任务');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      showNotice(`新建任务失败：${message}`);
+      throw error;
+    }
   }, [runtime, showNotice]);
   const handleOpenProjects = useCallback((projectKey = 'project:local') => {
     setSelectedProjectKey(projectKey);
@@ -5803,7 +5874,7 @@ function ProjectsSurface({
   runtime: HermesRuntime;
   selectedProjectKey: string;
   onOpenDiagnostics: () => void;
-  onOpenNewTask: () => void;
+  onOpenNewTask: () => Promise<void> | void;
   onOpenProjectMenu: (projectTitle: string) => void;
   onOpenSettings: () => void;
   onOpenSession: (sessionId: string) => void;
@@ -5818,11 +5889,44 @@ function ProjectsSurface({
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [pendingDeleteId, setPendingDeleteId] = useState('');
+  const [pendingProjectDeleteId, setPendingProjectDeleteId] = useState('');
+  const [projectConfigs, setProjectConfigs] = useState<HermesProjectConfig[]>(readStoredProjects);
   const [renamingSessionId, setRenamingSessionId] = useState('');
   const [renameDraft, setRenameDraft] = useState('');
   const gatewayReady = runtime.gatewayStatus === 'connected';
   const firstRecentSession = runtime.recentSessions.find((session) => Boolean(session.id));
   const apiRequest = runtime.apiRequest;
+  const createProjectDraft = (overrides: Partial<HermesProjectConfig> = {}): HermesProjectConfig => ({
+    id: overrides.id || '',
+    model: overrides.model ?? runtime.model,
+    name: overrides.name ?? '当前 Hermes 项目',
+    notes: overrides.notes ?? '',
+    path: overrides.path ?? runtime.cwd,
+    profile: overrides.profile ?? 'default',
+    updatedAt: overrides.updatedAt ?? Date.now(),
+  });
+  const [selectedConfigId, setSelectedConfigId] = useState('');
+  const [projectDraft, setProjectDraft] = useState<HermesProjectConfig>(() => createProjectDraft());
+
+  useEffect(() => {
+    writeStoredProjects(projectConfigs);
+  }, [projectConfigs]);
+
+  useEffect(() => {
+    if (selectedConfigId) {
+      const selected = projectConfigs.find((project) => project.id === selectedConfigId);
+      if (selected) {
+        setProjectDraft(selected);
+      }
+      return;
+    }
+
+    setProjectDraft((current) => ({
+      ...current,
+      model: current.model || runtime.model,
+      path: current.path || runtime.cwd,
+    }));
+  }, [projectConfigs, runtime.cwd, runtime.model, selectedConfigId]);
 
   useEffect(() => {
     const target = document.querySelector(`[data-project-key="${selectedProjectKey}"]`);
@@ -6073,6 +6177,17 @@ function ProjectsSurface({
     if (!value.trim()) {
       throw new Error(`${label}为空`);
     }
+    try {
+      await apiRequest({
+        body: { text: value },
+        method: 'POST',
+        path: '/api/clipboard/write',
+        timeoutMs: 5000,
+      });
+      return;
+    } catch {
+      // Browser preview falls back to the Web Clipboard API.
+    }
     if (!navigator.clipboard?.writeText) {
       throw new Error('当前环境无法访问剪贴板');
     }
@@ -6091,6 +6206,125 @@ function ProjectsSurface({
       path: '/api/files/open',
       timeoutMs: 15000,
     });
+  };
+  const projectLaunchPrompt = (project: HermesProjectConfig) => [
+    `请以这个项目为上下文继续工作：${project.name.trim() || '未命名项目'}`,
+    project.path.trim() ? `工作目录：${project.path.trim()}` : '',
+    project.profile.trim() ? `Hermes profile：${project.profile.trim()}` : '',
+    project.model.trim() ? `默认模型：${project.model.trim()}` : '',
+    project.notes.trim() ? `项目备注：${project.notes.trim()}` : '',
+    '请先确认当前目录和关键文件，再给出下一步行动。',
+  ].filter(Boolean).join('\n');
+  const selectProjectConfig = (project: HermesProjectConfig) => {
+    setPendingProjectDeleteId('');
+    setSelectedConfigId(project.id);
+    setProjectDraft(project);
+    setProjectStatus(`已选中“${project.name}”。`);
+  };
+  const beginNewProjectConfig = () => {
+    setPendingProjectDeleteId('');
+    setSelectedConfigId('');
+    setProjectDraft(createProjectDraft({ id: '', name: '', notes: '', path: runtime.cwd }));
+    setProjectStatus('正在创建新的项目档案。');
+  };
+  const saveProjectConfig = () => runProjectAction(
+    'project-config:save',
+    '保存项目',
+    async () => {
+      const name = projectDraft.name.trim();
+      if (!name) {
+        throw new Error('请输入项目名称');
+      }
+      const nextProject = {
+        ...projectDraft,
+        id: projectDraft.id || makeId('project'),
+        model: projectDraft.model.trim(),
+        name,
+        notes: projectDraft.notes.trim(),
+        path: projectDraft.path.trim(),
+        profile: projectDraft.profile.trim() || 'default',
+        updatedAt: Date.now(),
+      };
+      setProjectConfigs((current) => {
+        const others = current.filter((project) => project.id !== nextProject.id);
+        return [nextProject, ...others];
+      });
+      setSelectedConfigId(nextProject.id);
+      setProjectDraft(nextProject);
+      setPendingProjectDeleteId('');
+      return `项目“${nextProject.name}”已保存。`;
+    },
+  );
+  const pickProjectDirectory = () => runProjectAction(
+    'project-config:pick-folder',
+    '选择工作目录',
+    async () => {
+      if (!window.hermesDesktop?.pickAttachment) {
+        throw new Error('桌面 IPC 不可用，无法打开目录选择器');
+      }
+      const [folder] = await window.hermesDesktop.pickAttachment('folder');
+      if (!folder?.path) {
+        return '未选择目录。';
+      }
+      setProjectDraft((current) => ({ ...current, path: folder.path || '' }));
+      return '工作目录已填入。';
+    },
+  );
+  const openProjectDirectory = () => runProjectAction(
+    'project-config:open-folder',
+    '打开项目目录',
+    async () => {
+      const targetPath = projectDraft.path.trim();
+      if (!targetPath) {
+        throw new Error('请先填写工作目录');
+      }
+      await apiRequest({
+        body: { cwd: targetPath, path: targetPath },
+        method: 'POST',
+        path: '/api/files/open',
+        timeoutMs: 15000,
+      });
+      return '项目目录已交给系统打开。';
+    },
+  );
+  const copyProjectLaunchPrompt = () => runProjectAction(
+    'project-config:copy-prompt',
+    '复制启动提示',
+    async () => {
+      await copyProjectText(projectLaunchPrompt(projectDraft), '项目启动提示');
+      return '项目启动提示已复制。';
+    },
+  );
+  const startProjectTask = () => runProjectAction(
+    'project-config:start',
+    '开始项目任务',
+    async () => {
+      await Promise.resolve(onOpenNewTask());
+      await runtime.submitPrompt(projectLaunchPrompt(projectDraft));
+      return '项目启动提示已发送。';
+    },
+  );
+  const deleteProjectConfig = () => {
+    if (!projectDraft.id) {
+      setProjectStatus('当前草稿尚未保存，无需删除。');
+      return;
+    }
+    if (pendingProjectDeleteId !== projectDraft.id) {
+      setPendingProjectDeleteId(projectDraft.id);
+      setProjectStatus(`再次点击删除“${projectDraft.name}”。`);
+      return;
+    }
+    void runProjectAction(
+      'project-config:delete',
+      '删除项目',
+      async () => {
+        setProjectConfigs((current) => current.filter((project) => project.id !== projectDraft.id));
+        setSelectedConfigId('');
+        setProjectDraft(createProjectDraft({ id: '', name: '', notes: '', path: runtime.cwd }));
+        setPendingProjectDeleteId('');
+        return '项目档案已删除。';
+      },
+    );
   };
 
   const projectCards = [
@@ -6270,6 +6504,132 @@ function ProjectsSurface({
           </article>
         ))}
       </div>
+
+      <section
+        className={selectedProjectKey === 'project:configs' ? 'projectConfigPanel selected' : 'projectConfigPanel'}
+        data-project-key="project:configs"
+      >
+        <div className="projectConfigHeader">
+          <div>
+            <h3>项目档案</h3>
+            <p>保存常用目录、默认模型和启动提示，下一次直接从这里进入项目。</p>
+          </div>
+          <button type="button" onClick={beginNewProjectConfig} disabled={Boolean(projectBusy)}>
+            <Plus size={14} />
+            新建项目
+          </button>
+        </div>
+        <div className="projectConfigLayout">
+          <div className="projectConfigList" aria-label="已保存项目">
+            {projectConfigs.length > 0 ? projectConfigs.map((project) => (
+              <button
+                className={selectedConfigId === project.id ? 'projectConfigRow selected' : 'projectConfigRow'}
+                key={project.id}
+                type="button"
+                onClick={() => selectProjectConfig(project)}
+              >
+                <span className="statusDot blue" />
+                <span>
+                  <strong>{project.name}</strong>
+                  <small>{project.path ? shortenPath(project.path) : '未设置工作目录'} · {project.model || '未设置模型'}</small>
+                </span>
+                <em>{project.updatedAt ? new Date(project.updatedAt).toLocaleDateString() : '刚刚'}</em>
+              </button>
+            )) : (
+              <div className="projectConfigEmpty">
+                <strong>暂无项目档案</strong>
+                <span>新建一个项目后，会保存在这台 Mac 上。</span>
+              </div>
+            )}
+          </div>
+          <form
+            className="projectConfigForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveProjectConfig();
+            }}
+          >
+            <label>
+              <span>项目名称</span>
+              <input
+                aria-label="项目名称"
+                disabled={Boolean(projectBusy)}
+                placeholder="例如 Beauty Hermes GUI"
+                value={projectDraft.name}
+                onChange={(event) => setProjectDraft((current) => ({ ...current, name: event.target.value }))}
+              />
+            </label>
+            <label>
+              <span>默认模型</span>
+              <input
+                aria-label="默认模型"
+                disabled={Boolean(projectBusy)}
+                placeholder={runtime.model}
+                value={projectDraft.model}
+                onChange={(event) => setProjectDraft((current) => ({ ...current, model: event.target.value }))}
+              />
+            </label>
+            <label>
+              <span>Profile</span>
+              <input
+                aria-label="Hermes profile"
+                disabled={Boolean(projectBusy)}
+                placeholder="default"
+                value={projectDraft.profile}
+                onChange={(event) => setProjectDraft((current) => ({ ...current, profile: event.target.value }))}
+              />
+            </label>
+            <label className="projectConfigPath">
+              <span>工作目录</span>
+              <div className="projectPathControl">
+                <input
+                  aria-label="工作目录"
+                  disabled={Boolean(projectBusy)}
+                  placeholder="选择或粘贴项目目录"
+                  value={projectDraft.path}
+                  onChange={(event) => setProjectDraft((current) => ({ ...current, path: event.target.value }))}
+                />
+                <button type="button" onClick={pickProjectDirectory} disabled={Boolean(projectBusy)}>
+                  <FolderOpen size={14} />
+                  选择
+                </button>
+              </div>
+            </label>
+            <label className="projectConfigNotes">
+              <span>项目备注</span>
+              <textarea
+                aria-label="项目备注"
+                disabled={Boolean(projectBusy)}
+                placeholder="记录这个项目的目标、约束或常用启动说明"
+                value={projectDraft.notes}
+                onChange={(event) => setProjectDraft((current) => ({ ...current, notes: event.target.value }))}
+              />
+            </label>
+            <div className="projectConfigActions">
+              <button className="projectPrimaryAction" type="submit" disabled={Boolean(projectBusy)}>
+                <Check size={14} />
+                {projectBusy === 'project-config:save' ? '保存中' : '保存项目'}
+              </button>
+              <button type="button" onClick={openProjectDirectory} disabled={Boolean(projectBusy)}>
+                <FolderOpen size={14} />
+                打开目录
+              </button>
+              <button type="button" onClick={copyProjectLaunchPrompt} disabled={Boolean(projectBusy)}>
+                <Copy size={14} />
+                复制启动提示
+              </button>
+              <button type="button" onClick={startProjectTask} disabled={Boolean(projectBusy)}>
+                <SendHorizontal size={14} />
+                开始项目任务
+              </button>
+              <button className="danger" type="button" onClick={deleteProjectConfig} disabled={Boolean(projectBusy)}>
+                <Trash2 size={14} />
+                {pendingProjectDeleteId === projectDraft.id && projectDraft.id ? '确认删除' : '删除项目'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
 
       <section className="projectSessionManager">
         <div className="sessionManagerHeader">
