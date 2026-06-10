@@ -1108,6 +1108,13 @@ try {
     await waitFor(() => localStorage.getItem('beauty-hermes-ui-theme') === 'soft', 'soft theme persisted');
     await waitFor(() => document.body.innerText.includes('主题已切换为柔和'), 'theme status feedback');
 
+    await selectSettingsSection('高级', 'Hermes Home');
+    findSettingButton('Hermes Home', '复制').click();
+    await waitFor(
+      () => document.querySelector('.settingsStatus')?.textContent?.includes('Hermes Home 已复制'),
+      'settings desktop clipboard feedback',
+    );
+
     await selectSettingsSection('集成', 'Gateway');
     findSettingButton('Plugins', '查看').click();
     await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'plugins settings navigation');
@@ -1193,6 +1200,7 @@ try {
         'command-center-close',
         'command-keyboard-a11y',
         'diagnostics-feedback',
+        'desktop-clipboard-bridge',
         'empty-prompt-actions',
         'inline-delete-confirmation',
         'markdown-table-rendering',

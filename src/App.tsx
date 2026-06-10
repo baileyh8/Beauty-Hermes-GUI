@@ -706,6 +706,35 @@ function truncateText(text: string, maxLength = 1800) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
+async function writeClipboardText(
+  value: string,
+  apiRequest?: <T = unknown>(request: HermesApiRequest) => Promise<T>,
+) {
+  if (!value) {
+    throw new Error('没有可复制内容');
+  }
+
+  if (apiRequest) {
+    try {
+      await apiRequest({
+        body: { text: value },
+        method: 'POST',
+        path: '/api/clipboard/write',
+        timeoutMs: 5000,
+      });
+      return;
+    } catch {
+      // Browser previews and stale desktop bridges can fall back to the Web Clipboard API.
+    }
+  }
+
+  if (!navigator.clipboard?.writeText) {
+    throw new Error('当前环境无法访问剪贴板');
+  }
+
+  await navigator.clipboard.writeText(value);
+}
+
 function shortenPath(pathValue: string) {
   const value = pathValue.trim();
   if (!value) {
@@ -5021,19 +5050,14 @@ function WorkbenchActivity({
       setToolStatus('当前没有可复制的工具调用。');
       return;
     }
-    if (!navigator.clipboard?.writeText) {
-      setToolStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
     try {
-      await navigator.clipboard.writeText([
+      await writeClipboardText([
         selectedTool.label,
         selectedTool.detail,
         selectedTool.value,
         '',
         selectedToolDetails,
-      ].filter(Boolean).join('\n'));
+      ].filter(Boolean).join('\n'), runtime.apiRequest);
       setToolStatus('工具详情已复制。');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -5170,15 +5194,10 @@ function WorkbenchFiles({
       setCopyStatus('当前没有可复制的文件。');
       return;
     }
-    if (!navigator.clipboard?.writeText) {
-      setCopyStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
     try {
       setCopyBusy(kind);
       setCopyStatus('');
-      await navigator.clipboard.writeText(value);
+      await writeClipboardText(value, runtime.apiRequest);
       setCopyStatus(`Diff ${label}已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -5300,15 +5319,10 @@ function WorkbenchTerminal({ runtime }: { runtime: HermesRuntime }) {
       setStatus('当前没有可复制的日志。');
       return;
     }
-    if (!navigator.clipboard?.writeText) {
-      setStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
     try {
       setBusy('copy');
       setStatus('');
-      await navigator.clipboard.writeText(visibleLogs.join('\n'));
+      await writeClipboardText(visibleLogs.join('\n'), runtime.apiRequest);
       setStatus(`已复制 ${visibleLogs.length} 条日志。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -5475,25 +5489,7 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
     }
 
     try {
-      await runtime.apiRequest({
-        body: { text: value },
-        method: 'POST',
-        path: '/api/clipboard/write',
-        timeoutMs: 5000,
-      });
-      setStatus(successText);
-      return;
-    } catch {
-      // Browser-only previews can still use the Web Clipboard API when Electron IPC is absent.
-    }
-
-    if (!navigator.clipboard?.writeText) {
-      setStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(value);
+      await writeClipboardText(value, runtime.apiRequest);
       setStatus(successText);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -6463,10 +6459,7 @@ function ProjectsSurface({
         path: `/api/sessions/${encodeURIComponent(session.id)}/export`,
         timeoutMs: 30000,
       });
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('当前环境无法访问剪贴板');
-      }
-      await navigator.clipboard.writeText(JSON.stringify(result.session || result, null, 2));
+      await writeClipboardText(JSON.stringify(result.session || result, null, 2), apiRequest);
       return '会话 JSON 已复制。';
     },
   );
@@ -6474,21 +6467,7 @@ function ProjectsSurface({
     if (!value.trim()) {
       throw new Error(`${label}为空`);
     }
-    try {
-      await apiRequest({
-        body: { text: value },
-        method: 'POST',
-        path: '/api/clipboard/write',
-        timeoutMs: 5000,
-      });
-      return;
-    } catch {
-      // Browser preview falls back to the Web Clipboard API.
-    }
-    if (!navigator.clipboard?.writeText) {
-      throw new Error('当前环境无法访问剪贴板');
-    }
-    await navigator.clipboard.writeText(value);
+    await writeClipboardText(value, apiRequest);
   };
   const openWorkspaceDirectory = async () => {
     if (!runtime.cwd.trim()) {
@@ -7108,17 +7087,12 @@ function AgentsSurface({
     }
   };
   const copyAgentSummary = async (tool: GatewayToolItem) => {
-    if (!navigator.clipboard?.writeText) {
-      setAgentStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
     await runAgentAction(`copy:${tool.id}`, `${tool.label} 摘要复制`, async () => {
-      await navigator.clipboard.writeText([
+      await writeClipboardText([
         tool.label,
         tool.detail,
         tool.value,
-      ].filter(Boolean).join('\n'));
+      ].filter(Boolean).join('\n'), runtime.apiRequest);
     });
   };
   const respondAgentApproval = (choice: 'once' | 'session' | 'always' | 'deny') => {
@@ -7437,11 +7411,7 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
         setProfileStatus(`${name} 没有可复制的 setup 命令。`);
         return;
       }
-      if (!navigator.clipboard?.writeText) {
-        setProfileStatus('当前环境无法访问剪贴板。');
-        return;
-      }
-      await navigator.clipboard.writeText(command);
+      await writeClipboardText(command, apiRequest);
       setProfileStatus(`${name} setup 命令已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -7850,14 +7820,9 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
         skill.path ? `Path: ${skill.path}` : '',
         skill.description ? `Description: ${skill.description}` : '',
       ].filter(Boolean).join('\n');
-    if (!navigator.clipboard?.writeText) {
-      setSkillStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
     try {
       setSkillBusy(`copy:${kind}:${skill.name}`);
-      await navigator.clipboard.writeText(value);
+      await writeClipboardText(value, apiRequest);
       setSkillStatus(`${skill.name} ${kind === 'path' ? '路径' : '摘要'}已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -7865,7 +7830,7 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
     } finally {
       setSkillBusy('');
     }
-  }, []);
+  }, [apiRequest]);
   const openSkillPath = useCallback(async (skill: HermesSkillInfo) => {
     if (!skill.path) {
       setSkillStatus(`${skill.name} 没有可打开路径。`);
@@ -8540,14 +8505,9 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
       setMessagingStatus(`${platform.name} 没有可复制内容。`);
       return;
     }
-    if (!navigator.clipboard?.writeText) {
-      setMessagingStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
     try {
       setMessagingBusy(`copy:${kind}:${platform.id}`);
-      await navigator.clipboard.writeText(value);
+      await writeClipboardText(value, apiRequest);
       setMessagingStatus(`${platform.name} ${kind === 'docs' ? '文档链接' : '摘要'}已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -8555,7 +8515,7 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     } finally {
       setMessagingBusy('');
     }
-  }, []);
+  }, [apiRequest]);
   const restartMessagingGateway = useCallback(async () => {
     try {
       setMessagingBusy('gateway:restart');
@@ -9133,14 +9093,9 @@ function SettingsPanel({
       setSettingsStatus(`${label} 暂无可复制内容。`);
       return;
     }
-    if (!navigator.clipboard?.writeText) {
-      setSettingsStatus('当前环境无法访问剪贴板。');
-      return;
-    }
-
     try {
       setSettingsBusy(`copy:${label}`);
-      await navigator.clipboard.writeText(value);
+      await writeClipboardText(value, apiRequest);
       setSettingsStatus(`${label} 已复制`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -10031,11 +9986,7 @@ function DiagnosticsSurface({
   };
   const copyDiagnosticsSummary = async () => {
     await runDiagnosticAction('copy', '复制诊断摘要', async () => {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('当前环境无法访问剪贴板');
-      }
-
-      await navigator.clipboard.writeText([
+      await writeClipboardText([
         `Beauty Hermes GUI diagnostics`,
         `Desktop: ${diagnostics?.desktopVersion || 'unknown'}`,
         `Hermes: ${diagnostics?.hermesVersion || 'unknown'}`,
@@ -10046,7 +9997,7 @@ function DiagnosticsSurface({
         `Update: ${formatUpdateCheckSummary(updateCheck)}`,
         `Logs:`,
         ...runtime.logs.slice(0, 12),
-      ].join('\n'));
+      ].join('\n'), runtime.apiRequest);
       return '诊断摘要已复制。';
     });
   };
