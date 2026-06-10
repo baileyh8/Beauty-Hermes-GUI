@@ -519,6 +519,28 @@ try {
     await waitFor(() => document.body.innerText.includes('诊断与更新'), 'diagnostics feedback page');
     findButton('重新诊断')?.click();
     await waitFor(() => document.querySelector('.diagnostics .surfaceStatus')?.textContent?.includes('重新诊断'), 'diagnostics refresh feedback');
+    for (const label of ['检查更新', '执行更新', '更新状态', '启动 Gateway', '重启 Gateway', '停止 Gateway', '复制诊断摘要']) {
+      const action = findButton(label, document.querySelector('.diagnostics'));
+      if (!action) {
+        throw new Error(`Missing diagnostics action ${label}`);
+      }
+      if (label !== '执行更新' && action.disabled) {
+        throw new Error(`Diagnostics action should be available: ${label}`);
+      }
+    }
+    findButton('更新状态', document.querySelector('.diagnostics')).click();
+    await waitFor(
+      () => /hermes-update|后台动作|暂无运行记录/.test(document.querySelector('.diagnostics .surfaceStatus')?.textContent || ''),
+      'diagnostics update status feedback',
+      20000,
+    );
+    findButton('检查更新', document.querySelector('.diagnostics')).click();
+    await waitFor(
+      () => document.querySelector('.diagnostics .surfaceStatus')?.textContent?.includes('更新检查完成')
+        || document.querySelector('.diagnostics .surfaceStatus')?.textContent?.includes('检查更新失败'),
+      'diagnostics update check feedback',
+      70000,
+    );
 
     findNavButton('技能库')?.click();
     await waitFor(() => document.body.innerText.includes('读取本机 Hermes skills'), 'skills copy page');

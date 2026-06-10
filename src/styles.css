@@ -1976,10 +1976,35 @@ kbd {
   gap: 16px;
 }
 
+.diagnosticActionBar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diagnosticActionBar.secondary {
+  justify-content: flex-start;
+  margin: -6px 0 18px;
+}
+
+.diagnosticActionBar.secondary button {
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #4f5a6b;
+  background: #fff;
+}
+
 .skillCard,
 .gatewayCard,
 .diagnosticCard {
-  min-height: 178px;
+  min-height: 136px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2030,6 +2055,83 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 9px;
   background: #fff;
+}
+
+.diagnosticState {
+  width: fit-content;
+  margin-top: auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #4f5f77;
+  background: #f1f5fb;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.diagnosticPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(260px, 0.9fr);
+  gap: 16px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+
+.diagnosticPanel strong,
+.diagnosticPanel span,
+.diagnosticPanel code {
+  display: block;
+}
+
+.diagnosticPanel strong {
+  margin-top: 5px;
+  font-size: 15px;
+}
+
+.diagnosticPanel p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.diagnosticPanel code {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 10px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  color: #263244;
+  background: #eef1f6;
+  white-space: normal;
+}
+
+.diagnosticPanel ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diagnosticPanel li {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 0;
+  color: #4d596b;
+  font-size: 12.5px;
+}
+
+.diagnosticPanel li span {
+  color: var(--blue);
+  font-family: var(--mono);
+}
+
+.panelEyebrow {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .inlineSearch {

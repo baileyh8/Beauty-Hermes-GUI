@@ -239,6 +239,7 @@ interface HermesRuntime {
   socketState: GatewayConnectionState;
   statusText: string;
   selectSession: (sessionId: string) => Promise<void>;
+  startGateway: () => Promise<void>;
   startNewTask: () => Promise<void>;
   stopGateway: () => Promise<void>;
   submitPrompt: (text: string) => Promise<void>;
@@ -288,6 +289,44 @@ interface SessionMessagesResponse {
   data?: SessionMessageResponse[];
   messages?: SessionMessageResponse[];
   session_id: string;
+}
+
+interface HermesActionStatusResponse {
+  exit_code?: null | number;
+  lines?: string[];
+  name?: string;
+  pid?: null | number;
+  running?: boolean;
+}
+
+interface HermesActionStartResponse {
+  error?: string;
+  message?: string;
+  name?: string;
+  ok?: boolean;
+  pid?: null | number;
+  source?: string;
+  status?: string;
+  update_command?: string;
+}
+
+interface HermesUpdateCommit {
+  at?: number;
+  author?: string;
+  sha?: string;
+  summary?: string;
+}
+
+interface HermesUpdateCheckResponse {
+  behind?: null | number;
+  can_apply?: boolean;
+  commits?: HermesUpdateCommit[];
+  current_version?: string;
+  install_method?: string;
+  message?: null | string;
+  source?: string;
+  update_available?: boolean;
+  update_command?: string;
 }
 
 interface SessionRuntimeInfo {
@@ -814,6 +853,40 @@ function slashWorkbenchLabel(tab?: WorkbenchTab) {
 
 function bulletRows(rows: string[], fallback: string) {
   return rows.length > 0 ? rows.map((row) => `- ${row}`).join('\n') : `- ${fallback}`;
+}
+
+function formatUpdateCheckSummary(result: HermesUpdateCheckResponse | null) {
+  if (!result) {
+    return '还没有检查更新。';
+  }
+
+  const version = result.current_version ? `v${result.current_version}` : 'unknown';
+  const method = result.install_method || 'unknown';
+  if (result.behind === 0) {
+    return `${version} · ${method} · 已是最新版本`;
+  }
+
+  if (typeof result.behind === 'number' && result.behind > 0) {
+    return `${version} · ${method} · 落后 ${result.behind} 个提交`;
+  }
+
+  return `${version} · ${method} · ${result.message || '更新源暂不可用'}`;
+}
+
+function updateActionStatusText(result: HermesActionStatusResponse | null) {
+  if (!result) {
+    return '后台状态暂不可用。';
+  }
+
+  if (result.running) {
+    return `${result.name || '后台动作'} 运行中${result.pid ? ` · pid ${result.pid}` : ''}`;
+  }
+
+  if (typeof result.exit_code === 'number') {
+    return `${result.name || '后台动作'} 已结束 · exit ${result.exit_code}`;
+  }
+
+  return `${result.name || '后台动作'} 暂无运行记录。`;
 }
 
 function buildLocalSlashResponse(command: string, context: LocalSlashContext): LocalSlashResponse | null {
@@ -2310,6 +2383,23 @@ function useHermesRuntime(): HermesRuntime {
     }
   }, [clearConversationRuntime, gatewayStatus, statusText]);
 
+  const startGateway = useCallback(async () => {
+    setGatewayStatus('starting');
+    setStatusText('正在启动 Hermes Gateway');
+
+    if (!window.hermesDesktop?.startHermes) {
+      setGatewayStatus('browser');
+      setStatusText('浏览器预览模式');
+      return;
+    }
+
+    const nextConnection = await window.hermesDesktop.startHermes({ force: true });
+    setConnection(nextConnection);
+    setLogs(nextConnection?.logs ?? []);
+    await connectGateway();
+    void refreshInventory();
+  }, [connectGateway, refreshInventory]);
+
   const stopGateway = useCallback(async () => {
     clientRef.current?.close();
     clientRef.current = null;
@@ -2391,6 +2481,7 @@ function useHermesRuntime(): HermesRuntime {
     restartGateway,
     selectedStoredSessionId,
     selectSession,
+    startGateway,
     startNewTask,
     stopGateway,
     respondApproval,
@@ -7768,12 +7859,14 @@ function DiagnosticsSurface({
   const diagnostics = runtime.inventory?.diagnostics;
   const [diagnosticsBusy, setDiagnosticsBusy] = useState('');
   const [diagnosticsStatus, setDiagnosticsStatus] = useState('');
-  const runDiagnosticAction = async (key: string, label: string, action: () => Promise<void>) => {
+  const [updateCheck, setUpdateCheck] = useState<HermesUpdateCheckResponse | null>(null);
+  const [actionStatus, setActionStatus] = useState<HermesActionStatusResponse | null>(null);
+  const runDiagnosticAction = async (key: string, label: string, action: () => Promise<string | void>) => {
     try {
       setDiagnosticsBusy(key);
       setDiagnosticsStatus('');
-      await action();
-      setDiagnosticsStatus(`${label} 已完成。`);
+      const nextStatus = await action();
+      setDiagnosticsStatus(nextStatus || `${label} 已完成。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setDiagnosticsStatus(`${label} 失败：${message}`);
@@ -7785,25 +7878,140 @@ function DiagnosticsSurface({
     onOpenPermission();
     setDiagnosticsStatus('已打开权限确认面板。');
   };
+  const performGatewayAction = async (verb: 'restart' | 'start' | 'stop') => {
+    const labels = {
+      restart: '重启 Gateway',
+      start: '启动 Gateway',
+      stop: '停止 Gateway',
+    };
+    const label = labels[verb];
+    await runDiagnosticAction(`gateway:${verb}`, label, async () => {
+      const result = await runtime.apiRequest<HermesActionStartResponse>({
+        method: 'POST',
+        path: `/api/gateway/${verb}`,
+        timeoutMs: 45000,
+      });
+      if (verb === 'stop') {
+        await runtime.stopGateway();
+      } else if (verb === 'start') {
+        await runtime.startGateway();
+      } else {
+        await runtime.restartGateway();
+      }
+      await runtime.refreshInventory();
+      return `${label} 已发送${result.pid ? ` · pid ${result.pid}` : ''}${result.source ? ` · ${result.source}` : ''}`;
+    });
+  };
+  const checkUpdates = async () => {
+    await runDiagnosticAction('update:check', '检查更新', async () => {
+      const result = await runtime.apiRequest<HermesUpdateCheckResponse>({
+        path: '/api/hermes/update/check?force=true',
+        timeoutMs: 60000,
+      });
+      setUpdateCheck(result);
+      return `更新检查完成：${formatUpdateCheckSummary(result)}`;
+    });
+  };
+  const runUpdate = async () => {
+    await runDiagnosticAction('update:apply', '执行更新', async () => {
+      const result = await runtime.apiRequest<HermesActionStartResponse>({
+        method: 'POST',
+        path: '/api/hermes/update',
+        timeoutMs: 60000,
+      });
+      if (result.ok === false) {
+        throw new Error(result.message || result.error || 'Hermes update 未能启动');
+      }
+      const status = await runtime.apiRequest<HermesActionStatusResponse>({
+        path: '/api/actions/hermes-update/status?lines=30',
+        timeoutMs: 15000,
+      }).catch(() => null);
+      setActionStatus(status);
+      return `Hermes 更新已启动${result.pid ? ` · pid ${result.pid}` : ''}`;
+    });
+  };
+  const refreshUpdateStatus = async () => {
+    await runDiagnosticAction('update:status', '更新状态', async () => {
+      const result = await runtime.apiRequest<HermesActionStatusResponse>({
+        path: '/api/actions/hermes-update/status?lines=60',
+        timeoutMs: 15000,
+      });
+      setActionStatus(result);
+      return updateActionStatusText(result);
+    });
+  };
+  const copyDiagnosticsSummary = async () => {
+    await runDiagnosticAction('copy', '复制诊断摘要', async () => {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('当前环境无法访问剪贴板');
+      }
+
+      await navigator.clipboard.writeText([
+        `Beauty Hermes GUI diagnostics`,
+        `Desktop: ${diagnostics?.desktopVersion || 'unknown'}`,
+        `Hermes: ${diagnostics?.hermesVersion || 'unknown'}`,
+        `Home: ${diagnostics?.hermesHome || 'unknown'}`,
+        `Config: ${diagnostics?.configExists ? 'exists' : 'missing'}`,
+        `Agent repo: ${diagnostics?.agentRepoExists ? 'exists' : 'missing'}`,
+        `Gateway: ${runtime.connectionLabel} / ${runtime.gatewayStatus} / pid ${diagnostics?.gatewayPid ?? runtime.connection?.pid ?? '-'}`,
+        `Update: ${formatUpdateCheckSummary(updateCheck)}`,
+        `Logs:`,
+        ...runtime.logs.slice(0, 12),
+      ].join('\n'));
+      return '诊断摘要已复制。';
+    });
+  };
+  const updateApplyDisabled = Boolean(diagnosticsBusy) || updateCheck?.can_apply === false;
+  const updateCommits = updateCheck?.commits?.slice(0, 4) || [];
 
   return (
     <section className="pageSurface diagnostics">
       <div className="pageIntro">
         <div>
           <h2>诊断与更新</h2>
-          <p>启动、权限、连接、版本和日志问题集中恢复。</p>
+          <p>启动、权限、连接、版本和日志问题都可以在这里直接处理。</p>
         </div>
-        <button
-          className="lightButton"
-          type="button"
-          disabled={Boolean(diagnosticsBusy)}
-          onClick={() => void runDiagnosticAction('refresh', '重新诊断', runtime.refreshInventory)}
-        >
-          <RefreshCw className={diagnosticsBusy === 'refresh' ? 'spinIcon' : undefined} size={16} />
-          {diagnosticsBusy === 'refresh' ? '诊断中' : '重新诊断'}
-        </button>
+        <div className="diagnosticActionBar">
+          <button className="lightButton" type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void runDiagnosticAction('refresh', '重新诊断', runtime.refreshInventory)}>
+            <RefreshCw className={diagnosticsBusy === 'refresh' ? 'spinIcon' : undefined} size={15} />
+            {diagnosticsBusy === 'refresh' ? '诊断中' : '重新诊断'}
+          </button>
+          <button className="lightButton" type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void checkUpdates()}>
+            <Download className={diagnosticsBusy === 'update:check' ? 'spinIcon' : undefined} size={15} />
+            检查更新
+          </button>
+          <button className="lightButton" type="button" disabled={updateApplyDisabled} onClick={() => void runUpdate()}>
+            <Rocket className={diagnosticsBusy === 'update:apply' ? 'spinIcon' : undefined} size={15} />
+            {updateCheck?.can_apply === false ? '需手动更新' : '执行更新'}
+          </button>
+          <button className="lightButton" type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void refreshUpdateStatus()}>
+            更新状态
+          </button>
+        </div>
       </div>
       {diagnosticsStatus && <p className="surfaceStatus" role="status">{diagnosticsStatus}</p>}
+      <div className="diagnosticActionBar secondary">
+        <button type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void performGatewayAction('start')}>
+          <Play size={14} />
+          启动 Gateway
+        </button>
+        <button type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void performGatewayAction('restart')}>
+          <RefreshCw className={diagnosticsBusy === 'gateway:restart' ? 'spinIcon' : undefined} size={14} />
+          重启 Gateway
+        </button>
+        <button type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void performGatewayAction('stop')}>
+          <PauseCircle size={14} />
+          停止 Gateway
+        </button>
+        <button type="button" disabled={Boolean(diagnosticsBusy)} onClick={openPermissionCheck}>
+          <Shield size={14} />
+          权限确认
+        </button>
+        <button type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void copyDiagnosticsSummary()}>
+          <Copy size={14} />
+          复制诊断摘要
+        </button>
+      </div>
       <div className="diagnosticGrid">
         <DiagnosticCard icon={<CheckCircle2 />} title="Desktop shell" desc="Electron IPC bridge 正常" state="正常" />
         <DiagnosticCard
@@ -7811,9 +8019,6 @@ function DiagnosticsSurface({
           title="Hermes 配置"
           desc={diagnostics?.configExists ? shortenPath(`${diagnostics.hermesHome}/config.yaml`) : '未找到 config.yaml'}
           state={diagnostics?.configExists ? '正常' : '需要检查'}
-          action={diagnostics?.configExists ? undefined : openPermissionCheck}
-          actionLabel="检查权限"
-          busy={diagnosticsBusy === 'permission'}
         />
         <DiagnosticCard
           icon={diagnostics?.agentRepoExists ? <CheckCircle2 /> : <AlertTriangle />}
@@ -7826,44 +8031,54 @@ function DiagnosticsSurface({
           title="Gateway"
           desc={`${runtime.connectionLabel} · ${diagnostics?.gatewayState || runtime.gatewayStatus} · pid ${diagnostics?.gatewayPid ?? '-'}`}
           state={runtime.gatewayStatus === 'connected' ? '正常' : '检查'}
-          action={runtime.gatewayStatus === 'connected' ? undefined : () => void runDiagnosticAction('gateway', 'Gateway 修复', runtime.restartGateway)}
-          actionLabel={runtime.gatewayStatus === 'connected' ? undefined : '修复连接'}
-          busy={diagnosticsBusy === 'gateway'}
         />
       </div>
+      <section className="diagnosticPanel">
+        <div>
+          <span className="panelEyebrow">Hermes 更新</span>
+          <strong>{formatUpdateCheckSummary(updateCheck)}</strong>
+          {updateCheck?.message && <p>{updateCheck.message}</p>}
+          {updateCheck?.update_command && <code>{updateCheck.update_command}</code>}
+        </div>
+        {updateCommits.length > 0 && (
+          <ul>
+            {updateCommits.map((commit) => (
+              <li key={`${commit.sha}-${commit.summary}`}>
+                <span>{commit.sha}</span>
+                {compactLine(commit.summary || '', 76)}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <section className="logPanel">
         <h3>最近日志</h3>
-        <pre className="terminalBlock"><code>{runtime.logs.length > 0 ? runtime.logs.slice(0, 10).join('\n') : runtime.inventoryError || '暂无 Gateway 日志。'}</code></pre>
+        <pre className="terminalBlock"><code>{[
+          ...(actionStatus?.lines?.slice(-8) || []),
+          ...(runtime.logs.length > 0 ? runtime.logs.slice(0, 10) : [runtime.inventoryError || '暂无 Gateway 日志。']),
+        ].join('\n')}</code></pre>
       </section>
     </section>
   );
 }
 
 function DiagnosticCard({
-  actionLabel,
-  busy,
   icon,
   title,
   desc,
   state,
-  action,
 }: {
   icon: React.ReactNode;
   title: string;
   desc: string;
   state: string;
-  action?: () => void;
-  actionLabel?: string;
-  busy?: boolean;
 }) {
   return (
     <article className="diagnosticCard">
       {icon}
       <strong>{title}</strong>
       <p>{desc}</p>
-      <button type="button" onClick={action} disabled={!action || busy}>
-        {busy ? '处理中' : action ? actionLabel || state : state}
-      </button>
+      <span className="diagnosticState">{state}</span>
     </article>
   );
 }

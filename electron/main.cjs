@@ -9,6 +9,8 @@ const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const gatewayManager = createGatewayManager();
 let mainWindow = null;
 const localTelegramOnboardingPairings = new Map();
+const localActionProcesses = new Map();
+const localActionResults = new Map();
 
 const LOCAL_MESSAGING_CATALOG = [
   {
@@ -429,6 +431,62 @@ function parseJsonMarker(stdout) {
     throw new Error(`Hermes operation did not return JSON: ${String(stdout || '').slice(-800)}`);
   }
   return JSON.parse(line.slice(marker.length));
+}
+
+function localActionLogPath(name) {
+  const safeName = String(name || 'action').replace(/[^a-z0-9_.-]/gi, '-');
+  const dir = path.join(resolveHermesHome(), 'beauty-hermes-actions');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${safeName}.log`);
+}
+
+function tailLocalActionLog(name, maxLines = 200) {
+  const text = safeReadText(localActionLogPath(name), 240000);
+  if (!text) {
+    return [];
+  }
+
+  return text.split(/\r?\n/).filter(Boolean).slice(-Math.max(1, Math.min(maxLines, 2000)));
+}
+
+function spawnLocalHermesAction(args, name) {
+  const agentRepo = resolveHermesAgentRepo();
+  const logPath = localActionLogPath(name);
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  logStream.write(`\n=== ${name} started ${new Date().toISOString()} ===\n`);
+  localActionResults.delete(name);
+  const child = spawn(resolveHermesPython(), ['-m', 'hermes_cli.main', ...args], {
+    cwd: agentRepo,
+    detached: true,
+    env: {
+      ...process.env,
+      HERMES_HOME: resolveHermesHome(),
+      HERMES_NONINTERACTIVE: '1',
+      PYTHONPATH: [
+        agentRepo,
+        process.env.PYTHONPATH,
+      ].filter(Boolean).join(path.delimiter),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => logStream.write(chunk));
+  child.stderr.on('data', (chunk) => logStream.write(chunk));
+  child.on('close', (code, signal) => {
+    logStream.write(`\n=== ${name} finished ${new Date().toISOString()} exit=${code ?? signal ?? 'unknown'} ===\n`);
+    logStream.end();
+    localActionResults.set(name, { exitCode: code, pid: child.pid });
+    localActionProcesses.delete(name);
+  });
+  child.on('error', (error) => {
+    logStream.write(`\n=== ${name} failed to start: ${error.message} ===\n`);
+    logStream.end();
+    localActionResults.set(name, { exitCode: 1, pid: child.pid ?? null });
+    localActionProcesses.delete(name);
+  });
+  localActionProcesses.set(name, child);
+  child.unref();
+  return { ok: true, pid: child.pid, name, source: 'desktop-local-bridge' };
 }
 
 function runHermesPython(script, payload = {}, timeoutMs = 30000) {
@@ -1626,6 +1684,154 @@ function readHermesInventory() {
   };
 }
 
+async function localSystemApi(method, url) {
+  if (method === 'GET' && url.pathname === '/api/status') {
+    const inventory = readHermesInventory();
+    const connection = gatewayManager.getConnection();
+    const gatewayConnected = connection?.status === 'connected';
+    const gatewayRunning = gatewayConnected || Boolean(inventory.diagnostics.gatewayPid) || inventory.diagnostics.gatewayState === 'running';
+
+    return {
+      active_sessions: 0,
+      auth_providers: [],
+      auth_required: false,
+      config_path: path.join(inventory.diagnostics.hermesHome, 'config.yaml'),
+      config_version: null,
+      env_path: path.join(inventory.diagnostics.hermesHome, '.env'),
+      gateway_exit_reason: null,
+      gateway_health_url: connection?.baseUrl || null,
+      gateway_pid: connection?.pid ?? inventory.diagnostics.gatewayPid ?? null,
+      gateway_platforms: inventory.messaging.channelCounts || {},
+      gateway_running: gatewayRunning,
+      gateway_state: gatewayConnected ? 'running' : inventory.diagnostics.gatewayState || (gatewayRunning ? 'running' : 'stopped'),
+      gateway_updated_at: inventory.messaging.updatedAt || null,
+      hermes_home: inventory.diagnostics.hermesHome,
+      latest_config_version: null,
+      release_date: '',
+      source: 'desktop-local-bridge',
+      version: inventory.diagnostics.hermesVersion || 'unknown',
+    };
+  }
+
+  if (method === 'POST' && url.pathname === '/api/gateway/start') {
+    const connection = await gatewayManager.start();
+    return {
+      ok: connection?.status === 'connected' || connection?.status === 'skipped',
+      pid: connection?.pid ?? null,
+      name: 'gateway-start',
+      status: connection?.status || 'unknown',
+      source: 'desktop-local-bridge',
+    };
+  }
+
+  if (method === 'POST' && url.pathname === '/api/gateway/restart') {
+    gatewayManager.stop();
+    const connection = await gatewayManager.start({ force: true });
+    return {
+      ok: connection?.status === 'connected' || connection?.status === 'skipped',
+      pid: connection?.pid ?? null,
+      name: 'gateway-restart',
+      status: connection?.status || 'unknown',
+      source: 'desktop-local-bridge',
+    };
+  }
+
+  if (method === 'POST' && url.pathname === '/api/gateway/stop') {
+    const connection = gatewayManager.stop();
+    return {
+      ok: true,
+      pid: connection?.pid ?? null,
+      name: 'gateway-stop',
+      status: connection?.status || 'stopped',
+      source: 'desktop-local-bridge',
+    };
+  }
+
+  if (method === 'GET' && url.pathname === '/api/hermes/update/check') {
+    const force = url.searchParams.get('force') === 'true' || url.searchParams.get('force') === '1';
+    return runHermesPython(`
+import asyncio, json, os, subprocess, sys
+from pathlib import Path
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_cli import __version__
+try:
+    from hermes_cli.config import detect_install_method, recommended_update_command_for_method
+except Exception:
+    detect_install_method = lambda root=None: "unknown"
+    recommended_update_command_for_method = lambda method: "hermes update"
+project_root = Path.cwd()
+install_method = detect_install_method(project_root)
+update_command = recommended_update_command_for_method(install_method)
+if payload.get("force"):
+    try:
+        (Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / ".update_check").unlink()
+    except OSError:
+        pass
+try:
+    from hermes_cli.banner import check_for_updates
+    behind = check_for_updates()
+except Exception:
+    behind = None
+commits = []
+if install_method in ("git", "pip") and behind not in (None, 0):
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(project_root), "log", "--format=%H%x1f%s%x1f%an%x1f%ct", "HEAD..origin/main", "-n20"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode == 0:
+            for line in out.stdout.splitlines():
+                parts = (line.split("\\x1f") + ["", "", "", "0"])[:4]
+                commits.append({"sha": parts[0][:7], "summary": parts[1], "author": parts[2], "at": int(parts[3] or 0)})
+    except Exception:
+        commits = []
+message = None
+if behind is None:
+    message = "无法连接更新源，稍后再试。"
+elif behind == 0:
+    message = "已经是最新版本。"
+else:
+    message = f"发现 {behind} 个待更新提交。" if behind > 0 else "发现可用更新。"
+print("__BEAUTY_HERMES_JSON__" + json.dumps({
+    "install_method": install_method,
+    "current_version": __version__,
+    "behind": behind,
+    "update_available": bool(behind not in (None, 0)),
+    "can_apply": install_method in ("git", "pip"),
+    "update_command": update_command,
+    "message": message,
+    "commits": commits,
+    "source": "desktop-local-bridge",
+}))
+`, { force }, 60000);
+  }
+
+  if (method === 'POST' && url.pathname === '/api/hermes/update') {
+    return spawnLocalHermesAction(['update'], 'hermes-update');
+  }
+
+  const actionMatch = url.pathname.match(/^\/api\/actions\/([^/]+)\/status$/);
+  if (method === 'GET' && actionMatch) {
+    const name = decodeURIComponent(actionMatch[1]);
+    const lines = Number(url.searchParams.get('lines') || 200);
+    const proc = localActionProcesses.get(name);
+    const result = localActionResults.get(name) || null;
+    const exitCode = proc ? proc.exitCode : result?.exitCode ?? null;
+    return {
+      exit_code: exitCode,
+      lines: tailLocalActionLog(name, lines),
+      name,
+      pid: proc?.pid ?? result?.pid ?? null,
+      running: Boolean(proc && exitCode === null),
+      source: 'desktop-local-bridge',
+    };
+  }
+
+  return null;
+}
+
 async function localApiFallback(request, error) {
   const rawPath = String(request?.path || '');
   const method = String(request?.method || 'GET').toUpperCase();
@@ -1638,6 +1844,7 @@ async function localApiFallback(request, error) {
   const body = request?.body && typeof request.body === 'object' ? request.body : {};
 
   const localApis = [
+    localSystemApi,
     localProfilesApi,
     localSkillsApi,
     localCronApi,

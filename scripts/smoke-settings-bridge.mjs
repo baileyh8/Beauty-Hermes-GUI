@@ -151,6 +151,27 @@ try {
     await waitFor(() => window.hermesDesktop?.api, 'desktop api');
     const api = (request) => window.hermesDesktop.api(request);
 
+    const status = await api({ path: '/api/status', timeoutMs: 30000 });
+    if (!status.hermes_home || !status.config_path || status.source !== 'desktop-local-bridge') {
+      throw new Error('Local status fallback did not return desktop diagnostics');
+    }
+    const gatewayStart = await api({ method: 'POST', path: '/api/gateway/start', timeoutMs: 30000 });
+    if (!gatewayStart.name || !['gateway-start', 'gateway-restart'].includes(gatewayStart.name)) {
+      throw new Error('Local gateway start fallback did not return action metadata');
+    }
+    const gatewayStop = await api({ method: 'POST', path: '/api/gateway/stop', timeoutMs: 30000 });
+    if (!gatewayStop.ok || gatewayStop.name !== 'gateway-stop') {
+      throw new Error('Local gateway stop fallback did not return action metadata');
+    }
+    const updateCheck = await api({ path: '/api/hermes/update/check', timeoutMs: 60000 });
+    if (!updateCheck.current_version || !updateCheck.update_command) {
+      throw new Error('Local update check fallback did not return version metadata');
+    }
+    const updateStatus = await api({ path: '/api/actions/hermes-update/status?lines=5', timeoutMs: 30000 });
+    if (updateStatus.name !== 'hermes-update' || !Array.isArray(updateStatus.lines)) {
+      throw new Error('Local action status fallback did not return log metadata');
+    }
+
     const toolsets = await api({ path: '/api/tools/toolsets', timeoutMs: 30000 });
     const firstToolset = Array.isArray(toolsets) ? toolsets[0] : null;
     if (!firstToolset?.name) {
@@ -425,6 +446,7 @@ try {
       messaging: 'env-save-clear-onboarding',
       model: 'saved',
       profiles: 'create-edit-soul-rename-delete',
+      system: 'status-gateway-update-check',
       cron: 'create-update-runs-delete',
       toolset: firstToolset.name,
       toolsetConfig: 'provider-env',
