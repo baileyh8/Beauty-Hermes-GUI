@@ -184,6 +184,42 @@ interface GatewayFileItem {
   meta: string;
 }
 
+type HermesSubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running';
+type HermesSubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool';
+
+interface HermesSubagentStreamEntry {
+  at: number;
+  isError?: boolean;
+  kind: HermesSubagentStreamKind;
+  text: string;
+}
+
+interface HermesSubagentProgress {
+  costUsd?: number;
+  currentTool?: string;
+  durationSeconds?: number;
+  filesRead: string[];
+  filesWritten: string[];
+  goal: string;
+  id: string;
+  inputTokens?: number;
+  model?: string;
+  outputTokens?: number;
+  parentId: null | string;
+  startedAt: number;
+  status: HermesSubagentStatus;
+  stream: HermesSubagentStreamEntry[];
+  summary?: string;
+  taskCount: number;
+  taskIndex: number;
+  toolCount?: number;
+  updatedAt: number;
+}
+
+interface HermesSubagentNode extends HermesSubagentProgress {
+  children: HermesSubagentNode[];
+}
+
 interface SlashCommandOption {
   desc: string;
   icon: React.ReactNode;
@@ -206,6 +242,7 @@ interface LocalSlashContext {
   socketState: GatewayConnectionState;
   statusText: string;
   tools: GatewayToolItem[];
+  subagents: HermesSubagentProgress[];
 }
 
 interface LocalSlashResponse {
@@ -279,6 +316,7 @@ interface HermesRuntime {
   startNewTask: () => Promise<void>;
   stopGateway: () => Promise<void>;
   submitPrompt: (text: string, options?: ProjectRuntimeContext) => Promise<void>;
+  subagents: HermesSubagentProgress[];
   respondApproval: (choice: 'once' | 'session' | 'always' | 'deny') => Promise<void>;
   respondClarify: (answer: string) => Promise<void>;
   tools: GatewayToolItem[];
@@ -899,6 +937,190 @@ function compactDuplicateReasoning(previous: string, incoming: string, replace =
   }
 
   return `${previous}${next}`;
+}
+
+const terminalSubagentStatuses = new Set<HermesSubagentStatus>(['completed', 'failed', 'interrupted']);
+
+function subagentString(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
+function subagentNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function subagentStringList(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function subagentStatus(value: unknown): HermesSubagentStatus {
+  return value === 'completed' || value === 'failed' || value === 'interrupted' || value === 'queued'
+    ? value
+    : 'running';
+}
+
+function subagentId(payload: Record<string, unknown>) {
+  return subagentString(payload.subagent_id)
+    || `${subagentString(payload.parent_id) || 'root'}:${subagentNumber(payload.task_index) ?? 0}:${subagentString(payload.goal) || 'subagent'}`;
+}
+
+function formatSubagentToolName(name: string) {
+  return name
+    .split('_')
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ') || name;
+}
+
+function compactSubagentText(text: string, maxLength = 220) {
+  return compactLine(cleanDisplayText(text).replace(/\s+/g, ' '), maxLength);
+}
+
+function formatSubagentTool(payload: Record<string, unknown>) {
+  const name = subagentString(payload.tool_name);
+  if (!name) {
+    return '';
+  }
+
+  const preview = compactSubagentText(subagentString(payload.tool_preview) || subagentString(payload.text), 96);
+  return preview ? `${formatSubagentToolName(name)}("${preview}")` : formatSubagentToolName(name);
+}
+
+function appendSubagentStream(
+  stream: HermesSubagentStreamEntry[],
+  entry: HermesSubagentStreamEntry,
+) {
+  const last = stream[stream.length - 1];
+  if (last?.kind === entry.kind && last.text === entry.text && last.isError === entry.isError) {
+    return stream;
+  }
+
+  return [...stream, entry].slice(-24);
+}
+
+function subagentStreamFromPayload(
+  payload: Record<string, unknown>,
+  status: HermesSubagentStatus,
+  eventType: string,
+  at: number,
+) {
+  const entries: HermesSubagentStreamEntry[] = [];
+  const outputTail = Array.isArray(payload.output_tail) ? payload.output_tail : [];
+
+  outputTail.forEach((item) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+    const row = item as Record<string, unknown>;
+    const tool = subagentString(row.tool);
+    const preview = compactSubagentText(subagentString(row.preview));
+    const text = tool ? `${formatSubagentToolName(tool)}${preview ? `("${preview}")` : ''}` : preview;
+    if (text) {
+      entries.push({
+        at,
+        isError: row.is_error === true,
+        kind: tool ? 'tool' : 'progress',
+        text,
+      });
+    }
+  });
+
+  const toolText = formatSubagentTool(payload);
+  if (toolText) {
+    entries.push({ at, isError: Boolean(payload.error), kind: 'tool', text: toolText });
+  }
+
+  const text = compactSubagentText(subagentString(payload.text));
+  if (eventType === 'subagent.progress' && text) {
+    entries.push({ at, isError: Boolean(payload.error), kind: 'progress', text });
+  }
+  if (eventType === 'subagent.thinking' && text) {
+    entries.push({ at, kind: 'thinking', text });
+  }
+
+  const summary = compactSubagentText(subagentString(payload.summary) || subagentString(payload.text));
+  if (terminalSubagentStatuses.has(status) && summary) {
+    entries.push({ at, isError: status === 'failed', kind: 'summary', text: summary });
+  }
+
+  return entries;
+}
+
+function upsertSubagentProgress(
+  current: HermesSubagentProgress[],
+  payload: Record<string, unknown>,
+  eventType: string,
+) {
+  const id = subagentId(payload);
+  const index = current.findIndex((item) => item.id === id);
+  const previous = index >= 0 ? current[index] : undefined;
+
+  if (previous && terminalSubagentStatuses.has(previous.status)) {
+    return current;
+  }
+
+  const at = Date.now();
+  const status = subagentStatus(payload.status);
+  const filesRead = subagentStringList(payload.files_read);
+  const filesWritten = subagentStringList(payload.files_written);
+  const nextStream = subagentStreamFromPayload(payload, status, eventType, at)
+    .reduce(appendSubagentStream, previous?.stream ?? []);
+  const currentTool = terminalSubagentStatuses.has(status)
+    ? undefined
+    : subagentString(payload.tool_name) || previous?.currentTool;
+  const next: HermesSubagentProgress = {
+    costUsd: subagentNumber(payload.cost_usd) ?? previous?.costUsd,
+    currentTool,
+    durationSeconds: subagentNumber(payload.duration_seconds) ?? previous?.durationSeconds,
+    filesRead: filesRead.length > 0 ? filesRead : previous?.filesRead ?? [],
+    filesWritten: filesWritten.length > 0 ? filesWritten : previous?.filesWritten ?? [],
+    goal: subagentString(payload.goal) || previous?.goal || 'Subagent',
+    id: previous?.id ?? id,
+    inputTokens: subagentNumber(payload.input_tokens) ?? previous?.inputTokens,
+    model: subagentString(payload.model) || previous?.model,
+    outputTokens: subagentNumber(payload.output_tokens) ?? previous?.outputTokens,
+    parentId: subagentString(payload.parent_id) || previous?.parentId || null,
+    startedAt: previous?.startedAt ?? at,
+    status,
+    stream: nextStream,
+    summary: subagentString(payload.summary) || previous?.summary,
+    taskCount: subagentNumber(payload.task_count) ?? previous?.taskCount ?? 1,
+    taskIndex: subagentNumber(payload.task_index) ?? previous?.taskIndex ?? 0,
+    toolCount: subagentNumber(payload.tool_count) ?? previous?.toolCount,
+    updatedAt: at,
+  };
+
+  return index >= 0
+    ? current.map((item) => (item.id === next.id ? next : item))
+    : [...current, next];
+}
+
+function buildSubagentTree(items: readonly HermesSubagentProgress[]) {
+  const nodes = new Map<string, HermesSubagentNode>();
+  items.forEach((item) => nodes.set(item.id, { ...item, children: [] }));
+
+  const roots: HermesSubagentNode[] = [];
+  nodes.forEach((node) => {
+    const parent = node.parentId ? nodes.get(node.parentId) : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  const sortNodes = (a: HermesSubagentNode, b: HermesSubagentNode) =>
+    a.startedAt - b.startedAt || a.taskIndex - b.taskIndex || a.goal.localeCompare(b.goal);
+  const walk = (node: HermesSubagentNode) => {
+    node.children.sort(sortNodes);
+    node.children.forEach(walk);
+  };
+  roots.sort(sortNodes).forEach(walk);
+  return roots;
+}
+
+function activeSubagentCount(items: readonly HermesSubagentProgress[]) {
+  return items.filter((item) => item.status === 'queued' || item.status === 'running').length;
 }
 
 function slashOutputText(result: unknown) {
@@ -1736,6 +1958,7 @@ function useHermesRuntime(): HermesRuntime {
   const [recentSessionItems, setRecentSessionItems] = useState<SidebarItem[]>(recentSessions);
   const [tools, setTools] = useState<GatewayToolItem[]>(fallbackTools);
   const [files, setFiles] = useState<GatewayFileItem[]>(fallbackFiles);
+  const [subagents, setSubagents] = useState<HermesSubagentProgress[]>([]);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [pendingClarify, setPendingClarify] = useState<PendingClarify | null>(null);
 
@@ -2052,6 +2275,7 @@ function useHermesRuntime(): HermesRuntime {
     setPendingClarify(null);
     setTools([]);
     setFiles([]);
+    setSubagents([]);
     setContextPercent(0);
 
     if (clearMessages) {
@@ -2275,6 +2499,15 @@ function useHermesRuntime(): HermesRuntime {
               setFiles((current) => mergeGatewayFiles(current, nextFiles));
             }
           }
+          break;
+        }
+        case 'subagent.spawn_requested':
+        case 'subagent.start':
+        case 'subagent.progress':
+        case 'subagent.thinking':
+        case 'subagent.tool':
+        case 'subagent.complete': {
+          setSubagents((current) => upsertSubagentProgress(current, payload, event.type));
           break;
         }
         case 'file.changed':
@@ -2727,6 +2960,7 @@ function useHermesRuntime(): HermesRuntime {
           recentSessions: recentSessionItems,
           socketState,
           statusText,
+          subagents,
           tools,
         });
 
@@ -2975,6 +3209,7 @@ function useHermesRuntime(): HermesRuntime {
     socketState,
     statusText,
     submitPrompt,
+    subagents,
     tools,
   };
 }
@@ -7301,6 +7536,12 @@ function AgentsSurface({
   const completedTools = runtime.tools.filter((tool) => tool.state === 'done');
   const runningActions = localActions.filter((action) => action.running);
   const completedActions = localActions.filter((action) => !action.running);
+  const subagentTree = useMemo(() => buildSubagentTree(runtime.subagents), [runtime.subagents]);
+  const activeSubagents = activeSubagentCount(runtime.subagents);
+  const subagentInputTokens = runtime.subagents.reduce((total, item) => total + (item.inputTokens ?? 0), 0);
+  const subagentOutputTokens = runtime.subagents.reduce((total, item) => total + (item.outputTokens ?? 0), 0);
+  const subagentCost = runtime.subagents.reduce((total, item) => total + (item.costUsd ?? 0), 0);
+  const subagentFiles = runtime.subagents.reduce((total, item) => total + item.filesRead.length + item.filesWritten.length, 0);
   const gatewayControlsLocked = Boolean(agentBusy);
   const loadActions = useCallback(async (quiet = false) => {
     try {
@@ -7472,7 +7713,7 @@ function AgentsSurface({
       <div className="pageIntro">
         <div>
           <h2>Agents</h2>
-          <p>运行中工具、待确认命令和 Gateway 控制集中在这里。</p>
+          <p>并行 subagents、运行中工具、待确认命令和 Gateway 控制集中在这里。</p>
         </div>
         <div className="topActions">
           <button className="lightButton" type="button" onClick={() => void refreshAgents()} disabled={Boolean(agentBusy)}>
@@ -7486,6 +7727,32 @@ function AgentsSurface({
         </div>
       </div>
       {agentStatus && <p className="surfaceStatus" role="status">{agentStatus}</p>}
+      <section className="subagentPanel" aria-label="并行任务">
+        <div className="subagentPanelHead">
+          <div>
+            <span className="panelEyebrow">并行任务</span>
+            <strong>{activeSubagents > 0 ? `${activeSubagents} 个正在运行` : runtime.subagents.length > 0 ? '全部已完成' : '等待 subagent 事件'}</strong>
+          </div>
+          <div className="subagentMetrics">
+            <span>{runtime.subagents.length} agents</span>
+            <span>{subagentInputTokens + subagentOutputTokens > 0 ? `${formatCompactNumber(subagentInputTokens)} / ${formatCompactNumber(subagentOutputTokens)} tokens` : 'tokens 待统计'}</span>
+            <span>{subagentFiles > 0 ? `${subagentFiles} 文件` : '文件待同步'}</span>
+            <span>{subagentCost > 0 ? `$${subagentCost.toFixed(3)}` : 'cost 待统计'}</span>
+          </div>
+        </div>
+        {subagentTree.length > 0 ? (
+          <div className="subagentTree">
+            {subagentTree.map((node) => (
+              <SubagentTreeNode key={node.id} node={node} />
+            ))}
+          </div>
+        ) : (
+          <div className="subagentEmpty">
+            <GitBranch size={16} />
+            <span>Hermes 发出 <code>subagent.*</code> 事件后，会按父子关系、进度、工具流、文件和 token 成本在这里实时展开。</span>
+          </div>
+        )}
+      </section>
       <div className="agentControlStrip" aria-label="Gateway 快捷控制">
         <div>
           <Network size={15} />
@@ -7552,6 +7819,96 @@ function AgentsSurface({
         </KanbanColumn>
       </div>
     </section>
+  );
+}
+
+function formatCompactNumber(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0';
+  }
+
+  return new Intl.NumberFormat('en', {
+    maximumFractionDigits: value >= 1000 ? 1 : 0,
+    notation: value >= 1000 ? 'compact' : 'standard',
+  }).format(value);
+}
+
+function subagentStatusLabel(status: HermesSubagentStatus) {
+  const labels: Record<HermesSubagentStatus, string> = {
+    completed: '完成',
+    failed: '失败',
+    interrupted: '中断',
+    queued: '排队',
+    running: '运行中',
+  };
+  return labels[status];
+}
+
+function subagentStreamIcon(kind: HermesSubagentStreamKind) {
+  if (kind === 'tool') {
+    return <TerminalSquare size={12} />;
+  }
+  if (kind === 'thinking') {
+    return <Sparkles size={12} />;
+  }
+  if (kind === 'summary') {
+    return <CheckCircle2 size={12} />;
+  }
+  return <CircleDot size={12} />;
+}
+
+function SubagentTreeNode({ node, level = 0 }: { node: HermesSubagentNode; level?: number }) {
+  const tokenText = node.inputTokens || node.outputTokens
+    ? `${formatCompactNumber(node.inputTokens ?? 0)} / ${formatCompactNumber(node.outputTokens ?? 0)}`
+    : '';
+  const metaParts = [
+    `#${node.taskIndex + 1}/${node.taskCount}`,
+    node.model,
+    node.currentTool ? `tool ${formatSubagentToolName(node.currentTool)}` : '',
+    tokenText ? `${tokenText} tokens` : '',
+    node.costUsd ? `$${node.costUsd.toFixed(3)}` : '',
+    node.durationSeconds ? `${node.durationSeconds.toFixed(1)}s` : '',
+  ].filter(Boolean);
+  const files = [...node.filesRead, ...node.filesWritten].slice(0, 4);
+
+  return (
+    <article className="subagentNode" style={{ '--subagent-level': level } as CSSProperties}>
+      <div className="subagentNodeMain">
+        <span className={`subagentStatusDot ${node.status}`} />
+        <div>
+          <div className="subagentTitleLine">
+            <strong>{node.goal}</strong>
+            <span className={`subagentPill ${node.status}`}>{subagentStatusLabel(node.status)}</span>
+          </div>
+          <p>{metaParts.join(' · ') || '等待进度'}</p>
+        </div>
+      </div>
+      {node.stream.length > 0 && (
+        <div className="subagentStream">
+          {node.stream.slice(-4).map((entry, index) => (
+            <div className={entry.isError ? 'error' : undefined} key={`${entry.at}-${entry.kind}-${index}`}>
+              {subagentStreamIcon(entry.kind)}
+              <span>{entry.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {(node.summary || files.length > 0) && (
+        <div className="subagentMetaLine">
+          {node.summary && <span>{node.summary}</span>}
+          {files.map((file) => (
+            <code key={file}>{shortenPath(file)}</code>
+          ))}
+        </div>
+      )}
+      {node.children.length > 0 && (
+        <div className="subagentChildren">
+          {node.children.map((child) => (
+            <SubagentTreeNode key={child.id} level={level + 1} node={child} />
+          ))}
+        </div>
+      )}
+    </article>
   );
 }
 

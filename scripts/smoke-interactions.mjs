@@ -283,6 +283,77 @@ try {
       'summary markdown table rendering',
     );
 
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        goal: '扫描项目结构',
+        model: 'deepseek-v4-flash',
+        session_id: 'smoke-agents',
+        status: 'running',
+        subagent_id: 'sa-root',
+        task_count: 2,
+        task_index: 0,
+      },
+      type: 'subagent.spawn_requested',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        goal: '读取页面映射',
+        parent_id: 'sa-root',
+        session_id: 'smoke-agents',
+        status: 'queued',
+        subagent_id: 'sa-child',
+        task_count: 2,
+        task_index: 1,
+      },
+      type: 'subagent.spawn_requested',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        goal: '读取页面映射',
+        parent_id: 'sa-root',
+        session_id: 'smoke-agents',
+        status: 'running',
+        subagent_id: 'sa-child',
+        task_index: 1,
+        text: 'page-map.md',
+        tool_name: 'read_files',
+        tool_preview: 'page-map.md',
+      },
+      type: 'subagent.tool',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        files_read: ['/tmp/page-map.md'],
+        goal: '读取页面映射',
+        input_tokens: 1200,
+        output_tokens: 300,
+        parent_id: 'sa-root',
+        session_id: 'smoke-agents',
+        status: 'completed',
+        subagent_id: 'sa-child',
+        summary: 'page-map.md 已读取',
+        task_index: 1,
+        duration_seconds: 1.2,
+        cost_usd: 0.002,
+      },
+      type: 'subagent.complete',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        goal: '扫描项目结构',
+        input_tokens: 2000,
+        output_tokens: 900,
+        session_id: 'smoke-agents',
+        status: 'completed',
+        subagent_id: 'sa-root',
+        summary: '并行审查完成',
+        task_count: 2,
+        task_index: 0,
+        tool_count: 1,
+      },
+      type: 'subagent.complete',
+    });
+
     setNativeValue(textarea, '/agents');
     await sleep(120);
     if (sendButton.disabled) {
@@ -291,6 +362,9 @@ try {
     sendButton.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Agents'), 'slash agents navigation');
     await waitFor(() => document.querySelector('.agentControlStrip'), 'agents gateway controls');
+    await waitFor(() => document.querySelector('.subagentPanel')?.textContent?.includes('扫描项目结构'), 'agents subagent tree root');
+    await waitFor(() => document.querySelector('.subagentPanel')?.textContent?.includes('读取页面映射'), 'agents subagent tree child');
+    await waitFor(() => document.querySelector('.subagentPanel')?.textContent?.includes('page-map.md 已读取'), 'agents subagent summary stream');
     for (const label of ['启动', '重启', '停止']) {
       if (!findButton(label, document.querySelector('.agentControlStrip'))) {
         throw new Error(`Agents page should expose Gateway ${label} action.`);
@@ -1370,6 +1444,7 @@ try {
       slashNavigation: ['/agents', '/projects', '/settings', '/models', '/approval', '/skills', '/cron', '/messaging', '/diagnostics', '/diagnose', '/gateway', '/profiles', '/onboarding', '/files', '/preview', '/workbench'],
       verifiedUx: [
         'agents-automation-feedback',
+        'agents-subagent-tree',
         'approval-feedback',
         'attachment-url-feedback',
         'command-center-close',
