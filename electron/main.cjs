@@ -611,10 +611,61 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps(normalize(job)))
 `, { ...(body || {}), profile: url.searchParams.get('profile') || body?.profile || 'default' }, 30000);
   }
 
+  if (method === 'GET' && url.pathname === '/api/cron/delivery-targets') {
+    return runHermesPython(`${script}
+targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
+try:
+    from cron.scheduler import cron_delivery_targets
+    targets.extend(cron_delivery_targets())
+except Exception:
+    pass
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"targets": targets, "source": "desktop-local-bridge"}))
+`, {}, 20000);
+  }
+
   const actionMatch = url.pathname.match(/^\/api\/cron\/jobs\/([^/]+)(?:\/([^/]+))?$/);
   if (actionMatch) {
     const id = decodeURIComponent(actionMatch[1]);
     const action = actionMatch[2] || '';
+    if (method === 'GET' && !action) {
+      return runHermesPython(`${script}
+job = cron_jobs.get_job(payload.get("id"))
+if not job:
+    raise SystemExit("Job not found")
+print("__BEAUTY_HERMES_JSON__" + json.dumps(normalize(job)))
+`, { id }, 20000);
+    }
+    if (method === 'PUT' && !action) {
+      return runHermesPython(`${script}
+updates = payload.get("updates") or {}
+if not isinstance(updates, dict):
+    raise SystemExit("updates must be an object")
+job = cron_jobs.update_job(payload.get("id"), updates)
+if not job:
+    raise SystemExit("Job not found")
+print("__BEAUTY_HERMES_JSON__" + json.dumps(normalize(job)))
+`, { id, updates: body?.updates || {} }, 30000);
+    }
+    if (method === 'GET' && action === 'runs') {
+      return runHermesPython(`${script}
+from pathlib import Path
+try:
+    from hermes_state import SessionDB
+    raw_limit = payload.get("limit") or 20
+    limit = max(1, min(int(raw_limit), 100))
+    job = cron_jobs.get_job(payload.get("id")) or {"id": payload.get("id")}
+    canonical = str(job.get("id") or payload.get("id"))
+    db = SessionDB(read_only=True)
+    try:
+        runs = db.list_cron_job_runs(canonical, limit=limit, offset=0)
+    finally:
+        db.close()
+except Exception:
+    limit = 20
+    runs = []
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"runs": runs, "limit": limit, "source": "desktop-local-bridge"}))
+`, { id, limit: Number(url.searchParams.get('limit') || 20) }, 20000);
+    }
     if (method === 'DELETE' && !action) {
       return runHermesPython(`${script}
 ok = cron_jobs.remove_job(payload.get("id"))

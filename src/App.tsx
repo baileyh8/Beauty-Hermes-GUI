@@ -322,14 +322,37 @@ interface HermesSkillInfo {
 }
 
 interface HermesCronJobInfo {
+  deliver?: string;
   id?: string;
+  last_delivery_error?: string | null;
+  last_run_at?: string | null;
   name?: string;
+  next_run_at?: string | null;
   paused?: boolean;
   prompt?: string;
-  schedule?: string;
   profile?: string;
+  schedule?: string;
+  schedule_display?: string;
+  state?: string;
   enabled?: boolean;
   next_run?: string;
+  workdir?: string | null;
+}
+
+interface HermesCronDeliveryTargetInfo {
+  home_env_var?: null | string;
+  home_target_set?: boolean;
+  id: string;
+  name: string;
+}
+
+interface HermesCronRunInfo {
+  ended_at?: number | string | null;
+  id?: string;
+  is_active?: boolean;
+  last_active?: number | string;
+  started_at?: number | string;
+  title?: string;
 }
 
 interface HermesMessagingPlatformInfo {
@@ -5995,6 +6018,15 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
   const [newJobName, setNewJobName] = useState('');
   const [newJobSchedule, setNewJobSchedule] = useState('0 9 * * *');
   const [newJobPrompt, setNewJobPrompt] = useState('');
+  const [newJobDeliver, setNewJobDeliver] = useState('local');
+  const [deliveryTargets, setDeliveryTargets] = useState<HermesCronDeliveryTargetInfo[]>([]);
+  const [selectedCronJobId, setSelectedCronJobId] = useState('');
+  const [cronDraftName, setCronDraftName] = useState('');
+  const [cronDraftSchedule, setCronDraftSchedule] = useState('');
+  const [cronDraftPrompt, setCronDraftPrompt] = useState('');
+  const [cronDraftDeliver, setCronDraftDeliver] = useState('local');
+  const [cronRunsJobId, setCronRunsJobId] = useState('');
+  const [cronRuns, setCronRuns] = useState<HermesCronRunInfo[]>([]);
   const [cronBusy, setCronBusy] = useState('');
   const [pendingCronDeleteId, setPendingCronDeleteId] = useState('');
   const apiRequest = runtime.apiRequest;
@@ -6006,7 +6038,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
       const rows = (Array.isArray(response) ? response : Array.isArray(response.jobs) ? response.jobs : [])
         .map((job) => ({
           ...job,
-          schedule: typeof job.schedule === 'string' ? job.schedule : String((job as { schedule_display?: string }).schedule_display || '未设置 schedule'),
+          schedule: typeof job.schedule === 'string' ? job.schedule : String(job.schedule_display || '未设置 schedule'),
         }));
       setCronJobs(rows);
       setCronStatus(`已同步 ${rows.length} 个自动化任务`);
@@ -6017,6 +6049,20 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
       setCronBusy('');
     }
   }, [apiRequest]);
+  const loadDeliveryTargets = useCallback(async () => {
+    try {
+      const response = await apiRequest<{ targets?: HermesCronDeliveryTargetInfo[]; source?: string }>({ path: '/api/cron/delivery-targets', timeoutMs: 20000 });
+      const rows = Array.isArray(response.targets) && response.targets.length > 0
+        ? response.targets
+        : [{ id: 'local', name: 'Local (save only)', home_target_set: true, home_env_var: null }];
+      setDeliveryTargets(rows);
+      if (!rows.some((item) => item.id === newJobDeliver)) {
+        setNewJobDeliver('local');
+      }
+    } catch {
+      setDeliveryTargets([{ id: 'local', name: 'Local (save only)', home_target_set: true, home_env_var: null }]);
+    }
+  }, [apiRequest, newJobDeliver]);
   const cronJobPath = (job: HermesCronJobInfo, action?: string) => {
     const id = job.id || job.name || '';
     const suffix = action ? `/${action}` : '';
@@ -6031,6 +6077,92 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     const timer = window.setTimeout(() => setPendingCronDeleteId(''), 5000);
     return () => window.clearTimeout(timer);
   }, [pendingCronDeleteId]);
+  const loadCronRuns = useCallback(async (job: HermesCronJobInfo) => {
+    const id = job.id || job.name;
+    if (!id) {
+      setCronRuns([]);
+      setCronRunsJobId('');
+      return;
+    }
+
+    try {
+      setCronBusy(`runs:${id}`);
+      const path = cronJobPath(job, 'runs');
+      const response = await apiRequest<{ runs?: HermesCronRunInfo[]; limit?: number }>({
+        path: `${path}${path.includes('?') ? '&' : '?'}limit=5`,
+        timeoutMs: 20000,
+      });
+      setCronRuns(Array.isArray(response.runs) ? response.runs : []);
+      setCronRunsJobId(id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCronRuns([]);
+      setCronRunsJobId(id);
+      setCronStatus(`运行记录读取失败：${message}`);
+    } finally {
+      setCronBusy('');
+    }
+  }, [apiRequest]);
+  const openCronJob = useCallback((job: HermesCronJobInfo) => {
+    const id = job.id || job.name || '';
+    if (!id) {
+      setCronStatus('这个任务缺少 id，无法查看详情。');
+      return;
+    }
+    if (selectedCronJobId === id) {
+      setSelectedCronJobId('');
+      setCronRuns([]);
+      setCronRunsJobId('');
+      return;
+    }
+    setSelectedCronJobId(id);
+    setCronDraftName(job.name || '');
+    setCronDraftSchedule(job.schedule_display || job.schedule || '0 9 * * *');
+    setCronDraftPrompt(job.prompt || '');
+    setCronDraftDeliver(job.deliver || 'local');
+    void loadCronRuns(job);
+  }, [loadCronRuns, selectedCronJobId]);
+  const saveCronJob = useCallback(async (job: HermesCronJobInfo) => {
+    const id = job.id || job.name;
+    const schedule = cronDraftSchedule.trim();
+    if (!id) {
+      setCronStatus('这个任务缺少 id，无法保存。');
+      return;
+    }
+    if (!schedule) {
+      setCronStatus('请输入计划表达式。');
+      return;
+    }
+    if (!cronDraftPrompt.trim()) {
+      setCronStatus('请输入自动化 prompt。');
+      return;
+    }
+
+    try {
+      setCronBusy(`save:${id}`);
+      await apiRequest({
+        body: {
+          updates: {
+            deliver: cronDraftDeliver || 'local',
+            name: cronDraftName.trim(),
+            prompt: cronDraftPrompt.trim(),
+            schedule,
+          },
+        },
+        method: 'PUT',
+        path: cronJobPath(job),
+        timeoutMs: 30000,
+      });
+      setCronStatus(`${cronDraftName.trim() || id} 已保存`);
+      await loadCronJobs();
+      void refreshInventory();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCronStatus(`保存失败：${message}`);
+    } finally {
+      setCronBusy('');
+    }
+  }, [apiRequest, cronDraftDeliver, cronDraftName, cronDraftPrompt, cronDraftSchedule, loadCronJobs, refreshInventory]);
   const runCronAction = useCallback(async (job: HermesCronJobInfo, action: 'delete' | 'pause' | 'resume' | 'trigger') => {
     const id = job.id || job.name;
     if (!id) {
@@ -6053,6 +6185,11 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
         path: cronJobPath(job, action === 'delete' ? undefined : action),
         timeoutMs: action === 'trigger' ? 120000 : 30000,
       });
+      if (action === 'delete' && selectedCronJobId === id) {
+        setSelectedCronJobId('');
+        setCronRuns([]);
+        setCronRunsJobId('');
+      }
       setCronStatus(`${job.name || id} 已${action === 'pause' ? '暂停' : action === 'resume' ? '恢复' : action === 'trigger' ? '触发' : '删除'}`);
       await loadCronJobs();
       void refreshInventory();
@@ -6062,7 +6199,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     } finally {
       setCronBusy('');
     }
-  }, [apiRequest, loadCronJobs, pendingCronDeleteId, refreshInventory]);
+  }, [apiRequest, loadCronJobs, pendingCronDeleteId, refreshInventory, selectedCronJobId]);
   const runCronRefresh = useCallback(async (key: string, label: string) => {
     try {
       setCronBusy(key);
@@ -6087,7 +6224,7 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
       setCronBusy('create');
       await apiRequest({
         body: {
-          deliver: 'local',
+          deliver: newJobDeliver || 'local',
           name: newJobName.trim(),
           prompt,
           schedule: newJobSchedule.trim() || '0 9 * * *',
@@ -6107,10 +6244,20 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
     } finally {
       setCronBusy('');
     }
-  }, [apiRequest, loadCronJobs, newJobName, newJobPrompt, newJobSchedule, refreshInventory]);
+  }, [apiRequest, loadCronJobs, newJobDeliver, newJobName, newJobPrompt, newJobSchedule, refreshInventory]);
   useEffect(() => {
     void loadCronJobs();
-  }, [loadCronJobs]);
+    void loadDeliveryTargets();
+  }, [loadCronJobs, loadDeliveryTargets]);
+  const cronDeliveryOptions = deliveryTargets.length > 0
+    ? deliveryTargets
+    : [{ id: 'local', name: 'Local (save only)', home_target_set: true, home_env_var: null }];
+  const cronRunTime = (value?: number | string | null) => {
+    if (typeof value === 'number') {
+      return formatSessionTime(value);
+    }
+    return value ? String(value).replace('T', ' ').slice(0, 16) : '最近';
+  };
   const jobs = [
     ['Gateway 超时保护', `${config?.gatewayTimeout ?? '未设置'}s · agent.gateway_timeout`, config?.gatewayTimeout ? '启用' : '未设置'],
     ['最大回合数', `${config?.maxTurns ?? '未设置'} · agent.max_turns`, config?.maxTurns ? '启用' : '未设置'],
@@ -6138,6 +6285,13 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
       >
         <input aria-label="任务名称" disabled={Boolean(cronBusy)} placeholder="任务名称" value={newJobName} onChange={(event) => setNewJobName(event.target.value)} />
         <input aria-label="计划表达式" disabled={Boolean(cronBusy)} placeholder="0 9 * * *" value={newJobSchedule} onChange={(event) => setNewJobSchedule(event.target.value)} />
+        <select aria-label="投递目标" disabled={Boolean(cronBusy)} value={newJobDeliver} onChange={(event) => setNewJobDeliver(event.target.value)}>
+          {cronDeliveryOptions.map((target) => (
+            <option key={target.id} value={target.id}>
+              {target.name || target.id}{target.home_target_set === false ? ' · 需配置 home' : ''}
+            </option>
+          ))}
+        </select>
         <input aria-label="自动化 prompt" disabled={Boolean(cronBusy)} placeholder="让 Hermes 做什么..." value={newJobPrompt} onChange={(event) => setNewJobPrompt(event.target.value)} />
         <button type="submit" disabled={Boolean(cronBusy)}>{cronBusy === 'create' ? '创建中' : '新建'}</button>
       </form>
@@ -6147,14 +6301,24 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
           const id = job.id || job.name || 'cron-job';
           const paused = Boolean(job.paused) || job.enabled === false;
           const confirmingDelete = pendingCronDeleteId === id;
+          const expanded = selectedCronJobId === id;
+          const deliverLabel = cronDeliveryOptions.find((target) => target.id === (job.deliver || 'local'))?.name || job.deliver || 'local';
           return (
-            <article className={confirmingDelete ? 'automationRow confirmDelete' : 'automationRow'} key={id}>
+            <article className={[confirmingDelete ? 'automationRow confirmDelete' : 'automationRow', expanded ? 'expanded' : ''].filter(Boolean).join(' ')} key={id}>
               <CalendarClock size={18} />
               <div>
                 <strong>{job.name || id}</strong>
-                <span>{confirmingDelete ? '再次点击删除，操作不可恢复' : `${job.schedule || '未设置 schedule'} · ${compactLine(job.prompt || '', 64) || '无 prompt 预览'}`}</span>
+                <span>{confirmingDelete ? '再次点击删除，操作不可恢复' : `${job.schedule || '未设置 schedule'} · ${deliverLabel} · ${compactLine(job.prompt || '', 64) || '无 prompt 预览'}`}</span>
               </div>
               <span className={paused ? 'pill amber' : 'pill green'}>{paused ? '已暂停' : '启用'}</span>
+              <button
+                type="button"
+                aria-label="查看自动化任务详情"
+                onClick={() => openCronJob(job)}
+                disabled={Boolean(cronBusy)}
+              >
+                <ChevronDown className={expanded ? 'rotatedIcon' : undefined} size={16} />
+              </button>
               <button
                 type="button"
                 aria-label={paused ? '恢复自动化任务' : '暂停自动化任务'}
@@ -6180,6 +6344,55 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
               >
                 <Trash2 size={16} />
               </button>
+              {expanded && (
+                <div className="cronEditor">
+                  <div className="cronEditorGrid">
+                    <label>
+                      <span>名称</span>
+                      <input aria-label="编辑任务名称" disabled={Boolean(cronBusy)} value={cronDraftName} onChange={(event) => setCronDraftName(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>计划</span>
+                      <input aria-label="编辑计划表达式" disabled={Boolean(cronBusy)} value={cronDraftSchedule} onChange={(event) => setCronDraftSchedule(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>投递</span>
+                      <select aria-label="编辑投递目标" disabled={Boolean(cronBusy)} value={cronDraftDeliver} onChange={(event) => setCronDraftDeliver(event.target.value)}>
+                        {cronDeliveryOptions.map((target) => (
+                          <option key={target.id} value={target.id}>
+                            {target.name || target.id}{target.home_target_set === false ? ' · 需配置 home' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="cronPromptEditor">
+                    <span>Prompt</span>
+                    <textarea aria-label="编辑自动化 prompt" disabled={Boolean(cronBusy)} value={cronDraftPrompt} onChange={(event) => setCronDraftPrompt(event.target.value)} />
+                  </label>
+                  <div className="cronEditorActions">
+                    <button className="rowTextAction" type="button" onClick={() => void saveCronJob(job)} disabled={Boolean(cronBusy)}>
+                      {cronBusy === `save:${id}` ? '保存中' : '保存更改'}
+                    </button>
+                    <button className="rowTextAction" type="button" onClick={() => void loadCronRuns(job)} disabled={Boolean(cronBusy)}>
+                      {cronBusy === `runs:${id}` ? '读取中' : '刷新运行记录'}
+                    </button>
+                    <span>{job.next_run_at || job.next_run ? `下次 ${cronRunTime(job.next_run_at || job.next_run)}` : '暂无下次运行时间'}</span>
+                    {job.last_delivery_error && <span className="dangerText">投递失败：{compactLine(job.last_delivery_error, 80)}</span>}
+                  </div>
+                  <div className="cronRuns">
+                    {cronRunsJobId === id && cronRuns.length > 0 ? cronRuns.map((run) => (
+                      <button className="cronRunRow" type="button" key={run.id || run.title || cronRunTime(run.started_at)} onClick={() => setCronStatus(`运行记录：${run.title || run.id || '未命名会话'}`)}>
+                        <CircleDot size={13} />
+                        <strong>{run.title || run.id || 'Cron run'}</strong>
+                        <span>{run.is_active ? '运行中' : '已结束'} · {cronRunTime(run.last_active || run.started_at)}</span>
+                      </button>
+                    )) : (
+                      <p className="cronEmptyRuns">{cronRunsJobId === id ? '暂无运行记录。' : '展开后会读取最近运行记录。'}</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </article>
           );
         })}

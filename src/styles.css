@@ -2061,13 +2061,17 @@ kbd {
 .automationRow {
   min-height: 72px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto;
   align-items: center;
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: #fff;
+}
+
+.automationRow.expanded {
+  align-items: start;
 }
 
 .automationRow.confirmDelete {
@@ -2127,6 +2131,119 @@ kbd {
   color: #586173;
   font-size: 12px;
   font-weight: 600;
+}
+
+.rotatedIcon {
+  transform: rotate(180deg);
+}
+
+.cronEditor {
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 10px;
+  padding-top: 3px;
+  min-width: 0;
+}
+
+.cronEditorGrid {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(130px, 0.9fr) minmax(150px, 0.9fr);
+  gap: 8px;
+}
+
+.cronEditor label,
+.cronPromptEditor {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.cronEditor label span,
+.cronEditorActions span,
+.cronEmptyRuns {
+  color: #717882;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.cronEditor input,
+.cronEditor select,
+.cronEditor textarea,
+.cronCreateForm select {
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dfe4ea;
+  border-radius: 11px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.9);
+  color: #20242a;
+  font: inherit;
+  font-size: 12px;
+}
+
+.cronEditor textarea {
+  min-height: 66px;
+  height: auto;
+  padding: 8px 10px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.cronEditor input:focus,
+.cronEditor select:focus,
+.cronEditor textarea:focus,
+.cronCreateForm select:focus {
+  border-color: #b9c8f7;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(47, 103, 232, 0.08);
+}
+
+.cronEditorActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.cronEditorActions .dangerText {
+  color: #b42318;
+}
+
+.cronRuns {
+  display: grid;
+  gap: 6px;
+}
+
+.cronRunRow {
+  width: 100% !important;
+  height: auto !important;
+  min-height: 32px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 7px;
+  justify-items: start;
+  padding: 6px 8px;
+  color: #586173;
+  text-align: left;
+}
+
+.cronRunRow strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #20242a;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cronRunRow span {
+  margin: 0;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cronEmptyRuns {
+  margin: 0;
 }
 
 .gatewayCard svg,
@@ -5754,12 +5871,13 @@ textarea {
 }
 
 .cronCreateForm {
-  grid-template-columns: minmax(110px, 0.8fr) minmax(112px, 0.7fr) minmax(220px, 1.6fr) auto;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(112px, 0.7fr) minmax(130px, 0.75fr) minmax(220px, 1.45fr) auto;
   align-items: center;
 }
 
 .inlineCreateForm input,
-.cronCreateForm input {
+.cronCreateForm input,
+.cronCreateForm select {
   min-width: 0;
   height: 32px;
   padding: 0 10px;
@@ -5772,7 +5890,8 @@ textarea {
 }
 
 .inlineCreateForm input:focus,
-.cronCreateForm input:focus {
+.cronCreateForm input:focus,
+.cronCreateForm select:focus {
   border-color: #b9c8f7;
   background: #fff;
   box-shadow: 0 0 0 3px rgba(47, 103, 232, 0.08);
@@ -6103,6 +6222,10 @@ textarea {
 
 .inlineCreateForm input:disabled,
 .cronCreateForm input:disabled,
+.cronCreateForm select:disabled,
+.cronEditor input:disabled,
+.cronEditor select:disabled,
+.cronEditor textarea:disabled,
 .profileEditBlock .settingInput:disabled {
   color: #939aa4;
   background: #f4f6f8;
@@ -6110,6 +6233,10 @@ textarea {
 
 @media (max-width: 920px) {
   .cronCreateForm {
+    grid-template-columns: 1fr;
+  }
+
+  .cronEditorGrid {
     grid-template-columns: 1fr;
   }
 

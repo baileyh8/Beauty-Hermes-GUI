@@ -54,6 +54,8 @@ const requiredText = [
   'parseMarkdownTableLine',
   'pendingSidebarDeleteKey',
   'pendingCronDeleteId',
+  'saveCronJob',
+  'loadCronRuns',
   "insert: '/messaging'",
   "insert: '/diagnostics'",
   "'/diagnose': 'diagnostics'",
@@ -101,6 +103,8 @@ const requiredStyles = [
   '.markdownText ol',
   '.markdownTableWrap',
   '.emptyHints button',
+  '.cronEditor',
+  '.cronRunRow',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));
@@ -119,6 +123,7 @@ const requiredElectronText = [
   "url.pathname === '/api/profiles'",
   "url.pathname === '/api/skills'",
   "url.pathname === '/api/cron/jobs'",
+  "url.pathname === '/api/cron/delivery-targets'",
   "url.pathname === '/api/messaging/platforms'",
   '当前 Hermes Gateway 不支持这个桌面增强操作',
 ];

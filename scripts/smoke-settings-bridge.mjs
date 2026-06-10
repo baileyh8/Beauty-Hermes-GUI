@@ -195,6 +195,63 @@ try {
       timeoutMs: 30000,
     });
 
+    const deliveryTargets = await api({ path: '/api/cron/delivery-targets', timeoutMs: 30000 });
+    if (!deliveryTargets.targets?.some((target) => target.id === 'local')) {
+      throw new Error('Cron delivery targets should include local');
+    }
+    const createdCron = await api({
+      body: {
+        deliver: 'local',
+        name: 'bridge cron',
+        prompt: 'say bridge smoke',
+        schedule: '0 9 * * *',
+      },
+      method: 'POST',
+      path: '/api/cron/jobs?profile=default',
+      timeoutMs: 30000,
+    });
+    const cronId = createdCron.id || createdCron.name;
+    if (!cronId) {
+      throw new Error('Cron create did not return an id');
+    }
+    const updatedCron = await api({
+      body: {
+        updates: {
+          deliver: 'local',
+          name: 'bridge cron updated',
+          prompt: 'say bridge smoke updated',
+          schedule: '0 10 * * *',
+        },
+      },
+      method: 'PUT',
+      path: '/api/cron/jobs/' + encodeURIComponent(cronId),
+      timeoutMs: 30000,
+    });
+    if (
+      updatedCron.name !== 'bridge cron updated'
+      || updatedCron.prompt !== 'say bridge smoke updated'
+      || !String(updatedCron.schedule || updatedCron.schedule_display || '').includes('10')
+    ) {
+      throw new Error('Cron update did not persist');
+    }
+    const cronRuns = await api({
+      path: '/api/cron/jobs/' + encodeURIComponent(cronId) + '/runs?limit=5',
+      timeoutMs: 30000,
+    });
+    if (!Array.isArray(cronRuns.runs)) {
+      throw new Error('Cron runs endpoint did not return an array');
+    }
+    await api({
+      method: 'DELETE',
+      path: '/api/cron/jobs/' + encodeURIComponent(cronId),
+      timeoutMs: 30000,
+    });
+    const cronListAfterDelete = await api({ path: '/api/cron/jobs', timeoutMs: 30000 });
+    const cronRows = Array.isArray(cronListAfterDelete) ? cronListAfterDelete : cronListAfterDelete.jobs || [];
+    if (cronRows.some((job) => job.id === cronId || job.name === 'bridge cron updated')) {
+      throw new Error('Cron delete did not persist');
+    }
+
     const profileName = 'smoke-bridge-profile';
     const renamedProfileName = 'smoke-bridge-profile-renamed';
     const createdProfile = await api({
@@ -299,6 +356,7 @@ try {
       mcp: 'create-toggle-delete',
       model: 'saved',
       profiles: 'create-edit-soul-rename-delete',
+      cron: 'create-update-runs-delete',
       toolset: firstToolset.name,
       toolsetConfig: 'provider-env',
     };

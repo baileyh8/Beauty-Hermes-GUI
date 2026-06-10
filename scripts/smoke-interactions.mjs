@@ -468,6 +468,28 @@ try {
 
     findNavButton('自动化')?.click();
     await waitFor(() => document.body.innerText.includes('后台调度'), 'automation feedback page');
+    const cronDeliverySelect = await waitFor(
+      () => {
+        const select = document.querySelector('.cronCreateForm select[aria-label="投递目标"]');
+        return select && !select.disabled ? select : null;
+      },
+      'cron delivery target select',
+      12000,
+    );
+    const cronDetailButton = Array.from(document.querySelectorAll('.automationRow button[aria-label="查看自动化任务详情"]'))
+      .find((item) => !item.disabled);
+    if (cronDetailButton) {
+      cronDetailButton.click();
+      await waitFor(() => document.querySelector('.cronEditor'), 'cron editor expansion');
+      for (const label of ['编辑任务名称', '编辑计划表达式', '编辑投递目标', '编辑自动化 prompt']) {
+        if (!document.querySelector(`[aria-label="${label}"]`)) {
+          throw new Error(`Missing cron editor control ${label}`);
+        }
+      }
+      if (!Array.from(document.querySelectorAll('.cronEditor button')).some((item) => item.textContent?.includes('保存更改'))) {
+        throw new Error('Cron editor should expose save action.');
+      }
+    }
     const cronCreateButton = await waitFor(
       () => {
         const button = document.querySelector('.cronCreateForm button[type="submit"]');
