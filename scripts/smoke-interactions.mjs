@@ -678,8 +678,15 @@ try {
     if (!skillToggleButton || skillToggleButton.disabled) {
       throw new Error('Skill toggle action should be available.');
     }
+    for (const label of ['详情', '复制路径', '复制摘要', '打开位置']) {
+      if (!Array.from(document.querySelectorAll('.skillCard button')).some((item) => item.textContent?.includes(label))) {
+        throw new Error(`Skill card should expose ${label} action.`);
+      }
+    }
+    findButton('详情', document.querySelector('.skillCard'))?.click();
+    await waitFor(() => document.querySelector('.skillDetail'), 'skill detail expansion');
     const skillCopyButton = await waitFor(
-      () => Array.from(document.querySelectorAll('.skillCard button')).find((item) => item.textContent?.includes('复制') && !item.disabled),
+      () => Array.from(document.querySelectorAll('.skillCard button')).find((item) => item.textContent?.includes('复制路径') && !item.disabled),
       'enabled skill copy action',
     );
     if (!skillCopyButton) {
@@ -1017,6 +1024,7 @@ try {
         'project-sidebar-targeting',
         'project-card-real-actions',
         'session-selection-feedback',
+        'skill-detail-actions',
         'skill-copy-feedback',
         'slash-aria-selected',
         'slash-escape-close',

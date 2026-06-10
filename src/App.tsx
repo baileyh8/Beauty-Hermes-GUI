@@ -7112,6 +7112,7 @@ function PolicyCard({ icon, title, desc }: { icon: React.ReactNode; title: strin
 function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
   const [query, setQuery] = useState('');
   const [skillRows, setSkillRows] = useState<HermesSkillInfo[]>([]);
+  const [expandedSkillName, setExpandedSkillName] = useState('');
   const [skillStatus, setSkillStatus] = useState('');
   const [skillBusy, setSkillBusy] = useState('');
   const apiRequest = runtime.apiRequest;
@@ -7150,17 +7151,25 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
       setSkillBusy('');
     }
   }, [apiRequest, refreshInventory]);
-  const copySkillInfo = useCallback(async (skill: HermesSkillInfo) => {
-    const value = skill.path || skill.description || skill.name;
+  const copySkillInfo = useCallback(async (skill: HermesSkillInfo, kind: 'path' | 'summary') => {
+    const value = kind === 'path'
+      ? skill.path || skill.name
+      : [
+        `Skill: ${skill.name}`,
+        `Source: ${skill.source || 'local'}`,
+        `Enabled: ${(skill.enabled ?? true) ? 'yes' : 'no'}`,
+        skill.path ? `Path: ${skill.path}` : '',
+        skill.description ? `Description: ${skill.description}` : '',
+      ].filter(Boolean).join('\n');
     if (!navigator.clipboard?.writeText) {
       setSkillStatus('当前环境无法访问剪贴板。');
       return;
     }
 
     try {
-      setSkillBusy(`copy:${skill.name}`);
+      setSkillBusy(`copy:${kind}:${skill.name}`);
       await navigator.clipboard.writeText(value);
-      setSkillStatus(`${skill.name} 已复制`);
+      setSkillStatus(`${skill.name} ${kind === 'path' ? '路径' : '摘要'}已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSkillStatus(`复制失败：${message}`);
@@ -7168,6 +7177,28 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
       setSkillBusy('');
     }
   }, []);
+  const openSkillPath = useCallback(async (skill: HermesSkillInfo) => {
+    if (!skill.path) {
+      setSkillStatus(`${skill.name} 没有可打开路径。`);
+      return;
+    }
+
+    try {
+      setSkillBusy(`open:${skill.name}`);
+      await apiRequest({
+        body: { path: skill.path },
+        method: 'POST',
+        path: '/api/files/open',
+        timeoutMs: 15000,
+      });
+      setSkillStatus(`${skill.name} 已交给系统打开。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSkillStatus(`打开失败：${message}`);
+    } finally {
+      setSkillBusy('');
+    }
+  }, [apiRequest]);
   useEffect(() => {
     void loadSkills();
   }, [loadSkills]);
@@ -7213,26 +7244,49 @@ function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
       </div>
       {skillStatus && <p className="surfaceStatus">{skillStatus}</p>}
       <div className="skillGrid">
-        {filteredSkills.length > 0 ? filteredSkills.map((skill) => (
-          <article className="skillCard" key={skill.name}>
-            <div className="skillIcon">
-              <Puzzle size={20} />
+        {filteredSkills.length > 0 ? filteredSkills.map((skill) => {
+          const expanded = expandedSkillName === skill.name;
+          return (
+          <article className={expanded ? 'skillCard expanded' : 'skillCard'} key={`${skill.source || 'local'}-${skill.name}`}>
+            <div className="skillCardHeader">
+              <div className="skillIcon">
+                <Puzzle size={20} />
+              </div>
+              <div className="skillTitle">
+                <strong>{skill.name}</strong>
+                <span>{skill.source || 'local'} · {(skill.enabled ?? true) ? 'enabled' : 'disabled'}</span>
+              </div>
             </div>
-            <strong>{skill.name}</strong>
             <p>{skill.description || skill.path || '暂无描述'}</p>
-            <div>
+            {expanded && (
+              <div className="skillDetail">
+                <code>{skill.path || '暂无本地路径'}</code>
+                <span>可用 `/skill {skill.name}` 在会话中查看或调用。</span>
+              </div>
+            )}
+            <div className="skillActions">
               <span className={(skill.enabled ?? true) ? 'pill green' : 'pill amber'}>
                 {skill.source || ((skill.enabled ?? true) ? 'enabled' : 'disabled')}
               </span>
+              <button type="button" onClick={() => setExpandedSkillName(expanded ? '' : skill.name)} disabled={Boolean(skillBusy)}>
+                {expanded ? '收起' : '详情'}
+              </button>
               <button type="button" onClick={() => void toggleSkill(skill)} disabled={Boolean(skillBusy)}>
                 {skillBusy === `toggle:${skill.name}` ? '更新中' : (skill.enabled ?? true) ? '停用' : '启用'}
               </button>
-              <button type="button" onClick={() => void copySkillInfo(skill)} disabled={Boolean(skillBusy)}>
-                {skillBusy === `copy:${skill.name}` ? '复制中' : '复制'}
+              <button type="button" onClick={() => void copySkillInfo(skill, 'path')} disabled={Boolean(skillBusy)}>
+                {skillBusy === `copy:path:${skill.name}` ? '复制中' : '复制路径'}
+              </button>
+              <button type="button" onClick={() => void copySkillInfo(skill, 'summary')} disabled={Boolean(skillBusy)}>
+                {skillBusy === `copy:summary:${skill.name}` ? '复制中' : '复制摘要'}
+              </button>
+              <button type="button" onClick={() => void openSkillPath(skill)} disabled={Boolean(skillBusy) || !skill.path}>
+                {skillBusy === `open:${skill.name}` ? '打开中' : '打开位置'}
               </button>
             </div>
           </article>
-        )) : (
+          );
+        }) : (
           <article className="skillCard muted">
             <div className="skillIcon">
               <Puzzle size={20} />
