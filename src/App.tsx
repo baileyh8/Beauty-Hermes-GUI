@@ -4666,7 +4666,7 @@ function Workbench({
           selectedFileLabel={selectedFileLabel}
         />
       )}
-      {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} onStop={runtime.stopGateway} />}
+      {activeTab === 'terminal' && <WorkbenchTerminal runtime={runtime} />}
       {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} selectedFileLabel={selectedFileLabel} />}
     </aside>
   );
@@ -4945,42 +4945,107 @@ function WorkbenchFiles({
   );
 }
 
-function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => Promise<void> }) {
-  const [busy, setBusy] = useState(false);
+function WorkbenchTerminal({ runtime }: { runtime: HermesRuntime }) {
+  const [busy, setBusy] = useState('');
+  const [clearedLogCount, setClearedLogCount] = useState(0);
   const [status, setStatus] = useState('');
-  const renderedLogs = logs.length > 0 ? logs.slice(-12).join('\n') : 'Gateway 日志会在这里显示。';
-  const stopGateway = async () => {
+  const visibleLogs = runtime.logs.slice(Math.min(clearedLogCount, runtime.logs.length));
+  const renderedLogs = visibleLogs.length > 0 ? visibleLogs.slice(-18).join('\n') : 'Gateway 日志会在这里显示。';
+
+  useEffect(() => {
+    if (clearedLogCount > runtime.logs.length) {
+      setClearedLogCount(0);
+    }
+  }, [clearedLogCount, runtime.logs.length]);
+
+  const runTerminalAction = async (key: string, label: string, action: () => Promise<void>, doneMessage: string) => {
     try {
-      setBusy(true);
+      setBusy(key);
       setStatus('');
-      await onStop();
-      setStatus('Gateway 停止请求已发送。');
+      await action();
+      setStatus(doneMessage);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setStatus(`停止失败：${message}`);
+      setStatus(`${label}失败：${message}`);
     } finally {
-      setBusy(false);
+      setBusy('');
     }
+  };
+  const copyLogs = async () => {
+    if (visibleLogs.length === 0) {
+      setStatus('当前没有可复制的日志。');
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    try {
+      setBusy('copy');
+      setStatus('');
+      await navigator.clipboard.writeText(visibleLogs.join('\n'));
+      setStatus(`已复制 ${visibleLogs.length} 条日志。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`复制失败：${message}`);
+    } finally {
+      setBusy('');
+    }
+  };
+  const clearLogs = () => {
+    setClearedLogCount(runtime.logs.length);
+    setStatus('当前终端视图已清空，新日志会继续显示。');
   };
 
   return (
     <>
       <section className="railSection terminalSection">
         <div className="terminalHeader">
-          <strong>Hermes Gateway</strong>
-          <button type="button" onClick={() => void stopGateway()} disabled={busy}>
-            {busy ? <RefreshCw className="spinIcon" size={15} /> : <PauseCircle size={15} />}
-            {busy ? '停止中' : '停止'}
-          </button>
+          <div>
+            <strong>Hermes Gateway</strong>
+            <span>{runtime.connection?.baseUrl || runtime.connectionLabel}</span>
+          </div>
+          <div className="terminalActions">
+            <button type="button" onClick={() => void runTerminalAction('start', '启动', runtime.startGateway, 'Gateway 启动请求已发送。')} disabled={Boolean(busy) || runtime.gatewayStatus === 'connected'}>
+              {busy === 'start' ? <RefreshCw className="spinIcon" size={15} /> : <Play size={15} />}
+              {busy === 'start' ? '启动中' : '启动'}
+            </button>
+            <button type="button" onClick={() => void runTerminalAction('restart', '重启', runtime.restartGateway, 'Gateway 重启请求已发送。')} disabled={Boolean(busy)}>
+              <RefreshCw className={busy === 'restart' ? 'spinIcon' : undefined} size={15} />
+              {busy === 'restart' ? '重启中' : '重启'}
+            </button>
+            <button type="button" onClick={() => void runTerminalAction('stop', '停止', runtime.stopGateway, 'Gateway 停止请求已发送。')} disabled={Boolean(busy) || runtime.gatewayStatus === 'stopped'}>
+              {busy === 'stop' ? <RefreshCw className="spinIcon" size={15} /> : <PauseCircle size={15} />}
+              {busy === 'stop' ? '停止中' : '停止'}
+            </button>
+          </div>
         </div>
         <pre className="terminalBlock"><code>{renderedLogs}</code></pre>
+        <div className="terminalFooter">
+          <span>{visibleLogs.length} 条日志 · {runtime.socketState}</span>
+          <div className="terminalActions">
+            <button type="button" onClick={() => void runTerminalAction('refresh', '刷新', runtime.refreshInventory, '终端状态已刷新。')} disabled={Boolean(busy)}>
+              <RefreshCw className={busy === 'refresh' ? 'spinIcon' : undefined} size={14} />
+              刷新
+            </button>
+            <button type="button" onClick={() => void copyLogs()} disabled={Boolean(busy) || visibleLogs.length === 0}>
+              <Copy size={14} />
+              {busy === 'copy' ? '复制中' : '复制日志'}
+            </button>
+            <button type="button" onClick={clearLogs} disabled={Boolean(busy) || runtime.logs.length === 0}>
+              <Trash2 size={14} />
+              清空
+            </button>
+          </div>
+        </div>
         {status && <p className="railStatus" role="status">{status}</p>}
       </section>
       <section className="railSection">
         <h3>退出状态</h3>
-        <div className="statusLine good">
+        <div className={runtime.gatewayStatus === 'error' ? 'statusLine danger' : 'statusLine good'}>
           <CheckCircle2 size={15} />
-          日志流已连接
+          {runtime.gatewayStatus === 'connected' ? 'Gateway 已连接' : runtime.connectionLabel}
         </div>
       </section>
     </>

@@ -413,8 +413,23 @@ try {
         }, 'files copy feedback');
       }
       if (tab === '终端') {
+        for (const label of ['启动', '重启', '停止', '刷新', '复制日志', '清空']) {
+          if (!findButton(label, document.querySelector('[data-testid="right-workbench"]'))) {
+            throw new Error(`Terminal workbench should expose ${label} action.`);
+          }
+        }
         findButton('停止', document.querySelector('[data-testid="right-workbench"]'))?.click();
         await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('停止'), 'terminal stop feedback');
+        findButton('刷新', document.querySelector('[data-testid="right-workbench"]'))?.click();
+        await waitFor(() => document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent?.includes('刷新'), 'terminal refresh feedback');
+        const copyLogsButton = findButton('复制日志', document.querySelector('[data-testid="right-workbench"]'));
+        if (copyLogsButton && !copyLogsButton.disabled) {
+          copyLogsButton.click();
+          await waitFor(() => {
+            const text = document.querySelector('[data-testid="right-workbench"] .railStatus')?.textContent || '';
+            return text.includes('已复制') || text.includes('无法访问剪贴板') || text.includes('复制失败');
+          }, 'terminal copy logs feedback');
+        }
       }
       if (tab === '预览') {
         for (const label of ['打开文件', '复制路径']) {
@@ -1006,6 +1021,7 @@ try {
         'slash-aria-selected',
         'slash-escape-close',
         'static-agent-card',
+        'terminal-workbench-actions',
         'voice-feedback',
         'workbench-feedback',
         'workbench-file-preview-feedback',

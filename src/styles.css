@@ -1313,7 +1313,8 @@ button.workbenchItem:focus-visible {
 .recoveryBlock button,
 .subtleAction,
 .workbenchActions button,
-.terminalHeader button {
+.terminalHeader button,
+.terminalFooter button {
   min-height: 30px;
   display: inline-flex;
   align-items: center;
@@ -1328,6 +1329,7 @@ button.workbenchItem:focus-visible {
 
 .workbenchActions button:disabled,
 .terminalHeader button:disabled,
+.terminalFooter button:disabled,
 .diagnosticCard button:disabled {
   cursor: default;
   opacity: 0.52;
@@ -1454,7 +1456,13 @@ button.workbenchItem:focus-visible {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  align-items: center;
+  align-items: flex-start;
+}
+
+.terminalHeader > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
 }
 
 .terminalHeader strong {
@@ -1466,7 +1474,25 @@ button.workbenchItem:focus-visible {
   font-size: 12px;
 }
 
-.terminalHeader button {
+.terminalHeader span,
+.terminalFooter span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(226, 232, 240, 0.64);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminalActions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.terminalHeader button,
+.terminalFooter button {
   color: #fff;
   border-color: rgba(255, 255, 255, 0.14);
   background: rgba(255, 255, 255, 0.08);
@@ -1475,6 +1501,13 @@ button.workbenchItem:focus-visible {
 .terminalBlock {
   max-height: 260px;
   padding: 13px;
+}
+
+.terminalFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .workbenchActions {
@@ -1493,6 +1526,10 @@ button.workbenchItem:focus-visible {
 
 .statusLine.good {
   color: var(--green);
+}
+
+.statusLine.danger {
+  color: var(--red);
 }
 
 .previewPanel {
@@ -4135,7 +4172,8 @@ kbd {
 .approvalCard button,
 .subtleAction,
 .workbenchActions button,
-.terminalHeader button {
+.terminalHeader button,
+.terminalFooter button {
   border-radius: 12px;
 }
 
@@ -6001,6 +6039,7 @@ textarea {
 .projectActions button,
 .workbenchActions button,
 .terminalHeader button,
+.terminalFooter button,
 .subtleAction {
   font-size: 12px;
 }
