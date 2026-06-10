@@ -555,7 +555,7 @@ try {
     findNavButton('首次启动')?.click();
     await waitFor(() => document.body.innerText.includes('连接 Hermes 工作方式'), 'onboarding page');
     const onboarding = await waitFor(() => document.querySelector('.onboardingPanel'), 'onboarding panel');
-    for (const label of ['Hermes Home', 'Provider', 'Model', '远程 Gateway URL']) {
+    for (const label of ['Hermes Home', 'Provider', 'Model', '远程 Gateway URL', 'Gateway Token']) {
       if (!Array.from(onboarding.querySelectorAll('label span')).some((item) => item.textContent?.includes(label))) {
         throw new Error(`Missing onboarding config field ${label}`);
       }
@@ -766,6 +766,34 @@ try {
     }
 
     await selectSettingsSection('集成', 'MCP Servers');
+    const gatewayModeSelect = await waitFor(
+      () => document.querySelector('select[aria-label="Gateway 连接方式"]'),
+      'gateway connection mode select',
+      15000,
+    );
+    if (gatewayModeSelect.disabled) {
+      throw new Error('Gateway connection mode should be editable.');
+    }
+    gatewayModeSelect.value = 'remote';
+    gatewayModeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    const gatewayUrlInput = await waitFor(
+      () => document.querySelector('input[aria-label="远程 Gateway URL"]'),
+      'gateway remote url input',
+      15000,
+    );
+    await waitFor(() => !gatewayUrlInput.disabled, 'gateway remote url enabled');
+    const gatewayTokenInput = await waitFor(
+      () => document.querySelector('input[aria-label="远程 Gateway Token"]'),
+      'gateway remote token input',
+      15000,
+    );
+    if (gatewayTokenInput.disabled) {
+      throw new Error('Gateway remote token should be editable in remote mode.');
+    }
+    setNativeValue(gatewayUrlInput, '');
+    findSettingButton('Gateway 连接方式', '检查').click();
+    await waitFor(() => document.body.innerText.includes('请输入远程 Gateway URL'), 'gateway remote validation');
+
     const mcpSyncButton = findSettingButton('MCP Servers', '同步');
     if (mcpSyncButton.disabled) {
       throw new Error('MCP sync action should be available.');
@@ -851,7 +879,7 @@ try {
       pages: pages.map(([label]) => label),
       projectAgents: ['项目', 'Agents'],
       preferences: ['density', 'theme', 'permission-modal'],
-      settingsEditable: ['models', 'toolsets', 'mcp'],
+      settingsEditable: ['models', 'toolsets', 'gateway', 'mcp'],
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,

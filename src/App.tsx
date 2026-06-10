@@ -556,6 +556,8 @@ interface HermesOnboardingConfig {
   model?: string;
   ok?: boolean;
   provider?: string;
+  remote_token_preview?: null | string;
+  remote_token_set?: boolean;
   remote_url?: string;
   source?: string;
   toolsets?: string[];
@@ -7678,6 +7680,12 @@ function SettingsPanel({
   const [mcpDraftEndpoint, setMcpDraftEndpoint] = useState('');
   const [mcpDraftArgs, setMcpDraftArgs] = useState('');
   const [pendingMcpDeleteName, setPendingMcpDeleteName] = useState('');
+  const [gatewayConfig, setGatewayConfig] = useState<HermesOnboardingConfig | null>(null);
+  const [gatewayConfigLoaded, setGatewayConfigLoaded] = useState(false);
+  const [gatewayModeDraft, setGatewayModeDraft] = useState<'local' | 'remote'>('local');
+  const [gatewayRemoteUrlDraft, setGatewayRemoteUrlDraft] = useState('');
+  const [gatewayRemoteTokenDraft, setGatewayRemoteTokenDraft] = useState('');
+  const [gatewayAutoStartDraft, setGatewayAutoStartDraft] = useState(true);
   const selectedRef = useRef(selected);
   useEffect(() => {
     selectedRef.current = selected;
@@ -7725,6 +7733,82 @@ function SettingsPanel({
   const stopGateway = () => {
     void runSettingAction('gateway:stop', 'Gateway 停止', runtime.stopGateway);
   };
+  const applyGatewayConfig = useCallback((result: HermesOnboardingConfig) => {
+    setGatewayConfig(result);
+    setGatewayConfigLoaded(true);
+    setGatewayModeDraft(result.mode === 'remote' ? 'remote' : 'local');
+    setGatewayRemoteUrlDraft(result.remote_url || '');
+    setGatewayRemoteTokenDraft('');
+    setGatewayAutoStartDraft(result.auto_start_gateway !== false);
+  }, []);
+  const loadGatewayConfig = useCallback(async () => {
+    try {
+      setSettingsBusy('gateway:config:load');
+      const result = await apiRequest<HermesOnboardingConfig>({ path: '/api/onboarding/config', timeoutMs: 12000 });
+      applyGatewayConfig(result);
+      if (selectedRef.current === 'integrations') {
+        setSettingsStatus('Gateway 连接配置已读取');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (selectedRef.current === 'integrations') {
+        setSettingsStatus(`Gateway 连接配置读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest, applyGatewayConfig]);
+  const runGatewayConfigAction = useCallback(async (
+    key: string,
+    label: string,
+    action: () => Promise<HermesOnboardingConfig>,
+  ) => {
+    try {
+      setSettingsBusy(key);
+      const result = await action();
+      applyGatewayConfig(result);
+      setSettingsStatus(result.message || `${label} 已完成`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSettingsStatus(`${label} 失败：${message}`);
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [applyGatewayConfig]);
+  const checkGatewayConfig = useCallback(() => {
+    void runGatewayConfigAction('gateway:config:check', 'Gateway 连接检查', () => apiRequest<HermesOnboardingConfig>({
+      body: {
+        mode: gatewayModeDraft,
+        remote_token: gatewayRemoteTokenDraft.trim(),
+        remote_url: gatewayRemoteUrlDraft.trim(),
+      },
+      method: 'POST',
+      path: '/api/onboarding/check',
+      timeoutMs: 12000,
+    }));
+  }, [apiRequest, gatewayModeDraft, gatewayRemoteTokenDraft, gatewayRemoteUrlDraft, runGatewayConfigAction]);
+  const saveGatewayConfig = useCallback(() => {
+    if (gatewayModeDraft === 'remote' && !gatewayRemoteUrlDraft.trim()) {
+      setSettingsStatus('请输入远程 Gateway URL。');
+      return;
+    }
+
+    void runGatewayConfigAction('gateway:config:save', 'Gateway 连接配置保存', async () => {
+      const result = await apiRequest<HermesOnboardingConfig>({
+        body: {
+          auto_start_gateway: gatewayAutoStartDraft,
+          mode: gatewayModeDraft,
+          remote_token: gatewayRemoteTokenDraft.trim(),
+          remote_url: gatewayRemoteUrlDraft.trim(),
+        },
+        method: 'PUT',
+        path: '/api/onboarding/config',
+        timeoutMs: 30000,
+      });
+      await runtime.refreshInventory();
+      return result;
+    });
+  }, [apiRequest, gatewayAutoStartDraft, gatewayModeDraft, gatewayRemoteTokenDraft, gatewayRemoteUrlDraft, runGatewayConfigAction, runtime]);
   const inventoryModelOptions = useMemo<HermesModelOptionsInfo | null>(() => {
     const defaultModel = config?.defaultModel || runtime.model || '';
     const currentProvider = config?.provider
@@ -8046,10 +8130,13 @@ function SettingsPanel({
     if (selected === 'permissions' && !toolsetsLoaded && !settingsBusy) {
       void loadToolsets();
     }
+    if (selected === 'integrations' && !gatewayConfigLoaded && !settingsBusy) {
+      void loadGatewayConfig();
+    }
     if (selected === 'integrations' && !mcpServersLoaded && !settingsBusy) {
       void loadMcpServers();
     }
-  }, [loadMcpServers, loadModelSettings, loadToolsets, mcpServersLoaded, modelOptionsLoaded, selected, settingsBusy, toolsetsLoaded]);
+  }, [gatewayConfigLoaded, loadGatewayConfig, loadMcpServers, loadModelSettings, loadToolsets, mcpServersLoaded, modelOptionsLoaded, selected, settingsBusy, toolsetsLoaded]);
   const enabledToolsetCount = toolsets.filter((item) => item.enabled).length;
   const enabledMcpCount = mcpServers.filter((item) => item.enabled !== false).length;
   const settingsControlLocked = Boolean(settingsBusy && !settingsBusy.endsWith(':load'));
@@ -8105,6 +8192,68 @@ function SettingsPanel({
     ],
     integrations: [
       { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={restartGateway}>{settingsBusy === 'gateway:restart' ? '重启中' : '重启'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={stopGateway}>{settingsBusy === 'gateway:stop' ? '停止中' : '停止'}</button></div> },
+      {
+        icon: <SlidersHorizontal size={18} />,
+        title: 'Gateway 连接方式',
+        desc: gatewayModeDraft === 'remote'
+          ? `远程 · ${gatewayRemoteUrlDraft || gatewayConfig?.remote_url || '未填写 URL'}${gatewayConfig?.remote_token_set ? ' · token 已保存' : ''}`
+          : `本机 · ${gatewayAutoStartDraft ? '启动时自动复用或启动 Gateway' : '启动时不自动拉起 Gateway'}`,
+        control: (
+          <form
+            className="settingControlStack wide gatewayConfigForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveGatewayConfig();
+            }}
+          >
+            <select
+              aria-label="Gateway 连接方式"
+              className="settingSelect short"
+              disabled={settingsControlLocked}
+              value={gatewayModeDraft}
+              onChange={(event) => setGatewayModeDraft(event.target.value === 'remote' ? 'remote' : 'local')}
+            >
+              <option value="local">本机 Gateway</option>
+              <option value="remote">远程 Gateway</option>
+            </select>
+            <input
+              aria-label="远程 Gateway URL"
+              className="settingInput"
+              disabled={settingsControlLocked || gatewayModeDraft !== 'remote'}
+              placeholder="https://gateway.example.com"
+              value={gatewayRemoteUrlDraft}
+              onChange={(event) => setGatewayRemoteUrlDraft(event.target.value)}
+            />
+            <input
+              aria-label="远程 Gateway Token"
+              className="settingInput"
+              disabled={settingsControlLocked || gatewayModeDraft !== 'remote'}
+              placeholder={gatewayConfig?.remote_token_set ? `已保存 ${gatewayConfig.remote_token_preview || 'token'}，留空保持不变` : 'Gateway token'}
+              type="password"
+              value={gatewayRemoteTokenDraft}
+              onChange={(event) => setGatewayRemoteTokenDraft(event.target.value)}
+            />
+            <label className="settingCheckbox compact">
+              <input
+                checked={gatewayAutoStartDraft}
+                disabled={settingsControlLocked}
+                type="checkbox"
+                onChange={(event) => setGatewayAutoStartDraft(event.target.checked)}
+              />
+              <span>自动启动</span>
+            </label>
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadGatewayConfig()}>
+              {settingsBusy === 'gateway:config:load' ? '读取中' : '读取'}
+            </button>
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={checkGatewayConfig}>
+              {settingsBusy === 'gateway:config:check' ? '检查中' : '检查'}
+            </button>
+            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
+              {settingsBusy === 'gateway:config:save' ? '保存中' : '保存'}
+            </button>
+          </form>
+        ),
+      },
       { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('integrations:messaging', '消息平台刷新')}>{settingsBusy === 'integrations:messaging' ? '刷新中' : '刷新'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('messaging')}>管理</button></div> },
       { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('skills')}>查看</button> },
       { icon: <Network size={18} />, title: 'MCP Servers', desc: `${enabledMcpCount}/${mcpServers.length} 已启用，配置写入 Hermes mcp_servers。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadMcpServers()}>{settingsBusy === 'mcp:load' ? '同步中' : '同步'}</button> },
@@ -8607,6 +8756,7 @@ function OnboardingSurface({
 }) {
   const [selectedMode, setSelectedMode] = useState<OnboardingMode>('local');
   const [remoteUrl, setRemoteUrl] = useState('');
+  const [remoteToken, setRemoteToken] = useState('');
   const [providerDraft, setProviderDraft] = useState('');
   const [modelDraft, setModelDraft] = useState('');
   const [autoStartGateway, setAutoStartGateway] = useState(true);
@@ -8626,6 +8776,7 @@ function OnboardingSurface({
       setOnboardingConfig(result);
       setSelectedMode(result.mode === 'remote' ? 'remote' : 'local');
       setRemoteUrl(result.remote_url || '');
+      setRemoteToken('');
       setProviderDraft(result.provider || config?.provider || '');
       setModelDraft(result.model || config?.defaultModel || runtime.model || '');
       setAutoStartGateway(result.auto_start_gateway !== false);
@@ -8659,6 +8810,7 @@ function OnboardingSurface({
           mode: selectedMode === 'remote' ? 'remote' : 'local',
           model: modelDraft.trim(),
           provider: providerDraft.trim(),
+          remote_token: remoteToken.trim(),
           remote_url: remoteUrl.trim(),
         },
         method: 'PUT',
@@ -8675,6 +8827,7 @@ function OnboardingSurface({
       const result = await apiRequest<HermesOnboardingConfig>({
         body: {
           mode: selectedMode === 'remote' ? 'remote' : 'local',
+          remote_token: remoteToken.trim(),
           remote_url: remoteUrl.trim(),
         },
         method: 'POST',
@@ -8748,6 +8901,17 @@ function OnboardingSurface({
           <label className={selectedMode === 'remote' ? undefined : 'muted'}>
             <span>远程 Gateway URL</span>
             <input className="settingInput" disabled={Boolean(onboardingBusy) || selectedMode !== 'remote'} placeholder="https://gateway.example.com" value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} />
+          </label>
+          <label className={selectedMode === 'remote' ? undefined : 'muted'}>
+            <span>Gateway Token</span>
+            <input
+              className="settingInput"
+              disabled={Boolean(onboardingBusy) || selectedMode !== 'remote'}
+              placeholder={onboardingConfig?.remote_token_set ? `已保存 ${onboardingConfig.remote_token_preview || 'token'}，留空保持不变` : '粘贴远程 Gateway token'}
+              type="password"
+              value={remoteToken}
+              onChange={(event) => setRemoteToken(event.target.value)}
+            />
           </label>
         </div>
         <label className="onboardingToggle">

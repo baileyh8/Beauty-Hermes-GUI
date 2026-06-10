@@ -67,6 +67,39 @@ function resolveHermesHome() {
   return process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
 }
 
+function readDesktopConfig() {
+  const configPath = path.join(resolveHermesHome(), 'desktop.json');
+
+  try {
+    const value = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeRemoteGatewayUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('Remote Hermes Gateway URL is invalid');
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Remote Hermes Gateway URL must start with http:// or https://');
+  }
+
+  url.hash = '';
+  url.search = '';
+  return url.toString().replace(/\/$/, '');
+}
+
 function buildWsUrl(baseUrl, token) {
   const url = new URL('/api/ws', baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -140,7 +173,7 @@ function sanitizeConnection(connection) {
   return {
     authMode: 'token',
     baseUrl: connection.baseUrl,
-    mode: 'local',
+    mode: connection.mode || 'local',
     pid: connection.pid ?? null,
     source: connection.source,
     status: connection.status,
@@ -188,6 +221,51 @@ async function probeGatewayAtPort(port, logs) {
   } catch {
     return null;
   }
+}
+
+async function probeRemoteGateway(config, logs) {
+  const baseUrl = normalizeRemoteGatewayUrl(config.remoteGatewayUrl);
+  if (!baseUrl) {
+    throw new Error('Remote Hermes Gateway URL is not configured');
+  }
+
+  let token = String(config.remoteGatewayToken || '').trim();
+  if (!token) {
+    try {
+      const root = await fetchText(baseUrl, {}, 2500);
+      token = root.text.match(TOKEN_RE)?.[1] || '';
+    } catch {
+      token = '';
+    }
+  }
+
+  if (!token) {
+    throw new Error('Remote Hermes Gateway token is not configured');
+  }
+
+  await fetchJson(
+    new URL('/api/status', `${baseUrl}/`).toString(),
+    {
+      headers: {
+        Accept: 'application/json',
+        'X-Hermes-Session-Token': token,
+      },
+    },
+    5000,
+  );
+
+  appendLog(logs, `Connected remote Hermes gateway at ${baseUrl}`);
+
+  return {
+    authMode: 'token',
+    baseUrl,
+    mode: 'remote',
+    pid: null,
+    source: 'remote',
+    status: 'connected',
+    token,
+    wsUrl: buildWsUrl(baseUrl, token),
+  };
 }
 
 async function findExistingGateway(logs) {
@@ -316,6 +394,12 @@ function createGatewayManager() {
     }
 
     startPromise = (async () => {
+      const desktopConfig = readDesktopConfig();
+      if (desktopConfig.connectionMode === 'remote') {
+        connection = await probeRemoteGateway(desktopConfig, logs);
+        return { ...sanitizeConnection(connection), logs: [...logs] };
+      }
+
       connection = await findExistingGateway(logs);
       if (!connection) {
         connection = await spawnGateway();
@@ -387,6 +471,15 @@ function createGatewayManager() {
   }
 
   function stop() {
+    if (connection?.source === 'remote') {
+      appendLog(logs, 'Clearing remote Hermes gateway connection');
+      connection = {
+        ...connection,
+        status: 'exited',
+      };
+      return getConnection();
+    }
+
     if (child && !child.killed) {
       appendLog(logs, 'Stopping spawned Hermes gateway');
       child.kill('SIGTERM');

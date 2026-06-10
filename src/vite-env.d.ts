@@ -12,9 +12,9 @@ interface HermesGatewayConnection {
   authMode: 'token';
   baseUrl: string;
   logs?: string[];
-  mode: 'local';
+  mode: 'local' | 'remote' | string;
   pid?: null | number;
-  source: 'existing' | 'spawned' | 'skipped' | string;
+  source: 'existing' | 'remote' | 'spawned' | 'skipped' | string;
   status: 'connected' | 'exited' | 'skipped' | string;
   tokenPreview?: null | string;
   wsUrl: string;

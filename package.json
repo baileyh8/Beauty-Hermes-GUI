@@ -15,6 +15,7 @@
     "smoke:ui": "node scripts/verify-ui-contract.mjs",
     "smoke:config": "node scripts/smoke-config-actions.mjs",
     "smoke:gateway": "node scripts/smoke-gateway.mjs",
+    "smoke:remote-gateway": "node scripts/smoke-remote-gateway.mjs",
     "smoke:prompt": "node scripts/smoke-real-prompt.mjs",
     "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
     "smoke:interactions": "npm run build && node scripts/smoke-interactions.mjs",

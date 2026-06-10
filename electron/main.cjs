@@ -11,6 +11,7 @@ let mainWindow = null;
 const localTelegramOnboardingPairings = new Map();
 const localActionProcesses = new Map();
 const localActionResults = new Map();
+const GATEWAY_TOKEN_RE = /__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
 
 const LOCAL_MESSAGING_CATALOG = [
   {
@@ -402,6 +403,39 @@ function writeDesktopConfig(nextConfig) {
   return configPath;
 }
 
+function previewSecret(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return null;
+  }
+  if (text.length <= 8) {
+    return `${text.slice(0, 2)}...${text.slice(-2)}`;
+  }
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
+function normalizeRemoteGatewayUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('远程 Gateway URL 格式无效。');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('远程 Gateway URL 需要以 http:// 或 https:// 开头。');
+  }
+
+  parsed.hash = '';
+  parsed.search = '';
+  return parsed.toString().replace(/\/$/, '');
+}
+
 async function fetchText(url, options = {}, timeoutMs = 3000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -416,6 +450,15 @@ async function fetchText(url, options = {}, timeoutMs = 3000) {
     return { ok: response.ok, status: response.status, text };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function discoverGatewayToken(baseUrl) {
+  try {
+    const root = await fetchText(baseUrl, {}, 2500);
+    return root.text.match(GATEWAY_TOKEN_RE)?.[1] || '';
+  } catch {
+    return '';
   }
 }
 
@@ -1213,9 +1256,12 @@ async function localOnboardingApi(method, url, body) {
     const inventory = readHermesInventory();
     const desktopConfig = readDesktopConfig();
     const mode = desktopConfig.connectionMode === 'remote' ? 'remote' : 'local';
+    const remoteToken = typeof desktopConfig.remoteGatewayToken === 'string' ? desktopConfig.remoteGatewayToken : '';
     return {
       mode,
       remote_url: typeof desktopConfig.remoteGatewayUrl === 'string' ? desktopConfig.remoteGatewayUrl : '',
+      remote_token_set: Boolean(remoteToken),
+      remote_token_preview: previewSecret(remoteToken),
       auto_start_gateway: desktopConfig.autoStartGateway !== false,
       desktop_config_path: path.join(resolveHermesHome(), 'desktop.json'),
       hermes_home: inventory.diagnostics.hermesHome,
@@ -1236,24 +1282,49 @@ async function localOnboardingApi(method, url, body) {
 
   if (method === 'POST' && url.pathname === '/api/onboarding/check') {
     const mode = body?.mode === 'remote' ? 'remote' : 'local';
-    const remoteUrl = String(body?.remote_url || '').trim();
+    const rawRemoteUrl = String(body?.remote_url || '').trim();
+    const remoteTokenDraft = String(body?.remote_token || '').trim();
     const result = summary();
 
     if (mode === 'remote') {
-      if (!remoteUrl) {
+      if (!rawRemoteUrl) {
         return { ...result, ok: false, message: '请输入远程 Gateway URL。' };
-      }
-      if (!/^https?:\/\//i.test(remoteUrl)) {
-        return { ...result, ok: false, message: '远程 Gateway URL 需要以 http:// 或 https:// 开头。' };
       }
 
       try {
-        const health = await fetchText(new URL('/api/status', remoteUrl).toString(), { headers: { Accept: 'application/json' } }, 2500);
+        const remoteUrl = normalizeRemoteGatewayUrl(rawRemoteUrl);
+        const storedConfig = readDesktopConfig();
+        const storedToken = typeof storedConfig.remoteGatewayToken === 'string' ? storedConfig.remoteGatewayToken.trim() : '';
+        const remoteToken = remoteTokenDraft || storedToken || await discoverGatewayToken(remoteUrl);
+
+        if (!remoteToken) {
+          return {
+            ...result,
+            ok: false,
+            mode,
+            remote_url: remoteUrl,
+            remote_token_set: false,
+            message: '请输入远程 Gateway Token，或确认远程页面能暴露会话 token。',
+          };
+        }
+
+        const health = await fetchText(
+          new URL('/api/status', `${remoteUrl}/`).toString(),
+          {
+            headers: {
+              Accept: 'application/json',
+              'X-Hermes-Session-Token': remoteToken,
+            },
+          },
+          2500,
+        );
         return {
           ...result,
           ok: health.ok,
           mode,
           remote_url: remoteUrl,
+          remote_token_set: true,
+          remote_token_preview: previewSecret(remoteToken),
           message: health.ok ? '远程 Gateway 可以访问。' : `远程 Gateway 返回 HTTP ${health.status}。`,
         };
       } catch (error) {
@@ -1280,6 +1351,8 @@ async function localOnboardingApi(method, url, body) {
   if (method === 'PUT' && url.pathname === '/api/onboarding/config') {
     const mode = body?.mode === 'remote' ? 'remote' : 'local';
     const remoteUrl = String(body?.remote_url || '').trim();
+    const remoteToken = String(body?.remote_token || '').trim();
+    const clearRemoteToken = body?.clear_remote_token === true;
     const provider = String(body?.provider || '').trim();
     const model = String(body?.model || '').trim();
     const autoStartGateway = body?.auto_start_gateway !== false;
@@ -1289,13 +1362,21 @@ async function localOnboardingApi(method, url, body) {
     }
 
     const current = readDesktopConfig();
-    const configPath = writeDesktopConfig({
+    const nextDesktopConfig = {
       ...current,
       autoStartGateway,
       connectionMode: mode,
-      remoteGatewayUrl: remoteUrl,
+      remoteGatewayUrl: remoteUrl ? normalizeRemoteGatewayUrl(remoteUrl) : '',
       updatedAt: new Date().toISOString(),
-    });
+    };
+
+    if (remoteToken) {
+      nextDesktopConfig.remoteGatewayToken = remoteToken;
+    } else if (clearRemoteToken) {
+      delete nextDesktopConfig.remoteGatewayToken;
+    }
+
+    const configPath = writeDesktopConfig(nextDesktopConfig);
 
     let modelResult = null;
     if (provider && model) {
@@ -1330,7 +1411,7 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"provider": provider, "model": mode
       provider: modelResult?.provider || provider || summary().provider,
       model: modelResult?.model || model || summary().model,
       message: mode === 'remote'
-        ? '连接配置已保存。远程接入需要在集成页确认凭据和 token。'
+        ? '远程 Gateway 连接配置已保存。'
         : '本机 Hermes 启动配置已保存。',
     };
   }

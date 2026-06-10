@@ -6479,6 +6479,36 @@ textarea {
   width: 100%;
 }
 
+.gatewayConfigForm {
+  grid-column: 2 / 4;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+}
+
+.settingCheckbox.compact {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid #dfe4ea;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #5b6472;
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.settingCheckbox.compact input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #2f67e8;
+}
+
 .toolsetConfigForm {
   grid-column: 2 / 4;
   display: grid;

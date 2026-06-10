@@ -317,6 +317,7 @@ try {
         mode: 'remote',
         model: 'smoke-model-onboarding',
         provider: 'smoke-provider-onboarding',
+        remote_token: 'smoke-remote-token',
         remote_url: 'https://gateway.smoke.local',
       },
       method: 'PUT',
@@ -325,6 +326,9 @@ try {
     });
     if (onboardingRemote.mode !== 'remote' || onboardingRemote.remote_url !== 'https://gateway.smoke.local' || onboardingRemote.auto_start_gateway !== false) {
       throw new Error('Onboarding remote config did not persist desktop settings');
+    }
+    if (onboardingRemote.remote_token_set !== true || String(onboardingRemote.remote_token_preview || '').includes('smoke-remote-token')) {
+      throw new Error('Onboarding remote token should persist without leaking the raw value');
     }
     const onboardingCheck = await api({
       body: { mode: 'local' },
