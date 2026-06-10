@@ -2424,7 +2424,7 @@ kbd {
 .commandInput {
   height: 58px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 12px;
   padding: 0 16px;
@@ -5644,6 +5644,26 @@ textarea {
 .commandRow.selected {
   border-color: #d8dde5;
   background: #eef2f7;
+}
+
+.commandCloseButton {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #7b828d;
+  cursor: pointer;
+}
+
+.commandCloseButton:hover,
+.commandCloseButton:focus-visible {
+  background: #eef2f7;
+  color: #20242a;
+  outline: none;
 }
 
 .slashMenu {

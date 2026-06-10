@@ -3919,6 +3919,7 @@ function Composer({
   const [composerNotice, setComposerNotice] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissedDraft, setSlashDismissedDraft] = useState('');
   const recognitionRef = useRef<null | SpeechRecognitionLike>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canSend = runtime.gatewayStatus === 'connected' && runtime.socketState === 'open';
@@ -3970,7 +3971,7 @@ function Composer({
       })
       .slice(0, 8);
   }, [draft, slashOptions, slashQuery]);
-  const slashOpen = visibleSlashOptions.length > 0;
+  const slashOpen = visibleSlashOptions.length > 0 && slashDismissedDraft !== draft;
 
   useEffect(() => {
     setSlashIndex(0);
@@ -3999,6 +4000,7 @@ function Composer({
     }
 
     setDraft(`${option.insert} `);
+    setSlashDismissedDraft(`${option.insert} `);
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
 
@@ -4168,6 +4170,9 @@ function Composer({
         </button>
         <textarea
           ref={textareaRef}
+          aria-activedescendant={slashOpen ? `slash-option-${slashIndex}` : undefined}
+          aria-controls={slashOpen ? 'slash-options' : undefined}
+          aria-expanded={slashOpen}
           aria-label="消息"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -4188,6 +4193,9 @@ function Composer({
             }
             if (event.key === 'Escape' && (slashOpen || attachmentOpen)) {
               event.preventDefault();
+              if (slashOpen) {
+                setSlashDismissedDraft(draft);
+              }
               setAttachmentOpen(false);
               return;
             }
@@ -4320,11 +4328,14 @@ function SlashMenu({
   onPick: (option: SlashCommandOption) => void;
 }) {
   return (
-    <div className="slashMenu" role="listbox" aria-label="斜杠指令">
+    <div className="slashMenu" id="slash-options" role="listbox" aria-label="斜杠指令">
       {options.map((option, index) => (
         <button
+          aria-selected={index === selectedIndex}
           className={index === selectedIndex ? 'slashItem selected' : 'slashItem'}
+          id={`slash-option-${index}`}
           key={option.title}
+          role="option"
           type="button"
           onClick={() => onPick(option)}
         >
@@ -4913,6 +4924,9 @@ function CommandCenter({
             placeholder="搜索命令、会话、文件、设置或 skill"
           />
           <kbd>⌘K</kbd>
+          <button className="commandCloseButton" type="button" aria-label="关闭命令中心" onClick={onClose}>
+            <X size={16} />
+          </button>
         </div>
 
         {filteredActions.length > 0 ? (

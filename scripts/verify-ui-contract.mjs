@@ -86,6 +86,8 @@ const requiredText = [
   'savePlatformConfig',
   'startTelegramOnboarding',
   'telegramOnboarding',
+  'slashDismissedDraft',
+  '关闭命令中心',
 ];
 
 const requiredStyles = [
@@ -111,6 +113,7 @@ const requiredStyles = [
   '.platformConfig',
   '.platformEnvGrid',
   '.telegramOnboarding',
+  '.commandCloseButton',
 ];
 
 const missingText = requiredText.filter((token) => !app.includes(token));

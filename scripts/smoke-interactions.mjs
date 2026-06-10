@@ -198,6 +198,9 @@ try {
     await waitFor(() => document.querySelector('.slashMenu')?.textContent?.includes('/help'), 'slash menu');
     setNativeValue(textarea, '/mess');
     await waitFor(() => document.querySelector('.slashMenu')?.textContent?.includes('/messaging'), 'slash messaging suggestion');
+    await waitFor(() => document.querySelector('.slashItem.selected')?.getAttribute('aria-selected') === 'true', 'slash aria selected');
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }));
+    await waitFor(() => !document.querySelector('.slashMenu'), 'slash escape close');
 
     setNativeValue(textarea, '/help');
     await sleep(120);
@@ -291,6 +294,10 @@ try {
       'voice input feedback',
     );
     findButton('停止语音输入')?.click();
+
+    await openCommandCenter();
+    findButton('关闭命令中心', document.querySelector('[data-testid="command-center"]'))?.click();
+    await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'command center close button');
 
     await openCommandCenter();
     document.querySelector('.overlayBackdrop')?.click();
@@ -773,7 +780,30 @@ try {
       settings: settingsSections.map(([label]) => label),
       slash: true,
       slashNavigation: ['/agents', '/projects', '/settings', '/models', '/approval', '/skills', '/cron', '/messaging', '/diagnostics', '/diagnose', '/gateway', '/profiles', '/onboarding', '/files', '/preview', '/workbench'],
-      uxHoles: ['voice-feedback', 'static-agent-card', 'skill-copy-feedback', 'command-center-close', 'workbench-feedback', 'diagnostics-feedback', 'project-actions-feedback', 'project-workspace-routing', 'project-new-task-routing', 'agents-automation-feedback', 'profile-feedback', 'command-keyboard-a11y', 'workbench-file-preview-feedback', 'approval-feedback', 'attachment-url-feedback', 'session-selection-feedback', 'inline-delete-confirmation', 'markdown-table-rendering', 'empty-prompt-actions'],
+      verifiedUx: [
+        'agents-automation-feedback',
+        'approval-feedback',
+        'attachment-url-feedback',
+        'command-center-close',
+        'command-keyboard-a11y',
+        'diagnostics-feedback',
+        'empty-prompt-actions',
+        'inline-delete-confirmation',
+        'markdown-table-rendering',
+        'profile-feedback',
+        'project-actions-feedback',
+        'project-new-task-routing',
+        'project-workspace-routing',
+        'session-selection-feedback',
+        'skill-copy-feedback',
+        'slash-aria-selected',
+        'slash-escape-close',
+        'static-agent-card',
+        'voice-feedback',
+        'workbench-feedback',
+        'workbench-file-preview-feedback',
+      ],
+      uxHoles: [],
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
