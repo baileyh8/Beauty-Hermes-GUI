@@ -1596,6 +1596,206 @@ kbd {
   color: #596273;
 }
 
+.projectSessionManager {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.sessionManagerHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.sessionManagerHeader h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.sessionManagerHeader p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.sessionManagerControls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sessionSearch {
+  min-width: 250px;
+  height: 34px;
+}
+
+.sessionSearch input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+}
+
+.sessionManagerControls button,
+.sessionBulkBar button,
+.sessionRowActions button,
+.sessionRenameForm button,
+.projectSessionEmpty button {
+  min-height: 31px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #4f5b6d;
+  background: #fff;
+}
+
+.sessionBulkBar {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 0 12px;
+  border-top: 1px solid rgba(223, 229, 239, 0.65);
+}
+
+.sessionBulkBar span {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.projectSessionList {
+  display: grid;
+  gap: 8px;
+}
+
+.projectSessionRow {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 28px minmax(260px, 1fr) auto minmax(260px, auto);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: #fbfcfe;
+}
+
+.projectSessionRow.selected {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: #f4f7ff;
+}
+
+.sessionSelect {
+  display: grid;
+  place-items: center;
+}
+
+.sessionOpenTarget {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.sessionOpenTarget strong,
+.sessionOpenTarget small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionOpenTarget strong {
+  font-size: 13.5px;
+}
+
+.sessionOpenTarget small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sessionTags {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sessionTags span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #647084;
+  background: #eef2f7;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.sessionTags .live {
+  color: #128342;
+  background: #e9f8ef;
+}
+
+.sessionRowActions,
+.sessionRenameForm {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sessionRenameForm input {
+  width: 180px;
+  height: 31px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  background: #fff;
+}
+
+.sessionRowActions button.danger,
+.sessionBulkBar button:nth-child(2):not(:disabled) {
+  color: #b42318;
+}
+
+.projectSessionEmpty {
+  padding: 28px;
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.projectSessionEmpty strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.projectSessionEmpty p {
+  margin: 6px 0 14px;
+  font-size: 13px;
+}
+
 .settingsSurface {
   display: grid;
   grid-template-columns: 268px minmax(0, 760px);
@@ -1867,6 +2067,73 @@ kbd {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
+}
+
+.agentControlStrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+
+.agentControlStrip > div {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.agentControlStrip strong {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.agentControlStrip span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentControlStrip button,
+.agentCardActions button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.agentControlStrip button:hover:not(:disabled),
+.agentCardActions button:hover:not(:disabled) {
+  border-color: #c7d2e3;
+  background: #f8fafc;
+}
+
+.agentCardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agentCardActions .danger {
+  color: #b42318;
+  border-color: #ffd1cb;
+  background: #fff7f6;
 }
 
 .kanbanColumn {
@@ -3199,6 +3466,25 @@ kbd {
 
   .projectGrid {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+
+  .sessionManagerHeader {
+    display: grid;
+  }
+
+  .sessionManagerControls {
+    justify-content: flex-start;
+  }
+
+  .projectSessionRow {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .sessionTags,
+  .sessionRowActions,
+  .sessionRenameForm {
+    grid-column: 2;
+    justify-content: flex-start;
   }
 
   .artifactGrid {

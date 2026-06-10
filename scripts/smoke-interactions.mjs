@@ -228,6 +228,15 @@ try {
     }
     sendButton.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Agents'), 'slash agents navigation');
+    await waitFor(() => document.querySelector('.agentControlStrip'), 'agents gateway controls');
+    for (const label of ['启动', '重启', '停止']) {
+      if (!findButton(label, document.querySelector('.agentControlStrip'))) {
+        throw new Error(`Agents page should expose Gateway ${label} action.`);
+      }
+    }
+    if (!Array.from(document.querySelectorAll('.agentCardActions button')).some((button) => button.textContent?.includes('启动') || button.textContent?.includes('复制摘要'))) {
+      throw new Error('Agents page should expose inline card actions, not read-only cards.');
+    }
     ({ textarea, sendButton } = await startNewTaskFromPage('slash agents'));
 
     await runSlashNavigation('/projects', '项目', '项目工作区', 'slash projects');
@@ -375,6 +384,7 @@ try {
 
     const pages = [
       ['Profiles', '工作身份'],
+      ['Agents', 'Gateway 控制'],
       ['技能库', '读取本机 Hermes skills'],
       ['自动化', '后台调度'],
       ['消息网关', '管理 Hermes Gateway'],
@@ -592,13 +602,32 @@ try {
     await waitFor(() => document.querySelector('[data-testid="right-workbench"]')?.innerText.includes('变更文件'), 'workspace action opens files workbench');
     findNavButton('项目')?.click();
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after workspace action');
-    const sessionAction = findProjectAction('会话', '新建任务');
+    await waitFor(() => document.querySelector('.projectSessionManager'), 'project session manager');
+    for (const label of ['搜索/刷新', '显示归档', '全选']) {
+      if (!findButton(label, document.querySelector('.projectSessionManager'))) {
+        throw new Error(`Missing project session manager action ${label}`);
+      }
+    }
+    const projectSearch = document.querySelector('.projectSessionManager input[aria-label="搜索会话"]');
+    if (!projectSearch) {
+      throw new Error('Missing project session search input.');
+    }
+    const sessionRows = document.querySelectorAll('.projectSessionRow');
+    if (sessionRows.length > 0) {
+      for (const label of ['重命名', '归档', '导出', '删除']) {
+        const hasAction = Array.from(document.querySelectorAll('.projectSessionRow button'))
+          .some((button) => button.textContent?.includes(label));
+        if (!hasAction) {
+          throw new Error(`Missing project session row action ${label}`);
+        }
+      }
+    }
+    const sessionAction = findProjectAction('会话', '新建任务') || findProjectAction('会话', '打开最近');
     if (!sessionAction) {
-      throw new Error('Missing project new task action.');
+      throw new Error('Missing project session action.');
     }
     sessionAction.click();
     await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), 'project new task opens chat');
-    await waitFor(() => document.querySelector('[data-testid="message-list"]')?.querySelectorAll('.message').length === 0, 'project new task clears transcript');
     findNavButton('项目')?.click();
     await waitFor(() => document.body.innerText.includes('项目工作区'), 'projects page after session action');
     findButton('项目设置')?.click();

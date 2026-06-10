@@ -256,18 +256,26 @@ interface SessionCreateResponse {
 }
 
 interface SessionInfoResponse {
+  archived?: boolean;
+  ended_at?: null | number;
   cwd?: null | string;
   id: string;
+  is_active?: boolean;
   last_active?: number;
   message_count?: number;
   model?: null | string;
   preview?: null | string;
+  source?: null | string;
+  started_at?: number;
   title?: null | string;
 }
 
 interface SessionListResponse {
   data?: SessionInfoResponse[];
+  limit?: number;
+  offset?: number;
   sessions?: SessionInfoResponse[];
+  total?: number;
 }
 
 interface SessionMessageResponse {
@@ -327,6 +335,24 @@ interface HermesUpdateCheckResponse {
   source?: string;
   update_available?: boolean;
   update_command?: string;
+}
+
+interface SessionStatsResponse {
+  active_store?: number;
+  archived?: number;
+  by_source?: Record<string, number>;
+  messages?: number;
+  total?: number;
+}
+
+interface SessionSearchResponse {
+  results?: Array<{
+    model?: string;
+    session_id?: string;
+    session_started?: number;
+    snippet?: string;
+    source?: string;
+  }>;
 }
 
 interface SessionRuntimeInfo {
@@ -1253,6 +1279,35 @@ function sessionsFromResponse(response: SessionListResponse) {
   return response.sessions ?? response.data ?? [];
 }
 
+function sessionDisplayTitle(session: SessionInfoResponse) {
+  return session.title || session.preview || session.id || '未命名会话';
+}
+
+function sessionDisplayMeta(session: SessionInfoResponse) {
+  const parts = [
+    `${session.message_count ?? 0} 条消息`,
+    session.model || undefined,
+    session.source || undefined,
+    formatSessionTime(session.last_active || session.started_at),
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function sessionSourceLabel(source?: null | string) {
+  if (!source) {
+    return 'chat';
+  }
+  const labels: Record<string, string> = {
+    cli: 'CLI',
+    cron: '自动化',
+    dashboard: 'Dashboard',
+    desktop: 'Desktop',
+    gateway: 'Gateway',
+    telegram: 'Telegram',
+  };
+  return labels[source] || source;
+}
+
 function sessionMessagesFromResponse(response: SessionMessagesResponse) {
   return response.messages ?? response.data ?? [];
 }
@@ -1268,7 +1323,7 @@ function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
     color: index === 0 ? 'blue' : 'gray',
     id: session.id,
     meta: `${session.message_count ?? 0} 条消息 · ${formatSessionTime(session.last_active)}`,
-    title: session.title || session.preview || '未命名会话',
+    title: sessionDisplayTitle(session),
   }));
 }
 
@@ -5269,25 +5324,258 @@ function ProjectsSurface({
 }) {
   const [projectBusy, setProjectBusy] = useState<null | string>(null);
   const [projectStatus, setProjectStatus] = useState('');
+  const [projectSessions, setProjectSessions] = useState<SessionInfoResponse[]>([]);
+  const [projectStats, setProjectStats] = useState<SessionStatsResponse | null>(null);
+  const [emptySessionCount, setEmptySessionCount] = useState(0);
+  const [sessionQuery, setSessionQuery] = useState('');
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
+  const [pendingDeleteId, setPendingDeleteId] = useState('');
+  const [renamingSessionId, setRenamingSessionId] = useState('');
+  const [renameDraft, setRenameDraft] = useState('');
   const gatewayReady = runtime.gatewayStatus === 'connected';
   const firstRecentSession = runtime.recentSessions.find((session) => Boolean(session.id));
+  const apiRequest = runtime.apiRequest;
   const runProjectAction = async (
     key: string,
     label: string,
-    action: () => Promise<void> | void,
-    doneMessage: string,
+    action: () => Promise<string | void> | string | void,
+    doneMessage?: string,
   ) => {
     setProjectBusy(key);
     setProjectStatus(`${label}处理中...`);
     try {
-      await action();
-      setProjectStatus(doneMessage);
+      const result = await action();
+      setProjectStatus(typeof result === 'string' ? result : doneMessage || `${label}已完成。`);
     } catch (error) {
       setProjectStatus(`${label}失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setProjectBusy(null);
     }
   };
+  const loadProjectSessions = useCallback(async (query = sessionQuery) => {
+    const archivedMode = includeArchived ? 'include' : 'exclude';
+    const queryText = query.trim();
+    setProjectBusy('sessions:load');
+    setProjectStatus(queryText ? `正在搜索“${queryText}”...` : '正在同步会话...');
+    try {
+      const [listResult, statsResult, emptyResult, searchResult] = await Promise.allSettled([
+        apiRequest<SessionListResponse>({
+          path: `/api/sessions?limit=80&offset=0&min_messages=0&archived=${archivedMode}&order=recent`,
+          timeoutMs: 30000,
+        }),
+        apiRequest<SessionStatsResponse>({ path: '/api/sessions/stats', timeoutMs: 30000 }),
+        apiRequest<{ count?: number }>({ path: '/api/sessions/empty/count', timeoutMs: 30000 }),
+        queryText
+          ? apiRequest<SessionSearchResponse>({
+            path: `/api/sessions/search?q=${encodeURIComponent(queryText)}&limit=40`,
+            timeoutMs: 30000,
+          })
+          : Promise.resolve<SessionSearchResponse>({ results: [] }),
+      ]);
+
+      if (listResult.status === 'rejected') {
+        throw listResult.reason;
+      }
+
+      const baseSessions = sessionsFromResponse(listResult.value);
+      let nextSessions = baseSessions;
+      if (queryText) {
+        const lowerQuery = queryText.toLowerCase();
+        const searchRows = searchResult.status === 'fulfilled'
+          ? (searchResult.value.results || []).map((result): SessionInfoResponse => {
+            const existing = baseSessions.find((item) => item.id === result.session_id);
+            return existing || {
+              id: result.session_id || '',
+              last_active: result.session_started,
+              message_count: 0,
+              model: result.model,
+              preview: result.snippet,
+              source: result.source,
+              title: result.snippet,
+            };
+          }).filter((item) => Boolean(item.id))
+          : [];
+        const visibleMatches = baseSessions.filter((session) => (
+          [session.id, session.title, session.preview, session.model, session.source]
+            .some((value) => String(value || '').toLowerCase().includes(lowerQuery))
+        ));
+        const seen = new Set<string>();
+        nextSessions = [...searchRows, ...visibleMatches].filter((session) => {
+          if (!session.id || seen.has(session.id)) {
+            return false;
+          }
+          seen.add(session.id);
+          return true;
+        });
+      }
+
+      setProjectSessions(nextSessions);
+      setSelectedSessionIds((current) => current.filter((id) => nextSessions.some((session) => session.id === id)));
+      if (statsResult.status === 'fulfilled') {
+        setProjectStats(statsResult.value);
+      }
+      if (emptyResult.status === 'fulfilled') {
+        setEmptySessionCount(Number(emptyResult.value.count || 0));
+      }
+      setProjectStatus(queryText ? `找到 ${nextSessions.length} 个匹配会话。` : `已同步 ${nextSessions.length} 个会话。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProjectSessions([]);
+      setSelectedSessionIds([]);
+      setProjectStatus(`会话同步失败：${message}`);
+    } finally {
+      setProjectBusy(null);
+    }
+  }, [apiRequest, includeArchived, sessionQuery]);
+
+  useEffect(() => {
+    void loadProjectSessions('');
+  }, [includeArchived]);
+
+  const visibleSessionIds = projectSessions.map((session) => session.id).filter(Boolean);
+  const allVisibleSelected = visibleSessionIds.length > 0 && visibleSessionIds.every((id) => selectedSessionIds.includes(id));
+  const toggleSessionSelection = (sessionId: string) => {
+    setPendingDeleteId('');
+    setSelectedSessionIds((current) => (
+      current.includes(sessionId) ? current.filter((id) => id !== sessionId) : [...current, sessionId]
+    ));
+  };
+  const toggleAllVisibleSessions = () => {
+    setPendingDeleteId('');
+    setSelectedSessionIds(allVisibleSelected ? [] : visibleSessionIds);
+  };
+  const beginRenameSession = (session: SessionInfoResponse) => {
+    setPendingDeleteId('');
+    setRenamingSessionId(session.id);
+    setRenameDraft(session.title || session.preview || '');
+  };
+  const renameSession = (session: SessionInfoResponse) => runProjectAction(
+    `rename:${session.id}`,
+    '重命名会话',
+    async () => {
+      const title = renameDraft.trim();
+      if (!title) {
+        throw new Error('请输入会话名称');
+      }
+      await apiRequest({
+        body: { title },
+        method: 'PATCH',
+        path: `/api/sessions/${encodeURIComponent(session.id)}`,
+        timeoutMs: 30000,
+      });
+      setRenamingSessionId('');
+      await loadProjectSessions();
+      await runtime.refreshInventory();
+      return `“${title}” 已保存。`;
+    },
+  );
+  const archiveProjectSession = (session: SessionInfoResponse, archived: boolean) => runProjectAction(
+    `archive:${session.id}`,
+    archived ? '归档会话' : '恢复会话',
+    async () => {
+      await apiRequest({
+        body: { archived },
+        method: 'PATCH',
+        path: `/api/sessions/${encodeURIComponent(session.id)}`,
+        timeoutMs: 30000,
+      });
+      await loadProjectSessions();
+      await runtime.refreshInventory();
+      return archived ? '会话已归档。' : '会话已恢复。';
+    },
+  );
+  const deleteProjectSession = (session: SessionInfoResponse) => {
+    if (pendingDeleteId !== session.id) {
+      setPendingDeleteId(session.id);
+      setProjectStatus(`再次点击删除“${sessionDisplayTitle(session)}”。`);
+      return;
+    }
+    void runProjectAction(
+      `delete:${session.id}`,
+      '删除会话',
+      async () => {
+        await runtime.deleteSession({
+          id: session.id,
+          meta: sessionDisplayMeta(session),
+          title: sessionDisplayTitle(session),
+        });
+        setPendingDeleteId('');
+        setSelectedSessionIds((current) => current.filter((id) => id !== session.id));
+        await loadProjectSessions();
+        return '会话已删除。';
+      },
+    );
+  };
+  const bulkDeleteSessions = () => {
+    if (selectedSessionIds.length === 0) {
+      setProjectStatus('请先选择要删除的会话。');
+      return;
+    }
+    if (pendingDeleteId !== 'bulk') {
+      setPendingDeleteId('bulk');
+      setProjectStatus(`再次点击批量删除 ${selectedSessionIds.length} 个会话。`);
+      return;
+    }
+    void runProjectAction(
+      'bulk-delete',
+      '批量删除',
+      async () => {
+        const result = await apiRequest<{ deleted?: number }>({
+          body: { ids: selectedSessionIds },
+          method: 'POST',
+          path: '/api/sessions/bulk-delete',
+          timeoutMs: 30000,
+        });
+        setSelectedSessionIds([]);
+        setPendingDeleteId('');
+        await loadProjectSessions();
+        await runtime.refreshInventory();
+        return `已删除 ${result.deleted ?? selectedSessionIds.length} 个会话。`;
+      },
+    );
+  };
+  const cleanEmptySessions = () => {
+    if (emptySessionCount <= 0) {
+      setProjectStatus('当前没有可清理的空会话。');
+      return;
+    }
+    if (pendingDeleteId !== 'empty') {
+      setPendingDeleteId('empty');
+      setProjectStatus(`再次点击清理 ${emptySessionCount} 个空会话。`);
+      return;
+    }
+    void runProjectAction(
+      'empty-delete',
+      '清理空会话',
+      async () => {
+        const result = await apiRequest<{ deleted?: number }>({
+          method: 'DELETE',
+          path: '/api/sessions/empty',
+          timeoutMs: 30000,
+        });
+        setPendingDeleteId('');
+        await loadProjectSessions();
+        await runtime.refreshInventory();
+        return `已清理 ${result.deleted ?? 0} 个空会话。`;
+      },
+    );
+  };
+  const exportSession = (session: SessionInfoResponse) => runProjectAction(
+    `export:${session.id}`,
+    '导出会话',
+    async () => {
+      const result = await apiRequest<{ session?: unknown }>({
+        path: `/api/sessions/${encodeURIComponent(session.id)}/export`,
+        timeoutMs: 30000,
+      });
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('当前环境无法访问剪贴板');
+      }
+      await navigator.clipboard.writeText(JSON.stringify(result.session || result, null, 2));
+      return '会话 JSON 已复制。';
+    },
+  );
 
   const projectCards = [
     {
@@ -5322,7 +5610,7 @@ function ProjectsSurface({
       action: firstRecentSession?.id ? '打开最近' : '新建任务',
       icon: <MessageSquare size={20} />,
       key: 'sessions',
-      meta: runtime.recentSessions.length > 0 ? `${runtime.recentSessions.length} 个最近会话` : '还没有真实会话记录',
+      meta: `${projectStats?.total ?? runtime.recentSessions.length} 个会话 · ${projectStats?.messages ?? 0} 条消息`,
       onClick: () => runProjectAction(
         'sessions',
         firstRecentSession?.id ? '最近会话' : '新建任务',
@@ -5335,7 +5623,10 @@ function ProjectsSurface({
         },
         firstRecentSession?.id ? '最近会话正在打开。' : '新任务已创建。',
       ),
-      stats: runtime.recentSessions.slice(0, 2).map((item) => item.title),
+      stats: [
+        `${projectStats?.active_store ?? projectSessions.length} 可见`,
+        `${projectStats?.archived ?? 0} 归档`,
+      ],
       title: '会话',
     },
   ];
@@ -5387,6 +5678,112 @@ function ProjectsSurface({
           </article>
         ))}
       </div>
+
+      <section className="projectSessionManager">
+        <div className="sessionManagerHeader">
+          <div>
+            <h3>会话管理</h3>
+            <p>{projectStats?.total ?? projectSessions.length} 个会话 · {projectStats?.messages ?? 0} 条消息 · {emptySessionCount} 个空会话</p>
+          </div>
+          <div className="sessionManagerControls">
+            <label className="inlineSearch sessionSearch">
+              <Search size={15} />
+              <input
+                aria-label="搜索会话"
+                onChange={(event) => setSessionQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    void loadProjectSessions();
+                  }
+                }}
+                placeholder="搜索标题、ID 或消息"
+                value={sessionQuery}
+              />
+            </label>
+            <button type="button" onClick={() => void loadProjectSessions()} disabled={Boolean(projectBusy)}>
+              {projectBusy === 'sessions:load' ? '同步中' : '搜索/刷新'}
+            </button>
+            <button type="button" onClick={() => setIncludeArchived((value) => !value)} disabled={Boolean(projectBusy)}>
+              {includeArchived ? '隐藏归档' : '显示归档'}
+            </button>
+          </div>
+        </div>
+
+        <div className="sessionBulkBar">
+          <button type="button" onClick={toggleAllVisibleSessions} disabled={projectSessions.length === 0 || Boolean(projectBusy)}>
+            {allVisibleSelected ? '取消全选' : '全选'}
+          </button>
+          <button type="button" onClick={bulkDeleteSessions} disabled={selectedSessionIds.length === 0 || Boolean(projectBusy)}>
+            {pendingDeleteId === 'bulk' ? '确认删除' : `批量删除 ${selectedSessionIds.length || ''}`.trim()}
+          </button>
+          <button type="button" onClick={cleanEmptySessions} disabled={emptySessionCount === 0 || Boolean(projectBusy)}>
+            {pendingDeleteId === 'empty' ? '确认清理' : `清理空会话 ${emptySessionCount || ''}`.trim()}
+          </button>
+          <span>{selectedSessionIds.length > 0 ? `已选择 ${selectedSessionIds.length} 个` : '选择会话后可批量操作'}</span>
+        </div>
+
+        <div className="projectSessionList" aria-label="项目会话列表">
+          {projectSessions.length > 0 ? projectSessions.map((session) => {
+            const title = sessionDisplayTitle(session);
+            const selected = selectedSessionIds.includes(session.id);
+            const renaming = renamingSessionId === session.id;
+            return (
+              <article className={selected ? 'projectSessionRow selected' : 'projectSessionRow'} key={session.id}>
+                <label className="sessionSelect">
+                  <input
+                    aria-label={`选择 ${title}`}
+                    checked={selected}
+                    onChange={() => toggleSessionSelection(session.id)}
+                    type="checkbox"
+                  />
+                </label>
+                <button className="sessionOpenTarget" type="button" onClick={() => onOpenSession(session.id)}>
+                  <span className={session.is_active ? 'statusDot green' : session.archived ? 'statusDot gray' : 'statusDot blue'} />
+                  <span>
+                    <strong>{title}</strong>
+                    <small>{sessionDisplayMeta(session)}</small>
+                  </span>
+                </button>
+                <div className="sessionTags">
+                  <span>{sessionSourceLabel(session.source)}</span>
+                  {session.archived && <span>已归档</span>}
+                  {session.is_active && <span className="live">活跃</span>}
+                </div>
+                {renaming ? (
+                  <form
+                    className="sessionRenameForm"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void renameSession(session);
+                    }}
+                  >
+                    <input aria-label="会话名称" value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} />
+                    <button type="submit" disabled={Boolean(projectBusy)}>保存</button>
+                    <button type="button" onClick={() => setRenamingSessionId('')} disabled={Boolean(projectBusy)}>取消</button>
+                  </form>
+                ) : (
+                  <div className="sessionRowActions">
+                    <button type="button" onClick={() => beginRenameSession(session)} disabled={Boolean(projectBusy)}>重命名</button>
+                    <button type="button" onClick={() => void archiveProjectSession(session, !session.archived)} disabled={Boolean(projectBusy)}>
+                      {session.archived ? '恢复' : '归档'}
+                    </button>
+                    <button type="button" onClick={() => void exportSession(session)} disabled={Boolean(projectBusy)}>导出</button>
+                    <button className="danger" type="button" onClick={() => deleteProjectSession(session)} disabled={Boolean(projectBusy)}>
+                      {pendingDeleteId === session.id ? '确认删除' : '删除'}
+                    </button>
+                  </div>
+                )}
+              </article>
+            );
+          }) : (
+            <div className="projectSessionEmpty">
+              <strong>{sessionQuery.trim() ? '没有匹配会话' : '暂无真实会话'}</strong>
+              <p>{sessionQuery.trim() ? '换个关键词，或清空搜索后刷新。' : '开始新任务后，真实 Hermes 会话会出现在这里。'}</p>
+              <button type="button" onClick={onOpenNewTask}>新建任务</button>
+            </div>
+          )}
+        </div>
+      </section>
     </section>
   );
 }
@@ -5404,6 +5801,7 @@ function AgentsSurface({
   const [agentStatus, setAgentStatus] = useState('');
   const runningTools = runtime.tools.filter((tool) => tool.state === 'running');
   const completedTools = runtime.tools.filter((tool) => tool.state === 'done');
+  const gatewayControlsLocked = Boolean(agentBusy);
   const refreshAgents = async () => {
     try {
       setAgentBusy('refresh');
@@ -5416,6 +5814,38 @@ function AgentsSurface({
       setAgentBusy('');
     }
   };
+  const runAgentAction = async (key: string, label: string, action: () => Promise<void>) => {
+    try {
+      setAgentBusy(key);
+      setAgentStatus(`${label}处理中...`);
+      await action();
+      setAgentStatus(`${label}已完成。`);
+    } catch (error) {
+      setAgentStatus(`${label}失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setAgentBusy('');
+    }
+  };
+  const copyAgentSummary = async (tool: GatewayToolItem) => {
+    if (!navigator.clipboard?.writeText) {
+      setAgentStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
+    await runAgentAction(`copy:${tool.id}`, `${tool.label} 摘要复制`, async () => {
+      await navigator.clipboard.writeText([
+        tool.label,
+        tool.detail,
+        tool.value,
+      ].filter(Boolean).join('\n'));
+    });
+  };
+  const respondAgentApproval = (choice: 'once' | 'session' | 'always' | 'deny') => {
+    const label = choice === 'deny' ? '拒绝审批' : choice === 'always' ? '永久允许' : choice === 'session' ? '本会话允许' : '允许一次';
+    void runAgentAction(`approval:${choice}`, label, async () => {
+      await runtime.respondApproval(choice);
+    });
+  };
   const runningCards = runningTools.length > 0
     ? runningTools.map((tool) => (
       <AgentCard
@@ -5424,6 +5854,11 @@ function AgentsSurface({
         status="运行中"
         desc="工具正在执行，输出会同步到聊天和右侧活动。"
         meta={tool.detail || tool.value}
+        actions={(
+          <button type="button" onClick={() => void copyAgentSummary(tool)} disabled={gatewayControlsLocked}>
+            {agentBusy === `copy:${tool.id}` ? '复制中' : '复制摘要'}
+          </button>
+        )}
       />
     ))
     : [(
@@ -5434,6 +5869,19 @@ function AgentsSurface({
         desc="连接状态来自本机 Gateway。"
         meta={runtime.statusText}
         muted={runtime.socketState !== 'open'}
+        actions={(
+          <>
+            <button type="button" onClick={() => void runAgentAction('gateway:start', '启动 Gateway', runtime.startGateway)} disabled={gatewayControlsLocked || runtime.gatewayStatus === 'connected'}>
+              启动
+            </button>
+            <button type="button" onClick={() => void runAgentAction('gateway:restart', '重启 Gateway', runtime.restartGateway)} disabled={gatewayControlsLocked}>
+              重启
+            </button>
+            <button type="button" onClick={() => void runAgentAction('gateway:stop', '停止 Gateway', runtime.stopGateway)} disabled={gatewayControlsLocked || runtime.gatewayStatus === 'stopped'}>
+              停止
+            </button>
+          </>
+        )}
       />
     )];
 
@@ -5442,7 +5890,7 @@ function AgentsSurface({
       <div className="pageIntro">
         <div>
           <h2>Agents</h2>
-          <p>运行中工具、待确认命令和最近完成事件集中在这里。</p>
+          <p>运行中工具、待确认命令和 Gateway 控制集中在这里。</p>
         </div>
         <div className="topActions">
           <button className="lightButton" type="button" onClick={() => void refreshAgents()} disabled={Boolean(agentBusy)}>
@@ -5456,6 +5904,27 @@ function AgentsSurface({
         </div>
       </div>
       {agentStatus && <p className="surfaceStatus" role="status">{agentStatus}</p>}
+      <div className="agentControlStrip" aria-label="Gateway 快捷控制">
+        <div>
+          <Network size={15} />
+          <strong>{runtime.connectionLabel}</strong>
+          <span>{runtime.connection?.baseUrl || runtime.statusText}</span>
+        </div>
+        <div>
+          <button type="button" onClick={() => void runAgentAction('gateway:start', '启动 Gateway', runtime.startGateway)} disabled={gatewayControlsLocked || runtime.gatewayStatus === 'connected'}>
+            <Play size={14} />
+            启动
+          </button>
+          <button type="button" onClick={() => void runAgentAction('gateway:restart', '重启 Gateway', runtime.restartGateway)} disabled={gatewayControlsLocked}>
+            <RefreshCw className={agentBusy === 'gateway:restart' ? 'spinIcon' : undefined} size={14} />
+            重启
+          </button>
+          <button type="button" onClick={() => void runAgentAction('gateway:stop', '停止 Gateway', runtime.stopGateway)} disabled={gatewayControlsLocked || runtime.gatewayStatus === 'stopped'}>
+            <PauseCircle size={14} />
+            停止
+          </button>
+        </div>
+      </div>
       <div className="kanbanGrid">
         <KanbanColumn title="运行中" count={String(runningTools.length || (runtime.socketState === 'open' ? 1 : 0))}>
           {runningCards}
@@ -5469,6 +5938,19 @@ function AgentsSurface({
               meta={runtime.pendingApproval.description}
               danger
               onClick={onOpenApproval}
+              actions={(
+                <>
+                  <button type="button" onClick={() => respondAgentApproval('once')} disabled={gatewayControlsLocked}>
+                    允许一次
+                  </button>
+                  <button type="button" onClick={() => respondAgentApproval('session')} disabled={gatewayControlsLocked}>
+                    本会话
+                  </button>
+                  <button className="danger" type="button" onClick={() => respondAgentApproval('deny')} disabled={gatewayControlsLocked}>
+                    拒绝
+                  </button>
+                </>
+              )}
             />
           ) : (
             <AgentCard title="暂无待审批命令" status="空闲" desc="出现高风险操作时会固定在这里。" meta="审批队列为空" muted />
@@ -5508,7 +5990,9 @@ function AgentCard({
   danger,
   muted,
   onClick,
+  actions,
 }: {
+  actions?: React.ReactNode;
   desc: string;
   title: string;
   status: string;
@@ -5517,7 +6001,7 @@ function AgentCard({
   muted?: boolean;
   onClick?: () => void;
 }) {
-  const className = `${muted ? 'agentCard muted' : 'agentCard'}${onClick ? '' : ' static'}`;
+  const className = `${muted ? 'agentCard muted' : 'agentCard'}${onClick && !actions ? '' : ' static'}`;
   const content = (
     <>
       <div className="cardHead">
@@ -5527,12 +6011,22 @@ function AgentCard({
       <p>{desc}</p>
       <div className="cardFoot">
         <span>{meta}</span>
-        {onClick && <ChevronRight size={14} />}
+        {onClick && !actions && <ChevronRight size={14} />}
       </div>
+      {actions && (
+        <div className="agentCardActions">
+          {onClick && (
+            <button type="button" onClick={onClick}>
+              查看详情
+            </button>
+          )}
+          {actions}
+        </div>
+      )}
     </>
   );
 
-  if (!onClick) {
+  if (!onClick || actions) {
     return (
       <article className={className}>
         {content}

@@ -1684,6 +1684,262 @@ function readHermesInventory() {
   };
 }
 
+async function localSessionsApi(method, url, body) {
+  const sessionScript = `
+import json, sys, time
+payload = json.loads(sys.stdin.read() or "{}")
+from hermes_state import SessionDB
+
+def open_db(write=False):
+    try:
+        return SessionDB(read_only=not write)
+    except TypeError:
+        return SessionDB()
+
+def normalize_session(row):
+    item = dict(row or {})
+    return {
+        "id": item.get("id") or item.get("session_id") or "",
+        "source": item.get("source"),
+        "model": item.get("model"),
+        "title": item.get("title"),
+        "started_at": item.get("started_at"),
+        "ended_at": item.get("ended_at"),
+        "message_count": item.get("message_count") or 0,
+        "preview": item.get("preview") or "",
+        "last_active": item.get("last_active"),
+        "archived": bool(item.get("archived")),
+        "is_active": bool(item.get("is_active")),
+        "cwd": item.get("cwd"),
+    }
+`;
+
+  if (method === 'GET' && url.pathname === '/api/sessions') {
+    return runHermesPython(`${sessionScript}
+limit = max(1, min(int(payload.get("limit") or 40), 200))
+offset = max(0, int(payload.get("offset") or 0))
+archived = payload.get("archived") or "exclude"
+min_messages = max(0, int(payload.get("min_messages") or 0))
+order = payload.get("order") or "recent"
+source = payload.get("source") or None
+exclude_sources = [s for s in str(payload.get("exclude_sources") or "").split(",") if s.strip()]
+include_archived = archived == "include"
+archived_only = archived == "only"
+db = open_db(write=False)
+try:
+    sessions = db.list_sessions_rich(
+        source=source,
+        exclude_sources=exclude_sources or None,
+        limit=limit,
+        offset=offset,
+        min_message_count=min_messages,
+        include_archived=include_archived,
+        archived_only=archived_only,
+        order_by_last_active=order == "recent",
+    )
+    total = db.session_count(
+        source=source,
+        exclude_sources=exclude_sources or None,
+        min_message_count=min_messages,
+        include_archived=include_archived,
+        archived_only=archived_only,
+        exclude_children=True,
+    )
+    now = time.time()
+    for item in sessions:
+        item["is_active"] = item.get("ended_at") is None and (now - item.get("last_active", item.get("started_at", 0))) < 300
+        item["archived"] = bool(item.get("archived"))
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"sessions": [normalize_session(item) for item in sessions], "total": total, "limit": limit, "offset": offset, "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, {
+      archived: url.searchParams.get('archived') || 'exclude',
+      exclude_sources: url.searchParams.get('exclude_sources') || '',
+      limit: Number(url.searchParams.get('limit') || 40),
+      min_messages: Number(url.searchParams.get('min_messages') || 0),
+      offset: Number(url.searchParams.get('offset') || 0),
+      order: url.searchParams.get('order') || 'recent',
+      source: url.searchParams.get('source') || '',
+    }, 30000);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/sessions/stats') {
+    return runHermesPython(`${sessionScript}
+db = open_db(write=False)
+try:
+    by_source = {}
+    try:
+        for item in db.list_sessions_rich(limit=10000, include_archived=True):
+            src = str(item.get("source") or "cli")
+            by_source[src] = by_source.get(src, 0) + 1
+    except Exception:
+        pass
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({
+        "total": db.session_count(include_archived=True),
+        "active_store": db.session_count(include_archived=False),
+        "archived": db.session_count(archived_only=True),
+        "messages": db.message_count(),
+        "by_source": by_source,
+        "source": "desktop-local-bridge",
+    }))
+finally:
+    db.close()
+`, {}, 30000);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/sessions/empty/count') {
+    return runHermesPython(`${sessionScript}
+db = open_db(write=False)
+try:
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"count": db.count_empty_sessions(), "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, {}, 20000);
+  }
+
+  if (method === 'DELETE' && url.pathname === '/api/sessions/empty') {
+    return runHermesPython(`${sessionScript}
+db = open_db(write=True)
+try:
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "deleted": db.delete_empty_sessions(), "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, {}, 30000);
+  }
+
+  if (method === 'GET' && url.pathname === '/api/sessions/search') {
+    return runHermesPython(`${sessionScript}
+query = str(payload.get("q") or "").strip().lower()
+limit = max(1, min(int(payload.get("limit") or 20), 100))
+results = []
+if query:
+    db = open_db(write=False)
+    try:
+        rows = db.list_sessions_rich(limit=400, include_archived=True, order_by_last_active=True)
+        for row in rows:
+            haystack = " ".join(str(row.get(key) or "") for key in ("id", "title", "preview", "source", "model")).lower()
+            if query in haystack:
+                results.append({
+                    "session_id": row.get("id"),
+                    "snippet": row.get("preview") or row.get("title") or row.get("id"),
+                    "source": row.get("source"),
+                    "model": row.get("model"),
+                    "session_started": row.get("started_at"),
+                })
+            if len(results) >= limit:
+                break
+    finally:
+        db.close()
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"results": results, "source": "desktop-local-bridge"}))
+`, { limit: Number(url.searchParams.get('limit') || 20), q: url.searchParams.get('q') || '' }, 30000);
+  }
+
+  const bulkDeleteMatch = url.pathname === '/api/sessions/bulk-delete';
+  if (method === 'POST' && bulkDeleteMatch) {
+    return runHermesPython(`${sessionScript}
+ids = payload.get("ids") or []
+if not isinstance(ids, list):
+    raise SystemExit("ids must be a list")
+db = open_db(write=True)
+try:
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "deleted": db.delete_sessions(ids[:500]), "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, { ids: Array.isArray(body?.ids) ? body.ids : [] }, 30000);
+  }
+
+  const messageMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/);
+  if (method === 'GET' && messageMatch) {
+    const id = decodeURIComponent(messageMatch[1]);
+    return runHermesPython(`${sessionScript}
+sid = str(payload.get("id") or "")
+db = open_db(write=False)
+try:
+    resolved = db.resolve_session_id(sid)
+    if not resolved:
+        raise SystemExit("Session not found")
+    try:
+        resolved = db.resolve_resume_session_id(resolved)
+    except Exception:
+        pass
+    messages = db.get_messages(resolved)
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"session_id": resolved, "messages": messages, "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, { id }, 30000);
+  }
+
+  const exportMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/export$/);
+  if (method === 'GET' && exportMatch) {
+    const id = decodeURIComponent(exportMatch[1]);
+    return runHermesPython(`${sessionScript}
+sid = str(payload.get("id") or "")
+db = open_db(write=False)
+try:
+    resolved = db.resolve_session_id(sid)
+    if not resolved:
+        raise SystemExit("Session not found")
+    data = db.export_session(resolved)
+    if data is None:
+        raise SystemExit("Session not found")
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"session": data, "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, { id }, 30000);
+  }
+
+  const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
+  if (sessionMatch) {
+    const id = decodeURIComponent(sessionMatch[1]);
+    if (method === 'GET') {
+      return runHermesPython(`${sessionScript}
+sid = str(payload.get("id") or "")
+db = open_db(write=False)
+try:
+    resolved = db.resolve_session_id(sid)
+    session = db.get_session(resolved) if resolved else None
+    if not session:
+        raise SystemExit("Session not found")
+    print("__BEAUTY_HERMES_JSON__" + json.dumps(normalize_session(session)))
+finally:
+    db.close()
+`, { id }, 20000);
+    }
+    if (method === 'PATCH') {
+      return runHermesPython(`${sessionScript}
+sid = str(payload.get("id") or "")
+updates = payload.get("updates") or {}
+db = open_db(write=True)
+try:
+    resolved = db.resolve_session_id(sid)
+    if not resolved:
+        raise SystemExit("Session not found")
+    if "title" in updates and updates.get("title") is not None:
+        db.set_session_title(resolved, updates.get("title") or "")
+    if "archived" in updates and updates.get("archived") is not None:
+        db.set_session_archived(resolved, bool(updates.get("archived")))
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "title": db.get_session_title(resolved) or "", "archived": bool(updates.get("archived")) if "archived" in updates else None, "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, { id, updates: body || {} }, 30000);
+    }
+    if (method === 'DELETE') {
+      return runHermesPython(`${sessionScript}
+sid = str(payload.get("id") or "")
+db = open_db(write=True)
+try:
+    if not db.delete_session(sid):
+        raise SystemExit("Session not found")
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "source": "desktop-local-bridge"}))
+finally:
+    db.close()
+`, { id }, 30000);
+    }
+  }
+
+  return null;
+}
+
 async function localSystemApi(method, url) {
   if (method === 'GET' && url.pathname === '/api/status') {
     const inventory = readHermesInventory();
@@ -1844,6 +2100,7 @@ async function localApiFallback(request, error) {
   const body = request?.body && typeof request.body === 'object' ? request.body : {};
 
   const localApis = [
+    localSessionsApi,
     localSystemApi,
     localProfilesApi,
     localSkillsApi,

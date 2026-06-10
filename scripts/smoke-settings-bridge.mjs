@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 
 const rootDir = new URL('..', import.meta.url);
@@ -21,6 +21,35 @@ writeFileSync(
     '',
   ].join('\n'),
 );
+
+const hermesPython = existsSync(join(hermesAgentRepo, 'venv', 'bin', 'python'))
+  ? join(hermesAgentRepo, 'venv', 'bin', 'python')
+  : 'python3';
+const seed = spawnSync(hermesPython, ['-c', `
+from hermes_state import SessionDB
+db = SessionDB()
+try:
+    db.create_session("smoke_project_session", "desktop", model="deepseek-v4-flash", cwd="/tmp/beauty-hermes")
+    db.set_session_title("smoke_project_session", "Bridge Project Session")
+    db.append_message("smoke_project_session", "user", "bridge ui search prompt")
+    db.append_message("smoke_project_session", "assistant", "bridge ui search answer")
+    db.end_session("smoke_project_session", "smoke")
+    db.create_session("smoke_empty_session", "desktop", model="deepseek-v4-flash", cwd="/tmp/beauty-hermes")
+    db.end_session("smoke_empty_session", "smoke")
+finally:
+    db.close()
+`], {
+  cwd: hermesAgentRepo,
+  env: {
+    ...process.env,
+    HERMES_HOME: hermesHome,
+    PYTHONPATH: [hermesAgentRepo, process.env.PYTHONPATH].filter(Boolean).join(delimiter),
+  },
+  encoding: 'utf8',
+});
+if (seed.status !== 0) {
+  throw new Error(`Failed to seed Hermes sessions: ${seed.stderr || seed.stdout}`);
+}
 
 const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['electron', `--remote-debugging-port=${port}`, '.'], {
   cwd: rootDir,
@@ -170,6 +199,69 @@ try {
     const updateStatus = await api({ path: '/api/actions/hermes-update/status?lines=5', timeoutMs: 30000 });
     if (updateStatus.name !== 'hermes-update' || !Array.isArray(updateStatus.lines)) {
       throw new Error('Local action status fallback did not return log metadata');
+    }
+    const sessions = await api({ path: '/api/sessions?limit=20&archived=include&order=recent', timeoutMs: 30000 });
+    if (!sessions.sessions?.some((session) => session.id === 'smoke_project_session')) {
+      throw new Error('Local sessions fallback did not list seeded session');
+    }
+    const sessionStats = await api({ path: '/api/sessions/stats', timeoutMs: 30000 });
+    if (!sessionStats.total || !sessionStats.messages) {
+      throw new Error('Local session stats fallback did not report totals');
+    }
+    const sessionSearch = await api({ path: '/api/sessions/search?q=bridge%20ui&limit=10', timeoutMs: 30000 });
+    if (!sessionSearch.results?.some((result) => result.session_id === 'smoke_project_session')) {
+      throw new Error('Local session search fallback did not find seeded content');
+    }
+    const sessionMessages = await api({ path: '/api/sessions/smoke_project_session/messages', timeoutMs: 30000 });
+    if (!sessionMessages.messages?.some((message) => String(message.content || message.text || '').includes('bridge ui search prompt'))) {
+      throw new Error('Local session messages fallback did not return transcript');
+    }
+    await api({
+      body: { title: 'Bridge Project Session Renamed' },
+      method: 'PATCH',
+      path: '/api/sessions/smoke_project_session',
+      timeoutMs: 30000,
+    });
+    const renamedSession = await api({ path: '/api/sessions/smoke_project_session', timeoutMs: 30000 });
+    if (renamedSession.title !== 'Bridge Project Session Renamed') {
+      throw new Error('Local session rename fallback did not persist');
+    }
+    await api({
+      body: { archived: true },
+      method: 'PATCH',
+      path: '/api/sessions/smoke_project_session',
+      timeoutMs: 30000,
+    });
+    const archivedSessions = await api({ path: '/api/sessions?limit=20&archived=only', timeoutMs: 30000 });
+    if (!archivedSessions.sessions?.some((session) => session.id === 'smoke_project_session' && session.archived === true)) {
+      throw new Error('Local session archive fallback did not persist');
+    }
+    await api({
+      body: { archived: false },
+      method: 'PATCH',
+      path: '/api/sessions/smoke_project_session',
+      timeoutMs: 30000,
+    });
+    const exportedSession = await api({ path: '/api/sessions/smoke_project_session/export', timeoutMs: 30000 });
+    if (!exportedSession.session?.session?.id && !exportedSession.session?.id) {
+      throw new Error('Local session export fallback did not return session data');
+    }
+    const emptyBefore = await api({ path: '/api/sessions/empty/count', timeoutMs: 30000 });
+    if (!emptyBefore.count) {
+      throw new Error('Local empty session count fallback did not see seeded empty session');
+    }
+    const emptyDeleted = await api({ method: 'DELETE', path: '/api/sessions/empty', timeoutMs: 30000 });
+    if (!emptyDeleted.deleted) {
+      throw new Error('Local empty session delete fallback did not delete seeded empty session');
+    }
+    const bulkDeleted = await api({
+      body: { ids: ['smoke_project_session'] },
+      method: 'POST',
+      path: '/api/sessions/bulk-delete',
+      timeoutMs: 30000,
+    });
+    if (bulkDeleted.deleted !== 1) {
+      throw new Error('Local bulk session delete fallback did not delete seeded session');
     }
 
     const toolsets = await api({ path: '/api/tools/toolsets', timeoutMs: 30000 });
@@ -446,6 +538,7 @@ try {
       messaging: 'env-save-clear-onboarding',
       model: 'saved',
       profiles: 'create-edit-soul-rename-delete',
+      sessions: 'list-search-rename-archive-export-clean-delete',
       system: 'status-gateway-update-check',
       cron: 'create-update-runs-delete',
       toolset: firstToolset.name,
