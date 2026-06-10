@@ -215,8 +215,20 @@ try {
       type: 'message.start',
     });
     window.__beautyHermesInjectGatewayEvent({
+      payload: {
+        command: 'pwd 2>&1',
+        session_id: 'smoke-order',
+        tool_id: 'smoke-tool-order',
+      },
+      type: 'tool.start',
+    });
+    window.__beautyHermesInjectGatewayEvent({
       payload: { reasoning: '阶段思考输出：先确认目标，再执行命令。', session_id: 'smoke-order' },
       type: 'reasoning.delta',
+    });
+    window.__beautyHermesInjectGatewayEvent({
+      payload: { text: '正在梳理命令输出和下一步。', session_id: 'smoke-order' },
+      type: 'status.update',
     });
     window.__beautyHermesInjectGatewayEvent({
       payload: {
@@ -233,6 +245,7 @@ try {
       type: 'thinking.delta',
     });
     await waitFor(() => document.querySelector('[data-testid="message-list"]')?.innerText.includes('阶段思考输出'), 'reasoning delta visible body');
+    await waitFor(() => document.querySelector('[data-testid="message-list"]')?.innerText.includes('正在梳理命令输出和下一步'), 'status update promoted into reasoning body');
     const transcriptNodes = Array.from(document.querySelectorAll('[data-testid="message-list"] .message'));
     const reasoningIndex = transcriptNodes.findIndex((item) => item.textContent?.includes('阶段思考输出'));
     const toolIndex = transcriptNodes.findIndex((item) => item.textContent?.includes('已运行命令'));

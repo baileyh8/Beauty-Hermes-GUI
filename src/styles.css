@@ -1073,12 +1073,21 @@ kbd {
   background: #eef1f6;
 }
 
+.tabs.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .tabs button {
   min-height: 34px;
+  min-width: 0;
+  padding: 0 9px;
   border: 0;
   background: transparent;
   color: #5f6876;
   font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tabs .selected {
@@ -7559,7 +7568,7 @@ textarea {
 }
 
 .appShell.workbenchOpen {
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) minmax(320px, var(--right-rail-width));
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) minmax(360px, var(--right-rail-width));
 }
 
 .appShell[data-density="compact"] {
@@ -7567,7 +7576,7 @@ textarea {
 }
 
 .appShell[data-density="compact"].workbenchOpen {
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) minmax(320px, var(--right-rail-width));
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) minmax(360px, var(--right-rail-width));
 }
 
 .workbench {
@@ -7576,7 +7585,7 @@ textarea {
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding-right: 22px;
+  padding-right: 18px;
   overflow-x: hidden;
 }
 

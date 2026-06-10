@@ -110,10 +110,10 @@ const preferenceStorageKeys = {
   theme: 'beauty-hermes-ui-theme',
 } as const;
 
-const defaultRightRailWidth = 396;
-const minRightRailWidth = 320;
-const maxRightRailWidth = 520;
-const minMainColumnWidth = 600;
+const defaultRightRailWidth = 420;
+const minRightRailWidth = 360;
+const maxRightRailWidth = 560;
+const minMainColumnWidth = 560;
 
 function clampRightRailWidth(width: number, density: UiDensity = 'comfortable') {
   const sidebarWidth = density === 'compact' ? 252 : 268;
@@ -860,6 +860,25 @@ function normalizeStatusText(text: string) {
   return value;
 }
 
+function shouldPromoteStatusToReasoning(rawText: string, normalizedText: string) {
+  const text = cleanDisplayText(rawText).trim();
+  const normalized = cleanDisplayText(normalizedText).trim();
+
+  if (!text || !normalized || normalized === '正在思考') {
+    return false;
+  }
+
+  if (/^(就绪|等待|回复中断|出现错误|Agent 正在生成回复|Hermes Gateway|Gateway|正在连接|已连接)/.test(normalized)) {
+    return false;
+  }
+
+  if (/^[\w\s.:/_-]{1,24}$/.test(text) && !/[，。；：！？]/.test(text)) {
+    return false;
+  }
+
+  return text.length >= 8;
+}
+
 function compactDuplicateReasoning(previous: string, incoming: string, replace = false) {
   const next = cleanDisplayText(incoming);
 
@@ -1440,10 +1459,10 @@ function toolDisplayFromPayload(payload: Record<string, unknown>, fallbackName =
   const args = payload.args && typeof payload.args === 'object' ? (payload.args as Record<string, unknown>) : null;
   const command = commandFromUnknown(payload.command ?? payload.args_text ?? args?.command ?? args?.cmd ?? args);
   const output = cleanDisplayText(
-    textFromUnknown(payload.output ?? payload.stdout ?? payload.stderr ?? payload.result ?? payload.preview ?? payload.context),
+    textFromUnknown(payload.output ?? payload.stdout ?? payload.stderr ?? payload.result ?? payload.preview),
   ).trim();
   const details = [command ? `$ ${command}` : '', output].filter(Boolean).join('\n\n');
-  const summary = compactLine(summarizeCommand(command) || output || coerceGatewayText(payload) || fallbackName, 72);
+  const summary = compactLine(summarizeCommand(command) || output || fallbackName, 72);
 
   return {
     details: truncateText(details || textFromUnknown(payload), 4000),
@@ -1920,8 +1939,54 @@ function useHermesRuntime(): HermesRuntime {
     [upsertMessage],
   );
 
+  const appendReasoningPhase = useCallback(
+    (
+      text: string,
+      sessionId?: null | string,
+      options: { replace?: boolean } = {},
+    ) => {
+      const displayText = cleanDisplayText(text).trim();
+      if (!displayText) {
+        return;
+      }
+
+      const id = reasoningMessageIdRef.current || makeId('reasoning');
+      reasoningMessageIdRef.current = id;
+      updateStatusMessage('正在思考', 'running');
+
+      setMessages((current) => {
+        const index = current.findIndex((item) => item.id === id);
+        const existing = index >= 0 ? current[index] : null;
+        const nextText = compactDuplicateReasoning(existing?.text ?? '', displayText, options.replace);
+        const message: ChatMessageModel = {
+          ...(existing ?? {}),
+          id,
+          kind: 'reasoning',
+          sessionId,
+          status: 'done',
+          text: nextText,
+          title: '思考过程',
+        };
+        const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
+        const beforeIndex = firstExistingMessageIndex(next, [
+          toolDigestMessageIdRef.current,
+          statusMessageIdRef.current,
+          assistantMessageIdRef.current,
+        ]);
+        next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
+        return next;
+      });
+    },
+    [updateStatusMessage],
+  );
+
   const appendToolDigest = useCallback(
-    (info: ToolDisplayInfo, sessionId?: null | string, toolName?: string) => {
+    (
+      info: ToolDisplayInfo,
+      sessionId?: null | string,
+      toolName?: string,
+      status: ChatMessageModel['status'] = 'done',
+    ) => {
       if (!info.summary) {
         return;
       }
@@ -1935,7 +2000,11 @@ function useHermesRuntime(): HermesRuntime {
         const currentLines = existing?.text ? existing.text.split('\n').filter(Boolean) : [];
         const nextLine = `• ${info.summary}`;
         const text = currentLines.includes(nextLine) ? currentLines.join('\n') : [...currentLines, nextLine].slice(-6).join('\n');
-        const details = [existing?.details, info.details || info.summary].filter(Boolean).join('\n\n---\n\n');
+        const nextDetail = info.details || info.summary;
+        const detailParts = (existing?.details ? existing.details.split('\n\n---\n\n') : []).filter(Boolean);
+        const details = nextDetail && !detailParts.includes(nextDetail)
+          ? [...detailParts, nextDetail].join('\n\n---\n\n')
+          : detailParts.join('\n\n---\n\n');
         const message: ChatMessageModel = {
           ...(existing ?? {}),
           details,
@@ -1943,7 +2012,7 @@ function useHermesRuntime(): HermesRuntime {
           kind: 'tool',
           meta: '已折叠',
           sessionId,
-          status: 'done',
+          status,
           text,
           title: '工具调用',
           toolName,
@@ -2136,13 +2205,21 @@ function useHermesRuntime(): HermesRuntime {
         }
         case 'thinking.delta':
         case 'status.update': {
-          const text = normalizeStatusText(coerceGatewayText(payload) || textFromUnknown(payload.kind));
-          if (text) {
-            if (text === '正在思考') {
-              updateStatusMessage(text, 'running');
-            } else {
-              setStatusText(text);
-            }
+          const rawText = coerceGatewayText(payload, { trim: false }) || textFromUnknown(payload.kind);
+          const text = normalizeStatusText(rawText);
+          if (!text) {
+            break;
+          }
+
+          if (shouldPromoteStatusToReasoning(rawText, text)) {
+            appendReasoningPhase(rawText, sessionId);
+            break;
+          }
+
+          if (text === '正在思考') {
+            updateStatusMessage(text, 'running');
+          } else {
+            setStatusText(text);
           }
           break;
         }
@@ -2153,57 +2230,7 @@ function useHermesRuntime(): HermesRuntime {
             break;
           }
 
-          const id = reasoningMessageIdRef.current || makeId('reasoning');
-          reasoningMessageIdRef.current = id;
-
-          updateStatusMessage('正在思考', 'running');
-
-          if (event.type === 'reasoning.available') {
-            setMessages((current) => {
-              const index = current.findIndex((item) => item.id === id);
-              const existing = index >= 0 ? current[index] : null;
-              const message: ChatMessageModel = {
-                ...(existing ?? {}),
-                id,
-                kind: 'reasoning',
-                sessionId,
-                status: 'done',
-                text: compactDuplicateReasoning(existing?.text ?? '', delta, true),
-                title: '推理过程',
-              };
-              const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
-              const beforeIndex = firstExistingMessageIndex(next, [
-                toolDigestMessageIdRef.current,
-                statusMessageIdRef.current,
-                assistantMessageIdRef.current,
-              ]);
-              next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
-              return next;
-            });
-            break;
-          }
-
-          setMessages((current) => {
-            const index = current.findIndex((item) => item.id === id);
-            const existing = index >= 0 ? current[index] : null;
-            const message: ChatMessageModel = {
-              ...(existing ?? {}),
-              id,
-              kind: 'reasoning',
-              sessionId,
-              status: 'done',
-              text: compactDuplicateReasoning(existing?.text ?? '', delta),
-              title: '推理过程',
-            };
-            const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
-            const beforeIndex = firstExistingMessageIndex(next, [
-              toolDigestMessageIdRef.current,
-              statusMessageIdRef.current,
-              assistantMessageIdRef.current,
-            ]);
-            next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
-            return next;
-          });
+          appendReasoningPhase(delta, sessionId, { replace: event.type === 'reasoning.available' });
           break;
         }
         case 'tool.generating':
@@ -2240,9 +2267,9 @@ function useHermesRuntime(): HermesRuntime {
             return next;
           });
 
-          if (isComplete) {
-            appendToolDigest(display, sessionId, name);
+          appendToolDigest(display, sessionId, name, isComplete ? 'done' : 'running');
 
+          if (isComplete) {
             const nextFiles = gatewayFileItemsFromPayload(payload, name);
             if (nextFiles.length > 0) {
               setFiles((current) => mergeGatewayFiles(current, nextFiles));
@@ -2325,7 +2352,7 @@ function useHermesRuntime(): HermesRuntime {
           break;
       }
     },
-    [appendToMessage, appendToolDigest, patchRuntimeInfo, updateStatusMessage, upsertMessage],
+    [appendReasoningPhase, appendToMessage, appendToolDigest, patchRuntimeInfo, updateStatusMessage, upsertMessage],
   );
 
   useEffect(() => {
@@ -10843,11 +10870,6 @@ function DiagnosticsSurface({
     };
     const label = labels[verb];
     await runDiagnosticAction(`gateway:${verb}`, label, async () => {
-      const result = await runtime.apiRequest<HermesActionStartResponse>({
-        method: 'POST',
-        path: `/api/gateway/${verb}`,
-        timeoutMs: 45000,
-      });
       if (verb === 'stop') {
         await runtime.stopGateway();
       } else if (verb === 'start') {
@@ -10856,7 +10878,7 @@ function DiagnosticsSurface({
         await runtime.restartGateway();
       }
       await runtime.refreshInventory();
-      return `${label} 已发送${result.pid ? ` · pid ${result.pid}` : ''}${result.source ? ` · ${result.source}` : ''}`;
+      return `${label} 已发送。`;
     });
   };
   const checkUpdates = async () => {
