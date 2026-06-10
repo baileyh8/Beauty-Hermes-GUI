@@ -363,6 +363,14 @@ try {
     if (updateStatus.name !== 'hermes-update' || !Array.isArray(updateStatus.lines)) {
       throw new Error('Local action status fallback did not return log metadata');
     }
+    const actionsBefore = await api({ path: '/api/actions', timeoutMs: 30000 });
+    if (!Array.isArray(actionsBefore.actions)) {
+      throw new Error('Local actions list did not return an array');
+    }
+    const stopMissingAction = await api({ method: 'POST', path: '/api/actions/not-running-smoke/stop', timeoutMs: 30000 });
+    if (stopMissingAction.ok !== false || stopMissingAction.running !== false) {
+      throw new Error('Local action stop should be safe for non-running actions');
+    }
     const sessions = await api({ path: '/api/sessions?limit=20&archived=include&order=recent', timeoutMs: 30000 });
     if (!sessions.sessions?.some((session) => session.id === 'smoke_project_session')) {
       throw new Error('Local sessions fallback did not list seeded session');
@@ -760,7 +768,7 @@ try {
       approvalPolicy: `read-save-${approvalPolicyRestoreStatus}`,
       runtimePolicy: `read-save-${runtimePolicyRestoreStatus}`,
       sessions: 'list-search-rename-archive-export-clean-delete',
-      system: 'status-gateway-update-check',
+      system: 'status-gateway-update-check-actions',
       cron: 'create-update-runs-delete',
       toolset: firstToolset.name,
       toolsetConfig: 'provider-env',

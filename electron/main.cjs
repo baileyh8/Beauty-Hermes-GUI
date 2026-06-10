@@ -11,6 +11,7 @@ let mainWindow = null;
 const localTelegramOnboardingPairings = new Map();
 const localActionProcesses = new Map();
 const localActionResults = new Map();
+const localActionMetadata = new Map();
 const GATEWAY_TOKEN_RE = /__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
 
 const LOCAL_MESSAGING_CATALOG = [
@@ -589,11 +590,42 @@ function tailLocalActionLog(name, maxLines = 200) {
   return text.split(/\r?\n/).filter(Boolean).slice(-Math.max(1, Math.min(maxLines, 2000)));
 }
 
+function localActionSummary(name) {
+  const proc = localActionProcesses.get(name);
+  const result = localActionResults.get(name) || null;
+  const meta = localActionMetadata.get(name) || {};
+  const exitCode = proc ? proc.exitCode : result?.exitCode ?? null;
+  return {
+    args: Array.isArray(meta.args) ? meta.args : [],
+    exit_code: exitCode,
+    finished_at: meta.finishedAt || result?.finishedAt || null,
+    lines: tailLocalActionLog(name, 5),
+    name,
+    pid: proc?.pid ?? result?.pid ?? meta.pid ?? null,
+    running: Boolean(proc && exitCode === null),
+    source: 'desktop-local-bridge',
+    started_at: meta.startedAt || null,
+    stoppable: Boolean(proc && exitCode === null),
+  };
+}
+
+function listLocalActions() {
+  const names = new Set([
+    ...localActionMetadata.keys(),
+    ...localActionProcesses.keys(),
+    ...localActionResults.keys(),
+  ]);
+  return Array.from(names)
+    .map((name) => localActionSummary(name))
+    .sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')));
+}
+
 function spawnLocalHermesAction(args, name) {
   const agentRepo = resolveHermesAgentRepo();
   const logPath = localActionLogPath(name);
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-  logStream.write(`\n=== ${name} started ${new Date().toISOString()} ===\n`);
+  const startedAt = new Date().toISOString();
+  logStream.write(`\n=== ${name} started ${startedAt} ===\n`);
   localActionResults.delete(name);
   const child = spawn(resolveHermesPython(), ['-m', 'hermes_cli.main', ...args], {
     cwd: agentRepo,
@@ -609,19 +641,30 @@ function spawnLocalHermesAction(args, name) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  localActionMetadata.set(name, {
+    args: Array.from(args || []),
+    pid: child.pid ?? null,
+    startedAt,
+  });
 
   child.stdout.on('data', (chunk) => logStream.write(chunk));
   child.stderr.on('data', (chunk) => logStream.write(chunk));
   child.on('close', (code, signal) => {
-    logStream.write(`\n=== ${name} finished ${new Date().toISOString()} exit=${code ?? signal ?? 'unknown'} ===\n`);
+    const finishedAt = new Date().toISOString();
+    logStream.write(`\n=== ${name} finished ${finishedAt} exit=${code ?? signal ?? 'unknown'} ===\n`);
     logStream.end();
-    localActionResults.set(name, { exitCode: code, pid: child.pid });
+    const currentMeta = localActionMetadata.get(name) || {};
+    localActionMetadata.set(name, { ...currentMeta, finishedAt });
+    localActionResults.set(name, { exitCode: code, finishedAt, pid: child.pid });
     localActionProcesses.delete(name);
   });
   child.on('error', (error) => {
+    const finishedAt = new Date().toISOString();
     logStream.write(`\n=== ${name} failed to start: ${error.message} ===\n`);
     logStream.end();
-    localActionResults.set(name, { exitCode: 1, pid: child.pid ?? null });
+    const currentMeta = localActionMetadata.get(name) || {};
+    localActionMetadata.set(name, { ...currentMeta, finishedAt });
+    localActionResults.set(name, { exitCode: 1, finishedAt, pid: child.pid ?? null });
     localActionProcesses.delete(name);
   });
   localActionProcesses.set(name, child);
@@ -2789,19 +2832,46 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({
     return spawnLocalHermesAction(['update'], 'hermes-update');
   }
 
+  if (method === 'GET' && url.pathname === '/api/actions') {
+    return {
+      actions: listLocalActions(),
+      source: 'desktop-local-bridge',
+    };
+  }
+
+  const actionStopMatch = url.pathname.match(/^\/api\/actions\/([^/]+)\/stop$/);
+  if (method === 'POST' && actionStopMatch) {
+    const name = decodeURIComponent(actionStopMatch[1]);
+    const proc = localActionProcesses.get(name);
+    if (!proc) {
+      return {
+        exit_code: localActionResults.get(name)?.exitCode ?? null,
+        name,
+        ok: false,
+        running: false,
+        source: 'desktop-local-bridge',
+        status: 'not-running',
+      };
+    }
+    proc.kill('SIGTERM');
+    return {
+      name,
+      ok: true,
+      pid: proc.pid ?? null,
+      running: true,
+      source: 'desktop-local-bridge',
+      status: 'stopping',
+    };
+  }
+
   const actionMatch = url.pathname.match(/^\/api\/actions\/([^/]+)\/status$/);
   if (method === 'GET' && actionMatch) {
     const name = decodeURIComponent(actionMatch[1]);
-    const lines = Number(url.searchParams.get('lines') || 200);
-    const proc = localActionProcesses.get(name);
-    const result = localActionResults.get(name) || null;
-    const exitCode = proc ? proc.exitCode : result?.exitCode ?? null;
+    const lines = Math.max(1, Math.min(Number(url.searchParams.get('lines') || 200), 2000));
+    const summary = localActionSummary(name);
     return {
-      exit_code: exitCode,
+      ...summary,
       lines: tailLocalActionLog(name, lines),
-      name,
-      pid: proc?.pid ?? result?.pid ?? null,
-      running: Boolean(proc && exitCode === null),
       source: 'desktop-local-bridge',
     };
   }
@@ -2986,6 +3056,7 @@ async function desktopApi(request) {
     '/api/model',
     '/api/tools/toolsets',
     '/api/mcp/servers',
+    '/api/actions',
     '/api/clipboard',
     '/api/files',
   ].some((prefix) => rawPath.startsWith(prefix));

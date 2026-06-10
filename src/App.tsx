@@ -354,6 +354,20 @@ interface HermesActionStartResponse {
   update_command?: string;
 }
 
+interface HermesLocalActionInfo {
+  args?: string[];
+  exit_code?: null | number;
+  finished_at?: null | string;
+  lines?: string[];
+  name: string;
+  pid?: null | number;
+  running?: boolean;
+  source?: string;
+  started_at?: null | string;
+  status?: string;
+  stoppable?: boolean;
+}
+
 interface HermesUpdateCommit {
   at?: number;
   author?: string;
@@ -7254,14 +7268,43 @@ function AgentsSurface({
 }) {
   const [agentBusy, setAgentBusy] = useState('');
   const [agentStatus, setAgentStatus] = useState('');
+  const [localActions, setLocalActions] = useState<HermesLocalActionInfo[]>([]);
+  const [actionsLoaded, setActionsLoaded] = useState(false);
   const runningTools = runtime.tools.filter((tool) => tool.state === 'running');
   const completedTools = runtime.tools.filter((tool) => tool.state === 'done');
+  const runningActions = localActions.filter((action) => action.running);
+  const completedActions = localActions.filter((action) => !action.running);
   const gatewayControlsLocked = Boolean(agentBusy);
+  const loadActions = useCallback(async (quiet = false) => {
+    try {
+      if (!quiet) {
+        setAgentBusy('actions:load');
+      }
+      const response = await runtime.apiRequest<{ actions?: HermesLocalActionInfo[] }>({
+        path: '/api/actions',
+        timeoutMs: 12000,
+      });
+      setLocalActions(Array.isArray(response.actions) ? response.actions : []);
+      setActionsLoaded(true);
+      if (!quiet) {
+        setAgentStatus('后台动作已同步。');
+      }
+    } catch (error) {
+      if (!quiet) {
+        setAgentStatus(`后台动作读取失败：${error instanceof Error ? error.message : '未知错误'}`);
+      }
+    } finally {
+      if (!quiet) {
+        setAgentBusy('');
+      }
+    }
+  }, [runtime]);
   const refreshAgents = async () => {
     try {
       setAgentBusy('refresh');
       setAgentStatus('正在刷新 Agents 状态...');
       await runtime.refreshInventory();
+      await loadActions(true);
       setAgentStatus('Agents 状态已刷新。');
     } catch (error) {
       setAgentStatus(`Agents 状态刷新失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -7269,6 +7312,11 @@ function AgentsSurface({
       setAgentBusy('');
     }
   };
+  useEffect(() => {
+    if (!actionsLoaded && !agentBusy) {
+      void loadActions(true);
+    }
+  }, [actionsLoaded, agentBusy, loadActions]);
   const runAgentAction = async (key: string, label: string, action: () => Promise<void>) => {
     try {
       setAgentBusy(key);
@@ -7280,6 +7328,30 @@ function AgentsSurface({
     } finally {
       setAgentBusy('');
     }
+  };
+  const refreshActionStatus = async (action: HermesLocalActionInfo) => {
+    await runAgentAction(`action:refresh:${action.name}`, `${action.name} 状态刷新`, async () => {
+      const result = await runtime.apiRequest<HermesLocalActionInfo>({
+        path: `/api/actions/${encodeURIComponent(action.name)}/status?lines=8`,
+        timeoutMs: 12000,
+      });
+      setLocalActions((current) => {
+        const next = current.some((item) => item.name === result.name)
+          ? current.map((item) => item.name === result.name ? { ...item, ...result } : item)
+          : [result, ...current];
+        return next;
+      });
+    });
+  };
+  const stopAction = async (action: HermesLocalActionInfo) => {
+    await runAgentAction(`action:stop:${action.name}`, `${action.name} 停止`, async () => {
+      await runtime.apiRequest({
+        method: 'POST',
+        path: `/api/actions/${encodeURIComponent(action.name)}/stop`,
+        timeoutMs: 12000,
+      });
+      await loadActions(true);
+    });
   };
   const copyAgentSummary = async (tool: GatewayToolItem) => {
     await runAgentAction(`copy:${tool.id}`, `${tool.label} 摘要复制`, async () => {
@@ -7332,6 +7404,39 @@ function AgentsSurface({
             </button>
           </>
         )}
+      />
+    )];
+  const actionCards = localActions.length > 0
+    ? localActions.slice(0, 6).map((action) => (
+      <AgentCard
+        key={action.name}
+        title={action.name}
+        status={action.running ? '运行中' : action.exit_code === 0 ? '完成' : action.exit_code === null || action.exit_code === undefined ? '未知' : `退出 ${action.exit_code}`}
+        desc={action.args?.length ? `hermes ${action.args.join(' ')}` : '本地后台动作'}
+        meta={(action.lines || []).slice(-1)[0] || (action.started_at ? `started ${action.started_at}` : '暂无日志')}
+        muted={!action.running}
+        actions={(
+          <>
+            <button type="button" onClick={() => void refreshActionStatus(action)} disabled={gatewayControlsLocked}>
+              {agentBusy === `action:refresh:${action.name}` ? '刷新中' : '刷新日志'}
+            </button>
+            {action.stoppable && (
+              <button className="danger" type="button" onClick={() => void stopAction(action)} disabled={gatewayControlsLocked}>
+                {agentBusy === `action:stop:${action.name}` ? '停止中' : '停止'}
+              </button>
+            )}
+          </>
+        )}
+      />
+    ))
+    : [(
+      <AgentCard
+        key="actions-empty"
+        title="暂无后台动作"
+        status="空"
+        desc="更新、post-setup 等后台动作启动后会出现在这里。"
+        meta={actionsLoaded ? '本机动作队列为空' : '正在同步'}
+        muted
       />
     )];
 
@@ -7405,6 +7510,9 @@ function AgentsSurface({
           ) : (
             <AgentCard title="暂无待审批命令" status="空闲" desc="出现高风险操作时会固定在这里。" meta="审批队列为空" muted />
           )}
+        </KanbanColumn>
+        <KanbanColumn title="后台动作" count={String(runningActions.length || completedActions.length)}>
+          {actionCards}
         </KanbanColumn>
         <KanbanColumn title="已完成" count={String(completedTools.length)}>
           {completedTools.length > 0 ? (

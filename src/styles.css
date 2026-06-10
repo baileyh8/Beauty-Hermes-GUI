@@ -2347,7 +2347,7 @@ button.workbenchItem:focus-visible {
 
 .kanbanGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px;
 }
 
@@ -2420,6 +2420,7 @@ button.workbenchItem:focus-visible {
 
 .kanbanColumn {
   min-height: 440px;
+  min-width: 0;
   padding: 14px;
   background: #f7f8fb;
 }

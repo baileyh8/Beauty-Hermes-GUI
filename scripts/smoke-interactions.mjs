@@ -1062,6 +1062,7 @@ try {
     findCommandRow('Agents')?.click();
     await waitFor(() => !document.querySelector('[data-testid="command-center"]'), 'agents command center auto close');
     await waitFor(() => document.body.innerText.includes('运行中工具'), 'agents page');
+    await waitFor(() => document.body.innerText.includes('后台动作'), 'agents background actions column');
     findButton('刷新状态')?.click();
     await waitFor(() => document.querySelector('.surfaceStatus')?.textContent?.includes('Agents 状态'), 'agents refresh feedback');
     const staticAgentCard = await waitFor(() => document.querySelector('.agentCard.static'), 'static agent cards');
@@ -1345,7 +1346,7 @@ try {
     return {
       commandCenter: true,
       pages: pages.map(([label]) => label),
-      projectAgents: ['项目', 'Agents'],
+      projectAgents: ['项目', 'Agents', '后台动作'],
       preferences: ['density', 'theme', 'permission-modal'],
       runtimePolicy: 'controls-present',
       approvalPolicy: 'controls-present',
