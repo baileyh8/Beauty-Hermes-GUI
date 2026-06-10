@@ -7180,6 +7180,14 @@ textarea {
   width: 100%;
 }
 
+.credentialForm {
+  grid-column: 2 / 4;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+}
+
 .policyForm {
   grid-column: 2 / 4;
   align-items: center;
@@ -7281,6 +7289,12 @@ textarea {
 .settingSelect.short {
   min-width: 96px;
   max-width: 138px;
+}
+
+.credentialValueInput {
+  min-width: min(280px, 100%);
+  max-width: 360px;
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
 }
 
 .settingSelect {

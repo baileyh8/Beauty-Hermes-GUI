@@ -1319,6 +1319,30 @@ try {
     findSettingButton('Gateway 连接方式', '检查').click();
     await waitFor(() => document.body.innerText.includes('请输入远程 Gateway URL'), 'gateway remote validation');
 
+    const credentialRow = await waitFor(
+      () => settingRow('API Keys / 凭据'),
+      'api keys credential settings row',
+      15000,
+    );
+    const openAiCredentialRow = await waitFor(
+      () => Array.from(document.querySelectorAll('.settingRow')).find((row) => row.textContent?.includes('OPENAI_API_KEY')),
+      'openai credential row',
+      15000,
+    );
+    const openAiInput = openAiCredentialRow.querySelector('input[aria-label="API Key OPENAI_API_KEY"]');
+    if (!openAiInput || openAiInput.disabled) {
+      throw new Error('API key credential input should be editable.');
+    }
+    setNativeValue(openAiInput, 'smoke-openai-key');
+    const credentialSaveButton = Array.from(openAiCredentialRow.querySelectorAll('button'))
+      .find((button) => ['保存', '替换'].some((label) => button.textContent?.includes(label)));
+    if (!findButton('检查', openAiCredentialRow) || !credentialSaveButton) {
+      throw new Error('API key credential row should expose check and save actions.');
+    }
+    if (findButton('同步', credentialRow)?.disabled) {
+      throw new Error('API key sync action should be available.');
+    }
+
     const mcpSyncButton = findSettingButton('MCP Servers', '同步');
     if (mcpSyncButton.disabled) {
       throw new Error('MCP sync action should be available.');
@@ -1437,7 +1461,7 @@ try {
       preferences: ['density', 'theme', 'permission-modal'],
       runtimePolicy: 'controls-present',
       approvalPolicy: 'controls-present',
-      settingsEditable: ['models', 'toolsets', 'gateway', 'mcp'],
+      settingsEditable: ['models', 'toolsets', 'gateway', 'api-keys', 'mcp'],
       settingsDeepLinks: ['Plugins', '消息平台'],
       settings: settingsSections.map(([label]) => label),
       slash: true,

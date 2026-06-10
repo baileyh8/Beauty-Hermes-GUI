@@ -618,6 +618,19 @@ interface HermesApprovalPolicyInfo {
   timeout?: null | number;
 }
 
+interface HermesEnvVarInfo {
+  advanced?: boolean;
+  category?: string;
+  description?: string;
+  is_password?: boolean;
+  is_set?: boolean;
+  prompt?: string;
+  redacted_value?: null | string;
+  source?: null | string;
+  tools?: string[];
+  url?: null | string;
+}
+
 interface HermesToolsetInfo {
   available?: boolean;
   configured?: boolean;
@@ -711,6 +724,14 @@ const settingsSections: Array<{ id: SettingsSection; label: string; desc: string
   { id: 'appearance', label: '外观', desc: '主题、密度和字体' },
   { id: 'advanced', label: '高级', desc: '日志、诊断和实验项' },
 ];
+
+const primaryCredentialKeys = [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'OPENROUTER_API_KEY',
+  'GEMINI_API_KEY',
+] as const;
 
 const surfaceMeta: Record<Surface, { title: string; subtitle: string }> = {
   chat: {
@@ -9943,6 +9964,10 @@ function SettingsPanel({
   const [mcpDraftEndpoint, setMcpDraftEndpoint] = useState('');
   const [mcpDraftArgs, setMcpDraftArgs] = useState('');
   const [pendingMcpDeleteName, setPendingMcpDeleteName] = useState('');
+  const [envCredentials, setEnvCredentials] = useState<Record<string, HermesEnvVarInfo>>({});
+  const [envCredentialsLoaded, setEnvCredentialsLoaded] = useState(false);
+  const [envCredentialDrafts, setEnvCredentialDrafts] = useState<Record<string, string>>({});
+  const [pendingEnvClearKey, setPendingEnvClearKey] = useState('');
   const [gatewayConfig, setGatewayConfig] = useState<HermesOnboardingConfig | null>(null);
   const [gatewayConfigLoaded, setGatewayConfigLoaded] = useState(false);
   const [gatewayModeDraft, setGatewayModeDraft] = useState<'local' | 'remote'>('local');
@@ -10431,19 +10456,19 @@ function SettingsPanel({
       });
     });
   }, [apiRequest]);
-  const loadMcpServers = useCallback(async () => {
+  const loadMcpServers = useCallback(async (announce = false) => {
     try {
       setSettingsBusy('mcp:load');
       const response = await apiRequest<{ servers?: HermesMcpServerInfo[] }>({ path: '/api/mcp/servers', timeoutMs: 30000 });
       const rows = Array.isArray(response.servers) ? response.servers : [];
       setMcpServers(rows);
       setMcpServersLoaded(true);
-      if (selectedRef.current === 'integrations') {
+      if (announce && selectedRef.current === 'integrations') {
         setSettingsStatus(`已同步 ${rows.length} 个 MCP servers`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (selectedRef.current === 'integrations') {
+      if (announce && selectedRef.current === 'integrations') {
         setSettingsStatus(`MCP servers 读取失败：${message}`);
       }
     } finally {
@@ -10544,6 +10569,89 @@ function SettingsPanel({
       setSettingsStatus(`${server.name} 连接正常，发现 ${result.tools?.length ?? 0} 个工具`);
     });
   }, [apiRequest]);
+  const loadEnvCredentials = useCallback(async (announce = false) => {
+    try {
+      setSettingsBusy('env:load');
+      const result = await apiRequest<Record<string, HermesEnvVarInfo>>({ path: '/api/env', timeoutMs: 30000 });
+      setEnvCredentials(result && typeof result === 'object' && !Array.isArray(result) ? result : {});
+      setEnvCredentialsLoaded(true);
+      if (announce && selectedRef.current === 'integrations') {
+        setSettingsStatus(`已同步 ${Object.keys(result || {}).length} 个 env key`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (announce && selectedRef.current === 'integrations') {
+        setSettingsStatus(`API Keys 读取失败：${message}`);
+      }
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest]);
+  const saveEnvCredential = useCallback(async (key: string) => {
+    const value = (envCredentialDrafts[key] || '').trim();
+    if (!value) {
+      setSettingsStatus(`请输入 ${key} 的新值；已配置的值不会回显。`);
+      return;
+    }
+
+    await runSettingAction(`env:${key}:save`, `${key} 保存`, async () => {
+      await apiRequest({
+        body: { key, value },
+        method: 'PUT',
+        path: '/api/env',
+        timeoutMs: 30000,
+      });
+      setEnvCredentialDrafts((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      setPendingEnvClearKey('');
+      await loadEnvCredentials();
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, envCredentialDrafts, loadEnvCredentials, runtime]);
+  const clearEnvCredential = useCallback(async (key: string) => {
+    if (pendingEnvClearKey !== key) {
+      setPendingEnvClearKey(key);
+      setSettingsStatus(`再次点击清除 ${key}，将从 Hermes .env 移除这个值。`);
+      return;
+    }
+
+    await runSettingAction(`env:${key}:clear`, `${key} 清除`, async () => {
+      await apiRequest({
+        body: { key },
+        method: 'DELETE',
+        path: '/api/env',
+        timeoutMs: 30000,
+      });
+      setPendingEnvClearKey('');
+      setEnvCredentialDrafts((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      await loadEnvCredentials();
+      await runtime.refreshInventory();
+    });
+  }, [apiRequest, loadEnvCredentials, pendingEnvClearKey, runtime]);
+  const validateEnvCredential = useCallback(async (key: string) => {
+    try {
+      setSettingsBusy(`env:${key}:validate`);
+      const result = await apiRequest<{ message?: string; ok?: boolean; reachable?: boolean }>({
+        body: { key, value: (envCredentialDrafts[key] || '').trim() },
+        method: 'POST',
+        path: '/api/providers/validate',
+        timeoutMs: 30000,
+      });
+      setSettingsStatus(`${key} ${result.ok ? '检查通过' : '检查未通过'}：${result.message || '已完成本地检查'}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSettingsStatus(`${key} 检查失败：${message}`);
+    } finally {
+      setSettingsBusy('');
+    }
+  }, [apiRequest, envCredentialDrafts]);
   useEffect(() => {
     if (['advanced', 'general', 'permissions'].includes(selected) && !runtimePolicyLoaded && !settingsBusy) {
       void loadRuntimePolicy();
@@ -10563,10 +10671,15 @@ function SettingsPanel({
     if (selected === 'integrations' && !mcpServersLoaded && !settingsBusy) {
       void loadMcpServers();
     }
+    if (selected === 'integrations' && !envCredentialsLoaded && !settingsBusy) {
+      void loadEnvCredentials();
+    }
   }, [
     approvalPolicyLoaded,
+    envCredentialsLoaded,
     gatewayConfigLoaded,
     loadApprovalPolicy,
+    loadEnvCredentials,
     loadGatewayConfig,
     loadMcpServers,
     loadModelSettings,
@@ -10581,6 +10694,19 @@ function SettingsPanel({
   ]);
   const enabledToolsetCount = toolsets.filter((item) => item.enabled).length;
   const enabledMcpCount = mcpServers.filter((item) => item.enabled !== false).length;
+  const credentialEntries = useMemo(() => {
+    const primaryEntries = primaryCredentialKeys
+      .map((key) => [key, envCredentials[key]] as [string, HermesEnvVarInfo | undefined])
+      .filter((entry): entry is [string, HermesEnvVarInfo] => Boolean(entry[1]));
+    const extraSetEntries = Object.entries(envCredentials)
+      .filter(([key, info]) => !primaryCredentialKeys.includes(key as typeof primaryCredentialKeys[number])
+        && info?.category === 'provider'
+        && info?.is_set)
+      .sort(([a], [b]) => a.localeCompare(b));
+
+    return [...primaryEntries, ...extraSetEntries].slice(0, 12);
+  }, [envCredentials]);
+  const configuredCredentialCount = credentialEntries.filter(([, info]) => info.is_set).length;
   const settingsControlLocked = Boolean(settingsBusy && !settingsBusy.endsWith(':load'));
   const rowsBySection: Record<SettingsSection, Array<{ desc: string; icon: React.ReactNode; title: string; control: React.ReactNode }>> = {
     advanced: [
@@ -10785,9 +10911,59 @@ function SettingsPanel({
           </form>
         ),
       },
+      {
+        icon: <KeyRound size={18} />,
+        title: 'API Keys / 凭据',
+        desc: `${configuredCredentialCount}/${credentialEntries.length || primaryCredentialKeys.length} 已配置；写入 Hermes .env，列表只显示脱敏状态。`,
+        control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadEnvCredentials(true)}>{settingsBusy === 'env:load' ? '同步中' : '同步'}</button>,
+      },
+      ...credentialEntries.map(([key, info]) => ({
+        icon: <Lock size={18} />,
+        title: info.prompt || key,
+        desc: `${key} · ${info.is_set ? info.redacted_value || '已配置' : '未配置'}${info.source ? ` · ${info.source}` : ''}`,
+        control: (
+          <form
+            className="settingControlStack wide credentialForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveEnvCredential(key);
+            }}
+          >
+            <input
+              aria-label={`API Key ${key}`}
+              autoComplete="off"
+              className="settingInput credentialValueInput"
+              disabled={settingsControlLocked}
+              placeholder={info.is_set ? '留空保持不变' : key}
+              type={info.is_password === false ? 'text' : 'password'}
+              value={envCredentialDrafts[key] || ''}
+              onChange={(event) => {
+                setPendingEnvClearKey('');
+                setEnvCredentialDrafts((current) => ({ ...current, [key]: event.target.value }));
+              }}
+            />
+            {info.url && (
+              <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => window.open(info.url || '', '_blank', 'noopener,noreferrer')}>
+                文档
+              </button>
+            )}
+            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void validateEnvCredential(key)}>
+              {settingsBusy === `env:${key}:validate` ? '检查中' : '检查'}
+            </button>
+            <button className="selectButton" type="submit" disabled={settingsControlLocked || !(envCredentialDrafts[key] || '').trim()}>
+              {settingsBusy === `env:${key}:save` ? '保存中' : info.is_set ? '替换' : '保存'}
+            </button>
+            {info.is_set && (
+              <button className={pendingEnvClearKey === key ? 'selectButton danger' : 'selectButton'} type="button" disabled={settingsControlLocked} onClick={() => void clearEnvCredential(key)}>
+                {pendingEnvClearKey === key ? '确认清除' : '清除'}
+              </button>
+            )}
+          </form>
+        ),
+      })),
       { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('integrations:messaging', '消息平台刷新')}>{settingsBusy === 'integrations:messaging' ? '刷新中' : '刷新'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('messaging')}>管理</button></div> },
       { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('skills')}>查看</button> },
-      { icon: <Network size={18} />, title: 'MCP Servers', desc: `${enabledMcpCount}/${mcpServers.length} 已启用，配置写入 Hermes mcp_servers。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadMcpServers()}>{settingsBusy === 'mcp:load' ? '同步中' : '同步'}</button> },
+      { icon: <Network size={18} />, title: 'MCP Servers', desc: `${enabledMcpCount}/${mcpServers.length} 已启用，配置写入 Hermes mcp_servers。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadMcpServers(true)}>{settingsBusy === 'mcp:load' ? '同步中' : '同步'}</button> },
       {
         icon: <Plus size={18} />,
         title: '添加 MCP Server',

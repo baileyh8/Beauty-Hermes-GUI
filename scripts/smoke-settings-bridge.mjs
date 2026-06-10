@@ -347,6 +347,53 @@ try {
       assertApprovalPolicyContains(extractApprovalPolicy(approvalPolicyAfterRestore), restoredApprovalPolicy.submittedPolicy, 'restore readback');
       approvalPolicyRestoreStatus = 'restored';
     }
+    const envBefore = await api({ path: '/api/env', timeoutMs: 30000 });
+    if (!envBefore.OPENAI_API_KEY || !envBefore.DEEPSEEK_API_KEY) {
+      throw new Error('Env credentials API should expose common provider keys');
+    }
+    const smokeEnvKey = 'BEAUTY_HERMES_SMOKE_API_KEY';
+    const smokeEnvValue = `smoke-secret-${Date.now()}`;
+    await api({
+      body: { key: smokeEnvKey, value: smokeEnvValue },
+      method: 'PUT',
+      path: '/api/env',
+      timeoutMs: 30000,
+    });
+    const envAfterSave = await api({ path: '/api/env', timeoutMs: 30000 });
+    if (envAfterSave[smokeEnvKey]?.is_set !== true) {
+      throw new Error('Env credential save did not persist is_set=true');
+    }
+    if (String(envAfterSave[smokeEnvKey]?.redacted_value || '').includes(smokeEnvValue)) {
+      throw new Error('Env credential response leaked the raw secret');
+    }
+    const envReveal = await api({
+      body: { key: smokeEnvKey },
+      method: 'POST',
+      path: '/api/env/reveal',
+      timeoutMs: 30000,
+    });
+    if (envReveal.value !== smokeEnvValue) {
+      throw new Error('Env credential reveal did not return the saved value');
+    }
+    const envValidate = await api({
+      body: { key: smokeEnvKey },
+      method: 'POST',
+      path: '/api/providers/validate',
+      timeoutMs: 30000,
+    });
+    if (envValidate.ok !== true || String(envValidate.message || '').includes(smokeEnvValue)) {
+      throw new Error('Env credential local validation failed or leaked the raw value');
+    }
+    await api({
+      body: { key: smokeEnvKey },
+      method: 'DELETE',
+      path: '/api/env',
+      timeoutMs: 30000,
+    });
+    const envAfterDelete = await api({ path: '/api/env', timeoutMs: 30000 });
+    if (envAfterDelete[smokeEnvKey]?.is_set === true) {
+      throw new Error('Env credential delete did not clear the saved value');
+    }
     const gatewayStart = await api({ method: 'POST', path: '/api/gateway/start', timeoutMs: 30000 });
     if (!gatewayStart.name || !['gateway-start', 'gateway-restart'].includes(gatewayStart.name)) {
       throw new Error('Local gateway start fallback did not return action metadata');
@@ -766,6 +813,7 @@ try {
       preview: 'file-read',
       profiles: 'create-edit-soul-rename-delete',
       approvalPolicy: `read-save-${approvalPolicyRestoreStatus}`,
+      envCredentials: 'save-redact-reveal-validate-clear',
       runtimePolicy: `read-save-${runtimePolicyRestoreStatus}`,
       sessions: 'list-search-rename-archive-export-clean-delete',
       system: 'status-gateway-update-check-actions',

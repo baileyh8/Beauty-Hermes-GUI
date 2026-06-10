@@ -14,6 +14,44 @@ const localActionResults = new Map();
 const localActionMetadata = new Map();
 const GATEWAY_TOKEN_RE = /__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
 
+const LOCAL_ENV_CREDENTIAL_FALLBACKS = {
+  ANTHROPIC_API_KEY: {
+    category: 'provider',
+    description: 'Anthropic API key',
+    password: true,
+    prompt: 'Anthropic API key',
+    url: 'https://console.anthropic.com/settings/keys',
+  },
+  DEEPSEEK_API_KEY: {
+    category: 'provider',
+    description: 'DeepSeek API key',
+    password: true,
+    prompt: 'DeepSeek API key',
+    url: 'https://platform.deepseek.com/api_keys',
+  },
+  GEMINI_API_KEY: {
+    category: 'provider',
+    description: 'Google AI Studio / Gemini API key',
+    password: true,
+    prompt: 'Gemini API key',
+    url: 'https://aistudio.google.com/app/apikey',
+  },
+  OPENAI_API_KEY: {
+    category: 'provider',
+    description: 'OpenAI API key',
+    password: true,
+    prompt: 'OpenAI API key',
+    url: 'https://platform.openai.com/api-keys',
+  },
+  OPENROUTER_API_KEY: {
+    category: 'provider',
+    description: 'OpenRouter API key',
+    password: true,
+    prompt: 'OpenRouter API key',
+    url: 'https://openrouter.ai/keys',
+  },
+};
+
 const LOCAL_MESSAGING_CATALOG = [
   {
     id: 'telegram',
@@ -1622,6 +1660,161 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"provider": provider, "model": mode
   return null;
 }
 
+async function localEnvApi(method, url, body) {
+  if (url.pathname === '/api/env' && method === 'GET') {
+    const fallbackJson = JSON.stringify(LOCAL_ENV_CREDENTIAL_FALLBACKS);
+    const fallbackJsonLiteral = JSON.stringify(fallbackJson);
+    return runHermesPython(`
+import json, os, sys
+from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_value, load_env
+
+FALLBACKS = json.loads(${fallbackJsonLiteral})
+SECRET_WORDS = ("TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH", "PRIVATE")
+
+def redact(value):
+    text = str(value or "")
+    if not text:
+        return None
+    if len(text) <= 8:
+        return "****"
+    return f"{text[:4]}...{text[-4:]}"
+
+def normalize_info(key, info, source):
+    info = info if isinstance(info, dict) else {}
+    value = get_env_value(key) or ""
+    disk_env = load_env()
+    return {
+        "advanced": bool(info.get("advanced", False)),
+        "category": str(info.get("category") or source or "setting"),
+        "description": str(info.get("description") or info.get("prompt") or key),
+        "is_password": bool(info.get("password") or any(word in key.upper() for word in SECRET_WORDS)),
+        "is_set": bool(value),
+        "prompt": str(info.get("prompt") or key),
+        "redacted_value": redact(value),
+        "source": "dotenv" if key in disk_env else ("process" if os.environ.get(key) else None),
+        "tools": list(info.get("tools") or []),
+        "url": info.get("url"),
+    }
+
+items = {}
+for key, info in FALLBACKS.items():
+    items[key] = normalize_info(key, info, "provider")
+for key, info in OPTIONAL_ENV_VARS.items():
+    merged = dict(FALLBACKS.get(key, {}))
+    merged.update(info if isinstance(info, dict) else {})
+    items[key] = normalize_info(key, merged, merged.get("category") or "setting")
+for key in load_env().keys():
+    if key not in items:
+        items[key] = normalize_info(key, {}, "setting")
+
+print("__BEAUTY_HERMES_JSON__" + json.dumps(dict(sorted(items.items()))))
+`, {}, 20000);
+  }
+
+  if (url.pathname === '/api/env' && method === 'PUT') {
+    return runHermesPython(`
+import json, sys
+from hermes_cli.config import get_env_value, save_env_value
+
+payload = json.loads(sys.stdin.read() or "{}")
+key = str(payload.get("key") or "").strip()
+value = str(payload.get("value") or "").strip()
+if not key:
+    raise SystemExit("key is required")
+if not value:
+    raise SystemExit("value is required")
+
+save_env_value(key, value)
+stored = get_env_value(key) or ""
+redacted = "****" if len(stored) <= 8 else f"{stored[:4]}...{stored[-4:]}"
+print("__BEAUTY_HERMES_JSON__" + json.dumps({
+    "ok": True,
+    "key": key,
+    "is_set": bool(stored),
+    "redacted_value": redacted,
+    "source": "desktop-local-bridge",
+}))
+`, body || {}, 20000);
+  }
+
+  if (url.pathname === '/api/env' && method === 'DELETE') {
+    return runHermesPython(`
+import json, sys
+from hermes_cli.config import get_env_value, remove_env_value
+
+payload = json.loads(sys.stdin.read() or "{}")
+key = str(payload.get("key") or "").strip()
+if not key:
+    raise SystemExit("key is required")
+removed = bool(remove_env_value(key))
+value = get_env_value(key) or ""
+redacted = None if not value else ("****" if len(value) <= 8 else f"{value[:4]}...{value[-4:]}")
+print("__BEAUTY_HERMES_JSON__" + json.dumps({
+    "ok": True,
+    "key": key,
+    "removed": removed,
+    "is_set": bool(value),
+    "redacted_value": redacted,
+    "source": "desktop-local-bridge",
+}))
+`, body || {}, 20000);
+  }
+
+  if (url.pathname === '/api/env/reveal' && method === 'POST') {
+    return runHermesPython(`
+import json, sys
+from hermes_cli.config import get_env_value
+
+payload = json.loads(sys.stdin.read() or "{}")
+key = str(payload.get("key") or "").strip()
+if not key:
+    raise SystemExit("key is required")
+print("__BEAUTY_HERMES_JSON__" + json.dumps({
+    "key": key,
+    "value": get_env_value(key) or "",
+    "source": "desktop-local-bridge",
+}))
+`, body || {}, 20000);
+  }
+
+  if (url.pathname === '/api/providers/validate' && method === 'POST') {
+    return runHermesPython(`
+import json, sys
+from urllib.parse import urlparse
+from hermes_cli.config import get_env_value
+
+payload = json.loads(sys.stdin.read() or "{}")
+key = str(payload.get("key") or "").strip()
+value = str(payload.get("value") or "").strip() or (get_env_value(key) or "")
+if not key:
+    raise SystemExit("key is required")
+if not value:
+    print("__BEAUTY_HERMES_JSON__" + json.dumps({
+        "ok": False,
+        "reachable": False,
+        "message": "请输入凭据值，或先保存后再检查。",
+        "source": "desktop-local-bridge",
+    }))
+    raise SystemExit(0)
+if key.endswith("_URL") or key.endswith("_BASE_URL") or key.endswith("_ENDPOINT"):
+    parsed = urlparse(value)
+    ok = parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    message = "URL 格式有效。" if ok else "URL 需要以 http:// 或 https:// 开头，并包含 host。"
+else:
+    ok = len(value) >= 6 and "\\n" not in value and "\\r" not in value
+    message = "凭据格式已通过本地检查；未发起网络请求。" if ok else "凭据太短或包含换行。"
+print("__BEAUTY_HERMES_JSON__" + json.dumps({
+    "ok": ok,
+    "reachable": False,
+    "message": message,
+    "source": "desktop-local-bridge",
+}))
+`, body || {}, 20000);
+  }
+
+  return null;
+}
+
 async function localSettingsApi(method, url, body) {
   if (url.pathname === '/api/settings/runtime-policy' && (method === 'GET' || method === 'PUT')) {
     return runHermesPython(`
@@ -2908,6 +3101,7 @@ async function localApiFallback(request, error) {
     localCronApi,
     localMessagingApi,
     localOnboardingApi,
+    localEnvApi,
     localSettingsApi,
     localClipboardApi,
     localFilesApi,
@@ -3028,6 +3222,8 @@ async function localApiFallback(request, error) {
     || url.pathname.startsWith('/api/skills')
     || url.pathname.startsWith('/api/cron/jobs')
     || url.pathname.startsWith('/api/messaging/platforms')
+    || url.pathname.startsWith('/api/env')
+    || url.pathname.startsWith('/api/providers/validate')
     || url.pathname.startsWith('/api/model')
     || url.pathname.startsWith('/api/tools/toolsets')
     || url.pathname.startsWith('/api/mcp/servers')
@@ -3052,6 +3248,8 @@ async function desktopApi(request) {
     '/api/messaging/platforms',
     '/api/messaging/telegram/onboarding',
     '/api/onboarding',
+    '/api/env',
+    '/api/providers/validate',
     '/api/settings',
     '/api/model',
     '/api/tools/toolsets',
