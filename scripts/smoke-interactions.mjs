@@ -106,10 +106,21 @@ async function evaluate(client, expression) {
   });
 
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || 'Runtime evaluation failed.');
+    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Runtime evaluation failed.');
+  }
+
+  if (result.result?.subtype === 'error') {
+    throw new Error(result.result.description || result.result.value || 'Runtime evaluation rejected.');
   }
 
   return result.result?.value;
+}
+
+function assertNoRendererErrors() {
+  const errorPattern = /Uncaught \(in promise\)|Uncaught TypeError|Uncaught ReferenceError|ERR_FILE_NOT_FOUND/i;
+  if (errorPattern.test(output)) {
+    throw new Error(`Renderer error detected.\n${output.slice(-6000)}`);
+  }
 }
 
 let client = null;
@@ -163,18 +174,24 @@ try {
       await sleep(120);
       return document.querySelector('[data-testid="command-center"]');
     };
+    const getComposerControls = async (label = 'composer controls') => {
+      const textarea = await waitFor(() => document.querySelector('textarea[aria-label="消息"]'), `${label} textarea`);
+      const sendButton = await waitFor(() => document.querySelector('.sendButton'), `${label} send button`);
+      return { sendButton, textarea };
+    };
     const startNewTaskFromPage = async (label) => {
       findButton('新建任务')?.click();
       await waitFor(() => document.querySelector('[data-testid="composer"]'), `${label} return to chat`);
       await waitFor(() => document.querySelector('[data-testid="surface-title"]')?.textContent?.includes('Hermes Agent'), `${label} chat title`);
       await waitFor(() => document.querySelector('[data-testid="message-list"]')?.querySelectorAll('.message').length === 0, `${label} clears transcript`);
-      await waitFor(() => document.querySelector('.toastNotice')?.textContent?.includes('已开始新任务'), `${label} new task feedback`);
-      return {
-        sendButton: document.querySelector('.sendButton'),
-        textarea: document.querySelector('textarea[aria-label="消息"]'),
-      };
+      await waitFor(() => {
+        const notice = document.querySelector('.toastNotice')?.textContent || '';
+        return notice.includes('正在开始新任务') || notice.includes('已开始新任务');
+      }, `${label} new task feedback`);
+      return getComposerControls(`${label} fresh composer`);
     };
     const runSlashNavigation = async (command, titleText, contentText, label) => {
+      ({ textarea, sendButton } = await getComposerControls(`${label} before submit`));
       setNativeValue(textarea, command);
       await sleep(120);
       sendButton.click();
@@ -193,7 +210,7 @@ try {
       throw new Error('Empty prompt action buttons should be disabled while gateway is skipped.');
     }
 
-    let textarea = document.querySelector('textarea[aria-label="消息"]');
+    let { textarea, sendButton } = await getComposerControls('initial composer');
     setNativeValue(textarea, '/');
     await waitFor(() => document.querySelector('.slashMenu')?.textContent?.includes('/help'), 'slash menu');
     setNativeValue(textarea, '/mess');
@@ -204,15 +221,14 @@ try {
 
     setNativeValue(textarea, '/help');
     await sleep(120);
-    let sendButton = document.querySelector('.sendButton');
+    ({ textarea, sendButton } = await getComposerControls('help command composer'));
     if (sendButton.disabled) {
       throw new Error('Send button stayed disabled for local /help command.');
     }
     sendButton.click();
     await waitFor(() => document.body.innerText.includes('/skills [关键词]'), 'local slash output');
 
-    textarea = document.querySelector('textarea[aria-label="消息"]');
-    sendButton = document.querySelector('.sendButton');
+    ({ textarea, sendButton } = await getComposerControls('summary command composer'));
     setNativeValue(textarea, '/summary');
     await sleep(120);
     sendButton.click();
@@ -221,6 +237,7 @@ try {
       'summary markdown table rendering',
     );
 
+    ({ textarea, sendButton } = await getComposerControls('agents command composer'));
     setNativeValue(textarea, '/agents');
     await sleep(120);
     if (sendButton.disabled) {
@@ -344,7 +361,7 @@ try {
     const workbenchChecks = [
       ['文件', '变更文件'],
       ['终端', 'Hermes Gateway'],
-      ['预览', '暂无预览产物'],
+      ['预览', '预览产物'],
       ['活动', '当前任务'],
     ];
     for (const [tab, expected] of workbenchChecks) {
@@ -537,6 +554,9 @@ try {
       if (label !== '执行更新' && action.disabled) {
         throw new Error(`Diagnostics action should be available: ${label}`);
       }
+    }
+    if (!findButton('执行更新', document.querySelector('.diagnostics'))?.disabled) {
+      throw new Error('Diagnostics update apply should be disabled before a successful update check.');
     }
     findButton('更新状态', document.querySelector('.diagnostics')).click();
     await waitFor(
@@ -899,6 +919,8 @@ try {
       workbench: workbenchChecks.map(([label]) => label),
     };
   }})()`);
+
+  assertNoRendererErrors();
 
   console.log(`Interaction smoke passed. ${JSON.stringify(result)}`);
 } catch (error) {

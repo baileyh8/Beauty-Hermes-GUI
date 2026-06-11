@@ -572,28 +572,31 @@ function resolveHermesAgentRepo() {
 
 function resolveHermesPython() {
   const agentRepo = resolveHermesAgentRepo();
+  const isWindows = process.platform === 'win32';
   const candidates = [
     process.env.HERMES_PYTHON,
+    isWindows ? path.join(agentRepo, 'venv', 'Scripts', 'python.exe') : '',
+    isWindows ? path.join(agentRepo, '.venv', 'Scripts', 'python.exe') : '',
     path.join(agentRepo, 'venv', 'bin', 'python'),
     path.join(agentRepo, '.venv', 'bin', 'python'),
-    'python3',
+    isWindows ? 'py' : 'python3',
     'python',
   ].filter(Boolean);
 
   for (const candidate of candidates) {
-    if (candidate === 'python' || candidate === 'python3') {
+    if (candidate === 'python' || candidate === 'python3' || candidate === 'py') {
       return candidate;
     }
 
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
+      fs.accessSync(candidate, isWindows ? fs.constants.F_OK : fs.constants.X_OK);
       return candidate;
     } catch {
       // Try the next candidate.
     }
   }
 
-  return 'python3';
+  return isWindows ? 'python' : 'python3';
 }
 
 function parseJsonMarker(stdout) {
@@ -904,8 +907,10 @@ if sys.platform == "darwin":
     escaped = command.replace("\\\\", "\\\\\\\\").replace('"', '\\\\"')
     applescript = 'tell application "Terminal"\\nactivate\\ndo script "' + escaped + '"\\nend tell'
     subprocess.Popen(["osascript", "-e", applescript])
+elif sys.platform == "win32":
+    subprocess.Popen(["cmd.exe", "/c", "start", "Beauty Hermes Profile", "cmd.exe", "/k", command])
 else:
-    raise SystemExit("Opening a profile terminal is currently implemented for macOS only")
+    raise SystemExit("Opening a profile terminal is currently implemented for macOS and Windows only")
 print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "command": command, "source": "desktop-local-bridge"}))
 `, { name }, 20000);
   }
@@ -1401,12 +1406,22 @@ async function localOnboardingApi(method, url, body) {
     const inventory = readHermesInventory();
     const desktopConfig = readDesktopConfig();
     const mode = desktopConfig.connectionMode === 'remote' ? 'remote' : 'local';
+    const gatewayEnvironment = gatewayManager.getEnvironment({
+      preferredDeployment: desktopConfig.hermesDeployment || desktopConfig.deployment || '',
+      skipLocalProbe: mode === 'remote',
+    });
     return {
       mode,
       remote_url: typeof desktopConfig.remoteGatewayUrl === 'string' ? desktopConfig.remoteGatewayUrl : '',
+      remote_token_configured: Boolean(String(desktopConfig.remoteGatewayToken || '').trim()),
       auto_start_gateway: desktopConfig.autoStartGateway !== false,
       desktop_config_path: path.join(resolveHermesHome(), 'desktop.json'),
       hermes_home: inventory.diagnostics.hermesHome,
+      hermes_deployment: gatewayEnvironment?.deployment || 'local',
+      hermes_platform: gatewayEnvironment?.platform || process.platform,
+      hermes_wsl_available: Boolean(gatewayEnvironment?.wslAvailable),
+      hermes_wsl_distro: gatewayEnvironment?.wslDistro || '',
+      hermes_wsl_home: gatewayEnvironment?.wslHermesHome || '',
       config_exists: inventory.diagnostics.configExists,
       agent_repo_exists: inventory.diagnostics.agentRepoExists,
       gateway_pid: inventory.diagnostics.gatewayPid,
@@ -1425,6 +1440,7 @@ async function localOnboardingApi(method, url, body) {
   if (method === 'POST' && url.pathname === '/api/onboarding/check') {
     const mode = body?.mode === 'remote' ? 'remote' : 'local';
     const remoteUrl = String(body?.remote_url || '').trim();
+    const remoteToken = String(body?.remote_token || '').trim() || String(readDesktopConfig().remoteGatewayToken || '').trim();
     const result = summary();
 
     if (mode === 'remote') {
@@ -1436,7 +1452,11 @@ async function localOnboardingApi(method, url, body) {
       }
 
       try {
-        const health = await fetchText(new URL('/api/status', remoteUrl).toString(), { headers: { Accept: 'application/json' } }, 2500);
+        const headers = {
+          Accept: 'application/json',
+          ...(remoteToken ? { 'X-Hermes-Session-Token': remoteToken } : {}),
+        };
+        const health = await fetchText(new URL('/api/status', remoteUrl).toString(), { headers }, 2500);
         return {
           ...result,
           ok: health.ok,
@@ -1468,6 +1488,7 @@ async function localOnboardingApi(method, url, body) {
   if (method === 'PUT' && url.pathname === '/api/onboarding/config') {
     const mode = body?.mode === 'remote' ? 'remote' : 'local';
     const remoteUrl = String(body?.remote_url || '').trim();
+    const remoteToken = String(body?.remote_token || '').trim();
     const provider = String(body?.provider || '').trim();
     const model = String(body?.model || '').trim();
     const autoStartGateway = body?.auto_start_gateway !== false;
@@ -1481,6 +1502,7 @@ async function localOnboardingApi(method, url, body) {
       ...current,
       autoStartGateway,
       connectionMode: mode,
+      remoteGatewayToken: mode === 'remote' ? (remoteToken || current.remoteGatewayToken || '') : '',
       remoteGatewayUrl: remoteUrl,
       updatedAt: new Date().toISOString(),
     });
@@ -2632,10 +2654,26 @@ async function desktopApi(request) {
 app.whenReady().then(() => {
   createApplicationMenu();
 
-  ipcMain.handle('hermes:desktop-info', () => ({
-    appName: 'Beauty Hermes GUI',
-    bridge: 'electron-ipc',
-  }));
+  ipcMain.handle('hermes:desktop-info', () => {
+    const desktopConfig = readDesktopConfig();
+    const connectionMode = desktopConfig.connectionMode === 'remote' ? 'remote' : 'local';
+    const gatewayEnvironment = gatewayManager.getEnvironment({
+      preferredDeployment: desktopConfig.hermesDeployment || desktopConfig.deployment || '',
+      skipLocalProbe: connectionMode === 'remote',
+    });
+    return {
+      appName: 'Beauty Hermes GUI',
+      autoStartGateway: desktopConfig.autoStartGateway !== false,
+      bridge: 'electron-ipc',
+      connectionMode,
+      hermesDeployment: gatewayEnvironment?.deployment || 'local',
+      hermesPlatform: gatewayEnvironment?.platform || process.platform,
+      hermesWslAvailable: Boolean(gatewayEnvironment?.wslAvailable),
+      hermesWslDistro: gatewayEnvironment?.wslDistro || '',
+      remoteGatewayTokenConfigured: Boolean(String(desktopConfig.remoteGatewayToken || '').trim()),
+      remoteGatewayUrl: typeof desktopConfig.remoteGatewayUrl === 'string' ? desktopConfig.remoteGatewayUrl : '',
+    };
+  });
 
   ipcMain.handle('hermes:snapshot', () => ({
     sessions: 7,

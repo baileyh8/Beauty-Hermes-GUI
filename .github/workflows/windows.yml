@@ -1,0 +1,47 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  windows:
+    name: Build and smoke Windows portable app
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      BEAUTY_HERMES_RELEASE_DIR: ${{ runner.temp }}\beauty-hermes-gui-release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Smoke Windows environment adapter
+        run: npm run smoke:windows-env
+
+      - name: Build Windows portable package
+        run: npm run dist:win
+
+      - name: Smoke packaged Windows app
+        env:
+          BEAUTY_HERMES_PACKAGE_PLATFORM: win32
+        run: node scripts/smoke-packaged.mjs
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Beauty-Hermes-GUI-windows
+          path: ${{ runner.temp }}/beauty-hermes-gui-release/Beauty-Hermes-GUI-*-windows-*.zip
+          if-no-files-found: error

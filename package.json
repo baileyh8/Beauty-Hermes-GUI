@@ -21,9 +21,14 @@
     "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
     "smoke:interactions": "npm run build && node scripts/smoke-interactions.mjs",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "smoke:packaged:win": "set BEAUTY_HERMES_PACKAGE_PLATFORM=win32&& node scripts/smoke-packaged.mjs",
+    "smoke:windows-env": "node scripts/smoke-windows-environment.mjs",
     "smoke:settings-bridge": "npm run build && node scripts/smoke-settings-bridge.mjs",
+    "smoke:full-gui": "npm run smoke:ui && npm run smoke:interactions && npm run smoke:settings-bridge && npm run pack && npm run smoke:packaged",
     "pack": "npm run build && node scripts/package-mac.mjs --app-only",
-    "dist:mac": "npm run build && node scripts/package-mac.mjs"
+    "pack:win": "npm run build && node scripts/package-windows.mjs --app-only",
+    "dist:mac": "npm run build && node scripts/package-mac.mjs",
+    "dist:win": "npm run build && node scripts/package-windows.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.561.0",

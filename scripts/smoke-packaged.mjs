@@ -10,22 +10,31 @@ const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
 const releaseDir = process.env.BEAUTY_HERMES_RELEASE_DIR
   ? path.resolve(process.env.BEAUTY_HERMES_RELEASE_DIR)
   : path.join(os.tmpdir(), 'beauty-hermes-gui-release');
-const executable = path.join(
-  releaseDir,
-  `Beauty Hermes GUI-darwin-${arch}`,
-  'Beauty Hermes GUI.app',
-  'Contents',
-  'MacOS',
-  'Beauty Hermes GUI',
-);
-const appDir = path.join(
-  releaseDir,
-  `Beauty Hermes GUI-darwin-${arch}`,
-  'Beauty Hermes GUI.app',
-  'Contents',
-  'Resources',
-  'app',
-);
+const packagePlatform = process.env.BEAUTY_HERMES_PACKAGE_PLATFORM || process.platform;
+const supportedPackagePlatforms = new Set(['darwin', 'win32']);
+if (!supportedPackagePlatforms.has(packagePlatform)) {
+  console.error(`Unsupported packaged smoke platform: ${packagePlatform}`);
+  process.exit(1);
+}
+const packageRoot = path.join(releaseDir, `Beauty Hermes GUI-${packagePlatform}-${arch}`);
+const executable = packagePlatform === 'win32'
+  ? path.join(packageRoot, 'Beauty Hermes GUI.exe')
+  : path.join(
+    packageRoot,
+    'Beauty Hermes GUI.app',
+    'Contents',
+    'MacOS',
+    'Beauty Hermes GUI',
+  );
+const appDir = packagePlatform === 'win32'
+  ? path.join(packageRoot, 'resources', 'app')
+  : path.join(
+    packageRoot,
+    'Beauty Hermes GUI.app',
+    'Contents',
+    'Resources',
+    'app',
+  );
 const distIndex = path.join(appDir, 'dist', 'index.html');
 const capturePath = path.join(os.tmpdir(), 'beauty-hermes-packaged-smoke.png');
 rmSync(capturePath, { force: true });
@@ -53,7 +62,8 @@ if (missingAssets.length > 0) {
   process.exit(1);
 }
 
-const child = spawn(executable, [], {
+const executableArgs = packagePlatform === 'win32' ? ['--disable-gpu'] : [];
+const child = spawn(executable, executableArgs, {
   env: {
     ...process.env,
     BEAUTY_HERMES_CAPTURE_PATH: capturePath,
@@ -78,7 +88,7 @@ child.on('exit', () => {
   exited = true;
 });
 
-const deadline = Date.now() + 15000;
+const deadline = Date.now() + 45000;
 while (
   Date.now() < deadline
   && !exited

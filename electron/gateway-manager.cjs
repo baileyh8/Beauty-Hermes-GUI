@@ -1,4 +1,4 @@
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
@@ -14,6 +14,7 @@ const PROBE_PORTS = [
 ];
 const TOKEN_RE = /__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
 const MAX_LOG_LINES = 120;
+const ENVIRONMENT_CACHE_MS = 15000;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,26 +39,49 @@ function appendLog(logs, line) {
   }
 }
 
-function resolveHermesCommand() {
+function listWindowsUserScriptHermesCandidates(env = process.env) {
+  const appData = env.APPDATA;
+  if (!appData) {
+    return [];
+  }
+
+  const pythonRoot = path.join(appData, 'Python');
+  const candidates = [path.join(pythonRoot, 'Scripts', 'hermes.exe')];
+
+  try {
+    for (const name of fs.readdirSync(pythonRoot)) {
+      if (/^Python\d+/i.test(name)) {
+        candidates.push(path.join(pythonRoot, name, 'Scripts', 'hermes.exe'));
+      }
+    }
+  } catch {
+    // The Python user-base directory is optional.
+  }
+
+  return candidates;
+}
+
+function resolveHermesCommand({ env = process.env, homeDir = os.homedir(), platform = process.platform } = {}) {
   const candidates = [
-    process.env.HERMES_CLI,
-    path.join(os.homedir(), '.local', 'bin', 'hermes'),
+    env.HERMES_CLI,
+    path.join(homeDir, '.local', 'bin', platform === 'win32' ? 'hermes.exe' : 'hermes'),
+    ...(platform === 'win32' ? listWindowsUserScriptHermesCandidates(env) : []),
     '/opt/homebrew/bin/hermes',
     '/usr/local/bin/hermes',
-    'hermes',
   ].filter(Boolean);
 
   for (const candidate of candidates) {
-    if (candidate === 'hermes') {
-      return candidate;
-    }
-
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
+      fs.accessSync(candidate, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
       return candidate;
     } catch {
       // Try the next candidate.
     }
+  }
+
+  const commandFromPath = resolveCommandFromPath('hermes', platform, env);
+  if (commandFromPath) {
+    return commandFromPath;
   }
 
   return 'hermes';
@@ -65,6 +89,264 @@ function resolveHermesCommand() {
 
 function resolveHermesHome() {
   return process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
+}
+
+function resolveCommandFromPath(command, platform = process.platform, env = process.env) {
+  try {
+    const result = spawnSync(platform === 'win32' ? 'where.exe' : 'which', [command], {
+      encoding: 'utf8',
+      env,
+      timeout: 2500,
+      windowsHide: true,
+    });
+    if (result.status === 0) {
+      return String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
+    }
+  } catch {
+    // PATH lookup is best-effort only.
+  }
+
+  return '';
+}
+
+function resolveExistingHermesCommand(platform = process.platform, env = process.env) {
+  const command = resolveHermesCommand({ env, platform });
+  if (platform !== 'win32') {
+    return command;
+  }
+
+  if (command && command !== 'hermes') {
+    return command;
+  }
+
+  return resolveCommandFromPath('hermes', platform, env);
+}
+
+function windowsPathToWslPathFallback(value) {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^([A-Za-z]):[\\/](.*)$/);
+  if (!match) {
+    return raw.replace(/\\/g, '/');
+  }
+
+  const drive = match[1].toLowerCase();
+  const rest = match[2].replace(/\\/g, '/');
+  return `/mnt/${drive}/${rest}`;
+}
+
+function shellQuoteForSh(value) {
+  return `'${String(value ?? '').replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function shellCommandForSh(command) {
+  const value = String(command || 'hermes').trim() || 'hermes';
+  return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : shellQuoteForSh(value);
+}
+
+function wslBaseArgs(distro) {
+  const normalized = String(distro || '').trim();
+  return normalized ? ['-d', normalized, '-e', 'sh', '-lc'] : ['-e', 'sh', '-lc'];
+}
+
+function resolveWslHermesCommand({ env = process.env, platform = process.platform, wslDistro = '' } = {}) {
+  if (platform !== 'win32') {
+    return '';
+  }
+
+  if (env.HERMES_WSL_CLI) {
+    return env.HERMES_WSL_CLI;
+  }
+
+  try {
+    const result = spawnSync('wsl.exe', [...wslBaseArgs(wslDistro), 'command -v hermes'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (result.status === 0) {
+      return String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || 'hermes';
+    }
+  } catch {
+    // WSL is optional and may not be installed.
+  }
+
+  return '';
+}
+
+function resolveWslHermesHome({ env = process.env, platform = process.platform, wslDistro = '' } = {}) {
+  if (env.HERMES_WSL_HOME) {
+    return env.HERMES_WSL_HOME;
+  }
+
+  if (platform === 'win32') {
+    try {
+      const result = spawnSync('wsl.exe', [...wslBaseArgs(wslDistro), 'printf "%s" "${HERMES_HOME:-$HOME/.hermes}"'], {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+      });
+      const detected = String(result.stdout || '').trim();
+      if (result.status === 0 && detected) {
+        return detected;
+      }
+    } catch {
+      // Fall through to deterministic fallback.
+    }
+  }
+
+  return '';
+}
+
+function detectHermesEnvironment({
+  env = process.env,
+  hermesHome = resolveHermesHome(),
+  platform = process.platform,
+  preferredDeployment = '',
+  skipLocalProbe = false,
+  wslDistro = env.HERMES_WSL_DISTRO || '',
+} = {}) {
+  if (skipLocalProbe) {
+    return {
+      deployment: 'remote',
+      hermesCommand: '',
+      hermesHome,
+      platform,
+      wslAvailable: false,
+      wslDistro: '',
+      wslHermesHome: '',
+    };
+  }
+
+  const wantsWsl = ['wsl', 'windows-wsl'].includes(String(preferredDeployment || env.HERMES_DEPLOYMENT || '').toLowerCase())
+    || env.BEAUTY_HERMES_FORCE_WSL === '1';
+  const nativeCommand = wantsWsl ? '' : resolveExistingHermesCommand(platform, env);
+
+  if (platform === 'win32') {
+    const shouldProbeWsl = wantsWsl || !nativeCommand;
+    const wslCommand = shouldProbeWsl ? resolveWslHermesCommand({ env, platform, wslDistro }) : '';
+    if ((wantsWsl || !nativeCommand) && wslCommand) {
+      return {
+        deployment: 'wsl',
+        hermesCommand: wslCommand,
+        hermesHome,
+        platform,
+        wslAvailable: true,
+        wslDistro,
+        wslHermesHome: resolveWslHermesHome({ env, platform, wslDistro }),
+      };
+    }
+
+    if (nativeCommand) {
+      return {
+        deployment: 'windows-native',
+        hermesCommand: nativeCommand,
+        hermesHome,
+        platform,
+        wslAvailable: Boolean(wslCommand),
+        wslDistro,
+        wslHermesHome: resolveWslHermesHome({ env, platform, wslDistro }),
+      };
+    }
+
+    return {
+      deployment: 'windows-missing',
+      hermesCommand: '',
+      hermesHome,
+      platform,
+      wslAvailable: Boolean(wslCommand),
+      wslDistro,
+      wslHermesHome: resolveWslHermesHome({ env, platform, wslDistro }),
+    };
+  }
+
+  return {
+    deployment: 'local',
+    hermesCommand: nativeCommand || 'hermes',
+    hermesHome,
+    platform,
+    wslAvailable: false,
+    wslDistro: '',
+    wslHermesHome: '',
+  };
+}
+
+function redactGatewayLog(value) {
+  return String(value || '')
+    .replace(/HERMES_DASHBOARD_SESSION_TOKEN=(?:'[^']*'|"[^"]*"|\S+)/g, 'HERMES_DASHBOARD_SESSION_TOKEN=<redacted>');
+}
+
+function gatewayStartPorts(firstPort, deployment, limit = 6) {
+  const ports = [
+    firstPort,
+    ...PROBE_PORTS.filter((port) => port !== firstPort),
+  ];
+  return deployment === 'wsl' ? ports.slice(0, Math.max(1, limit)) : [firstPort];
+}
+
+function environmentCacheKey(options = {}) {
+  const env = options.env || process.env;
+  return JSON.stringify({
+    deployment: options.preferredDeployment || '',
+    forceWsl: env.BEAUTY_HERMES_FORCE_WSL || '',
+    hermesCli: env.HERMES_CLI || '',
+    hermesDeployment: env.HERMES_DEPLOYMENT || '',
+    hermesHome: options.hermesHome || process.env.HERMES_HOME || '',
+    platform: options.platform || process.platform,
+    skipLocalProbe: Boolean(options.skipLocalProbe),
+    wslCli: env.HERMES_WSL_CLI || '',
+    wslDistro: options.wslDistro || env.HERMES_WSL_DISTRO || '',
+    wslHome: env.HERMES_WSL_HOME || '',
+  });
+}
+
+function createGatewayLaunchPlan({
+  deployment = '',
+  env = process.env,
+  hermesCommand = '',
+  hermesHome = resolveHermesHome(),
+  platform = process.platform,
+  port,
+  token,
+  wslDistro = '',
+  wslHermesHome = '',
+} = {}) {
+  const args = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)];
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const resolvedDeployment = deployment || (platform === 'win32' ? 'windows-native' : 'local');
+
+  if (platform === 'win32' && resolvedDeployment === 'wsl') {
+    const envAssignments = [
+      `HERMES_DASHBOARD_SESSION_TOKEN=${shellQuoteForSh(token)}`,
+      'HERMES_DASHBOARD_TUI=1',
+    ];
+    if (wslHermesHome) {
+      envAssignments.push(`HERMES_HOME=${shellQuoteForSh(wslHermesHome)}`);
+    }
+
+    const script = `${envAssignments.join(' ')} ${shellCommandForSh(hermesCommand || 'hermes')} ${args.join(' ')}`;
+    return {
+      args: [...wslBaseArgs(wslDistro), script],
+      baseUrl,
+      command: 'wsl.exe',
+      deployment: 'wsl',
+      env: { ...env },
+      platform,
+    };
+  }
+
+  return {
+    args,
+    baseUrl,
+    command: hermesCommand || resolveHermesCommand({ env, platform }),
+    deployment: resolvedDeployment,
+    env: {
+      ...env,
+      HERMES_DASHBOARD_SESSION_TOKEN: token,
+      HERMES_DASHBOARD_TUI: '1',
+      HERMES_HOME: hermesHome,
+    },
+    platform,
+  };
 }
 
 function readDesktopConfig() {
@@ -173,12 +455,30 @@ function sanitizeConnection(connection) {
   return {
     authMode: 'token',
     baseUrl: connection.baseUrl,
+    deployment: connection.deployment || null,
     mode: connection.mode || 'local',
     pid: connection.pid ?? null,
+    platform: connection.platform || process.platform,
     source: connection.source,
     status: connection.status,
     tokenPreview: connection.token ? `${connection.token.slice(0, 4)}...${connection.token.slice(-4)}` : null,
     wsUrl: connection.wsUrl,
+  };
+}
+
+function sanitizeEnvironment(environment) {
+  if (!environment) {
+    return null;
+  }
+
+  return {
+    deployment: environment.deployment,
+    hermesCommand: environment.hermesCommand || '',
+    hermesHome: environment.hermesHome || '',
+    platform: environment.platform || process.platform,
+    wslAvailable: Boolean(environment.wslAvailable),
+    wslDistro: environment.wslDistro || '',
+    wslHermesHome: environment.wslHermesHome || '',
   };
 }
 
@@ -284,14 +584,21 @@ function attachProcessLogs(child, logs) {
   child.stderr?.on('data', (chunk) => appendLog(logs, `[stderr] ${chunk.toString()}`));
 }
 
-function createGatewayManager() {
+function createGatewayManager(options = {}) {
+  const environmentDetector = options.detectHermesEnvironment || detectHermesEnvironment;
   const logs = [];
+  let cachedEnvironment = null;
   let child = null;
   let connection = null;
+  let spawnError = null;
   let startPromise = null;
 
-  async function waitForSpawnedGateway(baseUrl, token) {
+  async function waitForSpawnedGateway(baseUrl, token, launchPlan) {
     for (let attempt = 0; attempt < 90; attempt += 1) {
+      if (spawnError) {
+        throw new Error(`Hermes gateway failed to start: ${spawnError.message}`);
+      }
+
       if (child) {
         const status = child.exitCode;
         if (status !== null) {
@@ -322,8 +629,10 @@ function createGatewayManager() {
         return {
           authMode: 'token',
           baseUrl,
+          deployment: launchPlan.deployment,
           mode: 'local',
           pid: child?.pid ?? null,
+          platform: launchPlan.platform,
           source: 'spawned',
           status: 'connected',
           token: actualToken,
@@ -337,37 +646,73 @@ function createGatewayManager() {
     throw new Error(`Hermes gateway did not become ready at ${baseUrl}`);
   }
 
-  async function spawnGateway() {
-    const port = await findFreePort();
-    const token = generateToken();
-    const command = resolveHermesCommand();
-    const args = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)];
-    const baseUrl = `http://127.0.0.1:${port}`;
-
-    appendLog(logs, `Starting Hermes gateway: ${command} ${args.join(' ')}`);
-
-    child = spawn(command, args, {
-      env: {
-        ...process.env,
-        HERMES_DASHBOARD_SESSION_TOKEN: token,
-        HERMES_DASHBOARD_TUI: '1',
-        HERMES_HOME: resolveHermesHome(),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+  async function spawnGateway(desktopConfig = {}) {
+    const firstPort = await findFreePort();
+    const environment = environmentDetector({
+      preferredDeployment: desktopConfig.hermesDeployment || desktopConfig.deployment || '',
     });
 
-    attachProcessLogs(child, logs);
-    child.on('exit', (code, signal) => {
-      appendLog(logs, `Hermes gateway process exited: ${code ?? signal ?? 'unknown'}`);
-      if (connection?.source === 'spawned') {
-        connection = {
-          ...connection,
-          status: 'exited',
-        };
+    if (environment.deployment === 'windows-missing') {
+      throw new Error('Hermes CLI was not found in Windows PATH or WSL. Install Hermes natively, install it inside WSL, or set HERMES_CLI/HERMES_WSL_CLI.');
+    }
+
+    appendLog(logs, `Detected Hermes deployment: ${environment.deployment}`);
+
+    let lastError = null;
+    for (const port of gatewayStartPorts(firstPort, environment.deployment)) {
+      if (port !== firstPort && !(await canBindPort(port))) {
+        appendLog(logs, `Skipping Hermes gateway port ${port}; it is already in use on Windows host`);
+        continue;
       }
-    });
 
-    return waitForSpawnedGateway(baseUrl, token);
+      const token = generateToken();
+      const launchPlan = createGatewayLaunchPlan({
+        ...environment,
+        port,
+        token,
+      });
+
+      appendLog(logs, redactGatewayLog(`Starting Hermes gateway: ${launchPlan.command} ${launchPlan.args.join(' ')}`));
+
+      spawnError = null;
+      child = spawn(launchPlan.command, launchPlan.args, {
+        env: launchPlan.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+
+      attachProcessLogs(child, logs);
+      child.on('error', (error) => {
+        spawnError = error;
+        appendLog(logs, `Hermes gateway process failed to start: ${error.message}`);
+      });
+      child.on('exit', (code, signal) => {
+        appendLog(logs, `Hermes gateway process exited: ${code ?? signal ?? 'unknown'}`);
+        if (connection?.source === 'spawned') {
+          connection = {
+            ...connection,
+            status: 'exited',
+          };
+        }
+      });
+
+      try {
+        return await waitForSpawnedGateway(launchPlan.baseUrl, token, launchPlan);
+      } catch (error) {
+        lastError = error;
+        appendLog(logs, `Hermes gateway start attempt on port ${port} failed: ${error.message}`);
+        if (child && !child.killed) {
+          child.kill('SIGTERM');
+        }
+        child = null;
+        spawnError = null;
+        if (environment.deployment !== 'wsl') {
+          throw error;
+        }
+      }
+    }
+
+    throw lastError || new Error('Hermes gateway did not start on any candidate port');
   }
 
   async function start(options = {}) {
@@ -402,7 +747,7 @@ function createGatewayManager() {
 
       connection = await findExistingGateway(logs);
       if (!connection) {
-        connection = await spawnGateway();
+        connection = await spawnGateway(desktopConfig);
       }
 
       return { ...sanitizeConnection(connection), logs: [...logs] };
@@ -463,6 +808,22 @@ function createGatewayManager() {
     return { ...sanitizeConnection(connection), logs: [...logs] };
   }
 
+  function getEnvironment(options = {}) {
+    const cacheKey = environmentCacheKey(options);
+    const now = Date.now();
+    if (cachedEnvironment && cachedEnvironment.key === cacheKey && now - cachedEnvironment.time < ENVIRONMENT_CACHE_MS) {
+      return sanitizeEnvironment(cachedEnvironment.value);
+    }
+
+    const value = environmentDetector(options);
+    cachedEnvironment = {
+      key: cacheKey,
+      time: now,
+      value,
+    };
+    return sanitizeEnvironment(value);
+  }
+
   function dispose() {
     if (child && !child.killed) {
       child.kill('SIGTERM');
@@ -502,6 +863,7 @@ function createGatewayManager() {
     api,
     dispose,
     getConnection,
+    getEnvironment,
     getGatewayWsUrl,
     start,
     stop,
@@ -510,4 +872,13 @@ function createGatewayManager() {
   };
 }
 
-module.exports = { createGatewayManager };
+module.exports = {
+  createGatewayManager,
+  createGatewayLaunchPlan,
+  detectHermesEnvironment,
+  environmentCacheKey,
+  gatewayStartPorts,
+  redactGatewayLog,
+  shellQuoteForSh,
+  windowsPathToWslPathFallback,
+};

@@ -78,7 +78,11 @@ interface HermesDesktopBridge {
   api: <T = unknown>(request: HermesApiRequest) => Promise<T>;
   getDesktopInfo: () => Promise<{
     appName: string;
+    autoStartGateway?: boolean;
     bridge: string;
+    connectionMode?: 'local' | 'remote' | string;
+    remoteGatewayTokenConfigured?: boolean;
+    remoteGatewayUrl?: string;
   }>;
   getConnection: () => Promise<(HermesGatewayConnection & { logs?: string[] }) | null>;
   getGatewayWsUrl: () => Promise<string>;

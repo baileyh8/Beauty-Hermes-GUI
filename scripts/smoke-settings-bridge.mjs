@@ -167,10 +167,21 @@ async function evaluate(client, expression) {
   });
 
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || 'Runtime evaluation failed.');
+    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Runtime evaluation failed.');
+  }
+
+  if (result.result?.subtype === 'error') {
+    throw new Error(result.result.description || result.result.value || 'Runtime evaluation rejected.');
   }
 
   return result.result?.value;
+}
+
+function assertNoRendererErrors() {
+  const errorPattern = /Uncaught \(in promise\)|Uncaught TypeError|Uncaught ReferenceError|ERR_FILE_NOT_FOUND/i;
+  if (errorPattern.test(output)) {
+    throw new Error(`Renderer error detected.\n${output.slice(-6000)}`);
+  }
 }
 
 let client = null;
@@ -333,14 +344,18 @@ try {
         mode: 'remote',
         model: 'smoke-model-onboarding',
         provider: 'smoke-provider-onboarding',
+        remote_token: 'smoke-remote-token',
         remote_url: 'https://gateway.smoke.local',
       },
       method: 'PUT',
       path: '/api/onboarding/config',
       timeoutMs: 30000,
     });
-    if (onboardingRemote.mode !== 'remote' || onboardingRemote.remote_url !== 'https://gateway.smoke.local' || onboardingRemote.auto_start_gateway !== false) {
+    if (onboardingRemote.mode !== 'remote' || onboardingRemote.remote_url !== 'https://gateway.smoke.local' || onboardingRemote.auto_start_gateway !== false || onboardingRemote.remote_token_configured !== true) {
       throw new Error('Onboarding remote config did not persist desktop settings');
+    }
+    if (JSON.stringify(onboardingRemote).includes('smoke-remote-token')) {
+      throw new Error('Onboarding response leaked the raw remote token');
     }
     const onboardingCheck = await api({
       body: { mode: 'local' },
@@ -365,6 +380,9 @@ try {
     });
     if (onboardingLocal.mode !== 'local' || onboardingLocal.provider !== 'smoke-provider-final' || onboardingLocal.model !== 'smoke-model-final') {
       throw new Error('Onboarding local config did not persist model settings');
+    }
+    if (onboardingLocal.remote_token_configured) {
+      throw new Error('Onboarding local config should clear the remote gateway token marker');
     }
 
     const messagingBefore = await api({ path: '/api/messaging/platforms', timeoutMs: 30000 });
@@ -628,6 +646,8 @@ try {
       toolsetConfig: 'provider-env',
     };
   }})()`);
+
+  assertNoRendererErrors();
 
   console.log(`Settings bridge smoke passed. ${JSON.stringify({ hermesHome, ...result })}`);
 } catch (error) {

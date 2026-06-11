@@ -77,7 +77,7 @@ type ApprovalVariant = 'risk' | 'timeout' | 'permission';
 type SettingsSection = 'general' | 'models' | 'permissions' | 'integrations' | 'appearance' | 'advanced';
 type UiDensity = 'comfortable' | 'compact';
 type UiTheme = 'light' | 'soft';
-type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error' | 'stopped';
+type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error' | 'stopped' | 'bridge-error';
 type ChatMessageKind =
   | 'assistant'
   | 'user'
@@ -188,6 +188,12 @@ interface WorkbenchFileReadResponse {
   truncated?: boolean;
 }
 
+interface PreviewArtifact {
+  entry: WorkbenchFileEntry;
+  kind: 'html' | 'image' | 'markdown' | 'pdf' | 'text';
+  url: string;
+}
+
 interface SlashCommandOption {
   desc: string;
   icon: React.ReactNode;
@@ -261,6 +267,7 @@ interface HermesRuntime {
   connectionLabel: string;
   contextPercent: number;
   cwd: string;
+  cwdPath: string;
   deleteSession: (item: SidebarItem) => Promise<void>;
   files: GatewayFileItem[];
   gatewayStatus: GatewayStatus;
@@ -599,6 +606,7 @@ interface HermesOnboardingConfig {
   model?: string;
   ok?: boolean;
   provider?: string;
+  remote_token_configured?: boolean;
   remote_url?: string;
   source?: string;
   toolsets?: string[];
@@ -1489,6 +1497,7 @@ function useHermesRuntime(): HermesRuntime {
   const [selectedStoredSessionId, setSelectedStoredSessionId] = useState<null | string>(null);
   const [model, setModel] = useState('deepseek-v4-flash');
   const [cwd, setCwd] = useState('');
+  const [cwdPath, setCwdPath] = useState('');
   const [contextPercent, setContextPercent] = useState(0);
   const [statusText, setStatusText] = useState('正在连接 Hermes Gateway');
   const [inventory, setInventory] = useState<HermesLocalInventory | null>(null);
@@ -1501,6 +1510,7 @@ function useHermesRuntime(): HermesRuntime {
   const [pendingClarify, setPendingClarify] = useState<PendingClarify | null>(null);
 
   const clientRef = useRef<JsonRpcGatewayClient | null>(null);
+  const gatewayRetryCountRef = useRef(0);
   const activeSessionIdRef = useRef<null | string>(null);
   const selectedStoredSessionIdRef = useRef<null | string>(null);
   const assistantMessageIdRef = useRef<null | string>(null);
@@ -1536,6 +1546,7 @@ function useHermesRuntime(): HermesRuntime {
     }
 
     if (info?.cwd) {
+      setCwdPath(info.cwd);
       setCwd(compactCwd(info.cwd));
     }
 
@@ -2060,7 +2071,7 @@ function useHermesRuntime(): HermesRuntime {
     [appendToMessage, appendToolDigest, patchRuntimeInfo, upsertMessage],
   );
 
-  const connectGateway = useCallback(async () => {
+  const connectGateway = useCallback(async (options: { manual?: boolean } = {}) => {
     if (!window.hermesDesktop) {
       setGatewayStatus('browser');
       setSocketState('closed');
@@ -2070,11 +2081,21 @@ function useHermesRuntime(): HermesRuntime {
     }
 
     void refreshInventory();
-    setGatewayStatus('starting');
-    setStatusText('正在启动 Hermes Gateway');
     const desktop = window.hermesDesktop;
 
     try {
+      const desktopInfo = await desktop.getDesktopInfo().catch(() => null);
+      if (!options.manual && desktopInfo?.connectionMode !== 'remote' && desktopInfo?.autoStartGateway === false) {
+        setConnection(null);
+        setGatewayStatus('stopped');
+        setSocketState('closed');
+        setStatusText('自动启动已关闭');
+        setLogs(['Hermes Gateway auto-start is disabled in desktop.json.']);
+        return;
+      }
+
+      setGatewayStatus('starting');
+      setStatusText('正在启动 Hermes Gateway');
       const nextConnection = await desktop.startHermes();
       setConnection(nextConnection);
       setLogs(nextConnection.logs ?? []);
@@ -2093,6 +2114,7 @@ function useHermesRuntime(): HermesRuntime {
       client.onAny(handleGatewayEvent);
       client.onState(setSocketState);
       await client.connect(wsUrl);
+      gatewayRetryCountRef.current = 0;
       setGatewayStatus('connected');
       setStatusText('就绪');
 
@@ -2126,17 +2148,45 @@ function useHermesRuntime(): HermesRuntime {
       })();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setGatewayStatus('error');
+      let gatewayStillRunning = false;
+      try {
+        const localStatus = await desktop.api<{ gateway_pid?: null | number; gateway_running?: boolean; gateway_state?: string }>({
+          path: '/api/status',
+          timeoutMs: 5000,
+        });
+        gatewayStillRunning = Boolean(
+          localStatus?.gateway_running
+          || localStatus?.gateway_state === 'running'
+          || localStatus?.gateway_pid,
+        );
+      } catch {
+        gatewayStillRunning = false;
+      }
+
+      const shouldRetryBridge = gatewayStillRunning && gatewayRetryCountRef.current < 1;
+      setGatewayStatus(gatewayStillRunning ? 'bridge-error' : 'error');
       setSocketState('error');
-      setStatusText('Gateway 连接失败');
-      setLogs((current) => [`Gateway error: ${message}`, ...current].slice(0, 120));
+      setStatusText(gatewayStillRunning ? (shouldRetryBridge ? '桥接重连中' : '桌面桥接未连接') : 'Gateway 连接失败');
+      setLogs((current) => [
+        `${gatewayStillRunning ? 'Bridge error' : 'Gateway error'}: ${message}`,
+        ...current,
+      ].slice(0, 120));
       upsertMessage({
         id: makeId('gateway-error'),
         kind: 'error',
         status: 'error',
-        text: message,
-        title: '无法连接 Hermes Gateway',
+        text: gatewayStillRunning
+          ? `Hermes Gateway 正在运行，但桌面桥接暂时未连接：${message}`
+          : message,
+        title: gatewayStillRunning ? '桌面桥接未连接' : '无法连接 Hermes Gateway',
       });
+
+      if (shouldRetryBridge) {
+        gatewayRetryCountRef.current += 1;
+        window.setTimeout(() => {
+          void connectGateway(options);
+        }, 1800);
+      }
     }
   }, [handleGatewayEvent, refreshInventory, refreshSessionList, resumeRuntimeSession, upsertMessage]);
 
@@ -2581,6 +2631,7 @@ function useHermesRuntime(): HermesRuntime {
   }, [clearConversationRuntime, gatewayStatus, statusText]);
 
   const startGateway = useCallback(async () => {
+    gatewayRetryCountRef.current = 0;
     setGatewayStatus('starting');
     setStatusText('正在启动 Hermes Gateway');
 
@@ -2593,7 +2644,7 @@ function useHermesRuntime(): HermesRuntime {
     const nextConnection = await window.hermesDesktop.startHermes({ force: true });
     setConnection(nextConnection);
     setLogs(nextConnection?.logs ?? []);
-    await connectGateway();
+    await connectGateway({ manual: true });
     void refreshInventory();
   }, [connectGateway, refreshInventory]);
 
@@ -2616,6 +2667,7 @@ function useHermesRuntime(): HermesRuntime {
   }, [refreshInventory]);
 
   const restartGateway = useCallback(async () => {
+    gatewayRetryCountRef.current = 0;
     clientRef.current?.close();
     clientRef.current = null;
     setSocketState('closed');
@@ -2624,7 +2676,7 @@ function useHermesRuntime(): HermesRuntime {
     }
     setGatewayStatus('starting');
     setStatusText('正在重启 Hermes Gateway');
-    await connectGateway();
+    await connectGateway({ manual: true });
   }, [connectGateway]);
 
   const connectionLabel = useMemo(() => {
@@ -2640,6 +2692,10 @@ function useHermesRuntime(): HermesRuntime {
       return '连接失败';
     }
 
+    if (gatewayStatus === 'bridge-error') {
+      return '桥接重连中';
+    }
+
     if (gatewayStatus === 'stopped') {
       return '已停止';
     }
@@ -2649,10 +2705,10 @@ function useHermesRuntime(): HermesRuntime {
     }
 
     if (connection?.source === 'existing') {
-      return '已连接 · 复用 gateway';
+      return '已连接 · 复用';
     }
 
-    return '已连接 · 本机 gateway';
+    return '已连接 · 本机';
   }, [connection?.source, gatewayStatus]);
 
   return {
@@ -2663,6 +2719,7 @@ function useHermesRuntime(): HermesRuntime {
     connectionLabel,
     contextPercent,
     cwd,
+    cwdPath,
     deleteSession,
     deleteSessions,
     files,
@@ -2713,7 +2770,7 @@ function projectSidebarGroups(runtime: HermesRuntime): SidebarProjectGroup[] {
     }
 
     groups.set(key, {
-      color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : 'gray',
+      color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : runtime.gatewayStatus === 'bridge-error' ? 'amber' : 'gray',
       items: [nextSession],
       key,
       meta: `1 个对话 · ${cwd ? shortenPath(cwd) : runtime.connectionLabel}`,
@@ -2726,7 +2783,7 @@ function projectSidebarGroups(runtime: HermesRuntime): SidebarProjectGroup[] {
     return [
       {
         active: true,
-        color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : 'gray',
+        color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : runtime.gatewayStatus === 'bridge-error' ? 'amber' : 'gray',
         items: [],
         key: 'local-hermes',
         meta: `${runtime.connectionLabel} · ${cwdLabel}`,
@@ -2825,7 +2882,7 @@ function App() {
       return undefined;
     }
 
-    const timer = window.setTimeout(() => setNotice(''), 2200);
+    const timer = window.setTimeout(() => setNotice(''), 3600);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
@@ -2923,6 +2980,7 @@ function App() {
     setRightOpen(true);
     setPendingSidebarDeleteKey('');
     setSelectingSessionId('');
+    showNotice('正在开始新任务');
 
     void runtime.startNewTask()
       .then(() => showNotice('已开始新任务'))
@@ -3198,6 +3256,7 @@ function Sidebar({
     { id: 'diagnostics', label: '诊断', meta: '环境检查', icon: <Wrench size={15} /> },
     { id: 'onboarding', label: '首次启动', meta: '连接方式', icon: <Rocket size={15} /> },
   ];
+  const gatewayDisplayText = gatewayStatus === 'connected' ? '已连接' : statusText;
 
   return (
     <aside className="sidebar">
@@ -3281,11 +3340,11 @@ function Sidebar({
         </section>
       </nav>
 
-      <div className="gatewayStrip">
-        <span className={`statusDot ${gatewayStatus === 'error' ? 'red' : gatewayStatus === 'starting' || gatewayStatus === 'stopped' ? 'amber' : 'green'}`} />
+      <div className="gatewayStrip" aria-label={`Gateway 连接状态：${statusText}`} title={statusText}>
+        <span className={`statusDot ${gatewayStatus === 'error' ? 'red' : gatewayStatus === 'starting' || gatewayStatus === 'stopped' || gatewayStatus === 'bridge-error' ? 'amber' : 'green'}`} />
         <div>
           <strong>Gateway</strong>
-          <small>{statusText}</small>
+          <small className="gatewayStatusText">{gatewayDisplayText}</small>
         </div>
       </div>
 
@@ -4375,18 +4434,16 @@ function Composer({
     const uiTarget = localSlashUiTarget(text);
     void runtime.submitPrompt(text);
     if (uiTarget) {
-      window.requestAnimationFrame(() => {
-        if (uiTarget.settingsSection) {
-          onOpenSettingsSection(uiTarget.settingsSection);
-          return;
-        }
-        if (uiTarget.surface) {
-          onNavigate(uiTarget.surface);
-        }
-        if (uiTarget.workbenchTab) {
-          onOpenWorkbenchTab(uiTarget.workbenchTab);
-        }
-      });
+      if (uiTarget.settingsSection) {
+        onOpenSettingsSection(uiTarget.settingsSection);
+        return;
+      }
+      if (uiTarget.surface) {
+        onNavigate(uiTarget.surface);
+      }
+      if (uiTarget.workbenchTab) {
+        onOpenWorkbenchTab(uiTarget.workbenchTab);
+      }
     }
   };
 
@@ -4863,7 +4920,7 @@ function WorkbenchFiles({ runtime, selectedFileLabel }: { runtime: HermesRuntime
     } finally {
       setBrowserBusy('');
     }
-  }, [browserPath, runtime]);
+  }, [browserPath, runtime.apiRequest]);
 
   const previewFile = useCallback(async (entry: WorkbenchFileEntry) => {
     try {
@@ -4882,11 +4939,11 @@ function WorkbenchFiles({ runtime, selectedFileLabel }: { runtime: HermesRuntime
     } finally {
       setBrowserBusy('');
     }
-  }, [runtime]);
+  }, [runtime.apiRequest]);
 
   useEffect(() => {
-    void loadDirectory('');
-  }, []);
+    void loadDirectory(runtime.cwdPath || '');
+  }, [loadDirectory, runtime.cwdPath]);
 
   useEffect(() => {
     if (!selectedFileLabel) {
@@ -5065,18 +5122,97 @@ function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => Pro
   );
 }
 
+function fileUrlFromPath(filePath: string) {
+  if (!filePath) {
+    return '';
+  }
+  return `file://${filePath.split('/').map((part) => encodeURIComponent(part)).join('/')}`;
+}
+
+function previewKindFromEntry(entry: WorkbenchFileEntry): PreviewArtifact['kind'] | null {
+  const extension = (entry.extension || entry.name.split('.').pop() || '').toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'heic'].includes(extension)) {
+    return 'image';
+  }
+  if (['html', 'htm'].includes(extension)) {
+    return 'html';
+  }
+  if (extension === 'pdf') {
+    return 'pdf';
+  }
+  if (['md', 'markdown'].includes(extension)) {
+    return 'markdown';
+  }
+  if (['txt', 'log', 'json'].includes(extension)) {
+    return 'text';
+  }
+  return null;
+}
+
+function previewIcon(kind: PreviewArtifact['kind']) {
+  if (kind === 'image') {
+    return <Image size={15} />;
+  }
+  if (kind === 'html') {
+    return <FileCode2 size={15} />;
+  }
+  if (kind === 'pdf' || kind === 'markdown' || kind === 'text') {
+    return <FileText size={15} />;
+  }
+  return <Eye size={15} />;
+}
+
 function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  const [previewArtifacts, setPreviewArtifacts] = useState<PreviewArtifact[]>([]);
+  const previewRoot = runtime.cwdPath || '';
   const previewText = runtime.connection?.baseUrl
     ? `Gateway: ${runtime.connection.baseUrl}`
-    : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
+    : previewRoot
+      ? `正在扫描 ${shortenPath(previewRoot)} 的预览产物。`
+      : '连接 Hermes Gateway 或打开会话后，预览和外部产物会显示在这里。';
+  const scanPreviewArtifacts = useCallback(async () => {
+    try {
+      setBusy(true);
+      setStatus('');
+      const params = new URLSearchParams();
+      if (previewRoot) {
+        params.set('path', previewRoot);
+      }
+      const result = await runtime.apiRequest<WorkbenchFileListResponse>({
+        path: `/api/files/list${params.toString() ? `?${params}` : ''}`,
+        timeoutMs: 15000,
+      });
+      const artifacts = (result.entries || [])
+        .filter((entry) => entry.kind === 'file')
+        .map((entry): PreviewArtifact | null => {
+          const kind = previewKindFromEntry(entry);
+          return kind ? { entry, kind, url: fileUrlFromPath(entry.path) } : null;
+        })
+        .filter((entry): entry is PreviewArtifact => Boolean(entry))
+        .sort((left, right) => Number(right.entry.mtime || 0) - Number(left.entry.mtime || 0))
+        .slice(0, 8);
+      setPreviewArtifacts(artifacts);
+      setStatus(artifacts.length > 0 ? `预览刷新完成，找到 ${artifacts.length} 个预览产物。` : '预览刷新完成，暂无可预览文件。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`预览扫描失败：${message}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [previewRoot, runtime.apiRequest]);
+
+  useEffect(() => {
+    void scanPreviewArtifacts();
+  }, [scanPreviewArtifacts]);
+
   const refreshPreview = async () => {
     try {
       setBusy(true);
       setStatus('');
       await runtime.refreshInventory();
-      setStatus(runtime.connection?.baseUrl ? '预览状态已刷新。' : '已刷新，本机 Gateway 暂无可打开地址。');
+      await scanPreviewArtifacts();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`刷新失败：${message}`);
@@ -5093,19 +5229,56 @@ function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
     const previewWindow = window.open(runtime.connection.baseUrl, '_blank', 'noopener,noreferrer');
     setStatus(previewWindow ? 'Gateway 已在新窗口打开。' : 'Gateway 窗口可能被拦截。');
   };
+  const openArtifact = (artifact: PreviewArtifact) => {
+    const previewWindow = window.open(artifact.url, '_blank', 'noopener,noreferrer');
+    setStatus(previewWindow ? `${artifact.entry.name} 已打开。` : '预览窗口可能被拦截。');
+  };
+  const copyArtifactPath = async (artifact: PreviewArtifact) => {
+    if (!navigator.clipboard?.writeText) {
+      setStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(artifact.entry.path);
+      setStatus('文件路径已复制。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`复制失败：${message}`);
+    }
+  };
 
   return (
     <>
       <section className="previewPanel">
-        <div className="previewEmpty">
-          <Eye size={22} />
-          <strong>暂无预览产物</strong>
-          <span>{previewText}</span>
-        </div>
+        {previewArtifacts[0]?.kind === 'image' ? (
+          <img className="previewHeroImage" src={previewArtifacts[0].url} alt={previewArtifacts[0].entry.name} />
+        ) : (
+          <div className="previewEmpty">
+            <Eye size={22} />
+            <strong>{previewArtifacts.length > 0 ? previewArtifacts[0].entry.name : '暂无预览产物'}</strong>
+            <span>{previewText}</span>
+          </div>
+        )}
       </section>
       <section className="railSection">
         <h3>预览产物</h3>
         <p>{previewText}</p>
+        {previewArtifacts.length > 0 && (
+          <div className="previewArtifactList" aria-label="预览产物列表">
+            {previewArtifacts.map((artifact) => (
+              <div className="previewArtifactRow" key={artifact.entry.path}>
+                <button type="button" onClick={() => openArtifact(artifact)}>
+                  {previewIcon(artifact.kind)}
+                  <span>{artifact.entry.name}</span>
+                  <small>{artifact.kind} · {formatFileSize(artifact.entry.size)}</small>
+                </button>
+                <button type="button" aria-label={`复制 ${artifact.entry.name} 路径`} onClick={() => void copyArtifactPath(artifact)}>
+                  <Copy size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="workbenchActions">
           <button type="button" onClick={() => void refreshPreview()} disabled={busy}>
             {busy ? '刷新中' : '刷新'}
@@ -8701,6 +8874,7 @@ function DiagnosticsSurface({
   const [diagnosticsBusy, setDiagnosticsBusy] = useState('');
   const [diagnosticsStatus, setDiagnosticsStatus] = useState('');
   const [updateCheck, setUpdateCheck] = useState<HermesUpdateCheckResponse | null>(null);
+  const [updateConfirmArmed, setUpdateConfirmArmed] = useState(false);
   const [actionStatus, setActionStatus] = useState<HermesActionStatusResponse | null>(null);
   const runDiagnosticAction = async (key: string, label: string, action: () => Promise<string | void>) => {
     try {
@@ -8745,6 +8919,7 @@ function DiagnosticsSurface({
   };
   const checkUpdates = async () => {
     await runDiagnosticAction('update:check', '检查更新', async () => {
+      setUpdateConfirmArmed(false);
       const result = await runtime.apiRequest<HermesUpdateCheckResponse>({
         path: '/api/hermes/update/check?force=true',
         timeoutMs: 60000,
@@ -8754,7 +8929,20 @@ function DiagnosticsSurface({
     });
   };
   const runUpdate = async () => {
+    if (updateCheck?.update_available !== true || updateCheck.can_apply !== true) {
+      setUpdateConfirmArmed(false);
+      setDiagnosticsStatus('请先检查更新；只有检测到可自动应用的更新后才能执行。');
+      return;
+    }
+
+    if (!updateConfirmArmed) {
+      setUpdateConfirmArmed(true);
+      setDiagnosticsStatus(`再次点击确认执行更新：${updateCheck.update_command || 'hermes update'}`);
+      return;
+    }
+
     await runDiagnosticAction('update:apply', '执行更新', async () => {
+      setUpdateConfirmArmed(false);
       const result = await runtime.apiRequest<HermesActionStartResponse>({
         method: 'POST',
         path: '/api/hermes/update',
@@ -8802,7 +8990,15 @@ function DiagnosticsSurface({
       return '诊断摘要已复制。';
     });
   };
-  const updateApplyDisabled = Boolean(diagnosticsBusy) || updateCheck?.can_apply === false;
+  const updateCanApply = updateCheck?.update_available === true && updateCheck.can_apply === true;
+  const updateApplyDisabled = Boolean(diagnosticsBusy) || !updateCanApply;
+  const updateApplyLabel = updateCheck?.can_apply === false
+    ? '需手动更新'
+    : updateCheck?.update_available === false
+      ? '暂无更新'
+      : updateConfirmArmed
+        ? '确认执行更新'
+        : '执行更新';
   const updateCommits = updateCheck?.commits?.slice(0, 4) || [];
 
   return (
@@ -8823,7 +9019,7 @@ function DiagnosticsSurface({
           </button>
           <button className="lightButton" type="button" disabled={updateApplyDisabled} onClick={() => void runUpdate()}>
             <Rocket className={diagnosticsBusy === 'update:apply' ? 'spinIcon' : undefined} size={15} />
-            {updateCheck?.can_apply === false ? '需手动更新' : '执行更新'}
+            {updateApplyLabel}
           </button>
           <button className="lightButton" type="button" disabled={Boolean(diagnosticsBusy)} onClick={() => void refreshUpdateStatus()}>
             更新状态
@@ -8933,6 +9129,7 @@ function OnboardingSurface({
 }) {
   const [selectedMode, setSelectedMode] = useState<OnboardingMode>('local');
   const [remoteUrl, setRemoteUrl] = useState('');
+  const [remoteTokenDraft, setRemoteTokenDraft] = useState('');
   const [providerDraft, setProviderDraft] = useState('');
   const [modelDraft, setModelDraft] = useState('');
   const [autoStartGateway, setAutoStartGateway] = useState(true);
@@ -8952,6 +9149,7 @@ function OnboardingSurface({
       setOnboardingConfig(result);
       setSelectedMode(result.mode === 'remote' ? 'remote' : 'local');
       setRemoteUrl(result.remote_url || '');
+      setRemoteTokenDraft('');
       setProviderDraft(result.provider || config?.provider || '');
       setModelDraft(result.model || config?.defaultModel || runtime.model || '');
       setAutoStartGateway(result.auto_start_gateway !== false);
@@ -8985,6 +9183,7 @@ function OnboardingSurface({
           mode: selectedMode === 'remote' ? 'remote' : 'local',
           model: modelDraft.trim(),
           provider: providerDraft.trim(),
+          remote_token: remoteTokenDraft.trim(),
           remote_url: remoteUrl.trim(),
         },
         method: 'PUT',
@@ -9001,6 +9200,7 @@ function OnboardingSurface({
       const result = await apiRequest<HermesOnboardingConfig>({
         body: {
           mode: selectedMode === 'remote' ? 'remote' : 'local',
+          remote_token: remoteTokenDraft.trim(),
           remote_url: remoteUrl.trim(),
         },
         method: 'POST',
@@ -9074,6 +9274,10 @@ function OnboardingSurface({
           <label className={selectedMode === 'remote' ? undefined : 'muted'}>
             <span>远程 Gateway URL</span>
             <input className="settingInput" disabled={Boolean(onboardingBusy) || selectedMode !== 'remote'} placeholder="https://gateway.example.com" value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} />
+          </label>
+          <label className={selectedMode === 'remote' ? undefined : 'muted'}>
+            <span>远程 Token{onboardingConfig?.remote_token_configured ? ' · 已保存' : ''}</span>
+            <input className="settingInput" disabled={Boolean(onboardingBusy) || selectedMode !== 'remote'} placeholder={onboardingConfig?.remote_token_configured ? '留空沿用已保存 token' : '远程 Gateway token'} type="password" value={remoteTokenDraft} onChange={(event) => setRemoteTokenDraft(event.target.value)} />
           </label>
         </div>
         <label className="onboardingToggle">
