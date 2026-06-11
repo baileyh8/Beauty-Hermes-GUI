@@ -13,7 +13,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      BEAUTY_HERMES_RELEASE_DIR: ${{ runner.temp }}\beauty-hermes-gui-release
+      BEAUTY_HERMES_RELEASE_DIR: release/windows
 
     steps:
       - name: Checkout
@@ -43,5 +43,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Beauty-Hermes-GUI-windows
-          path: ${{ runner.temp }}/beauty-hermes-gui-release/Beauty-Hermes-GUI-*-windows-*.zip
+          path: release/windows/Beauty-Hermes-GUI-*-windows-*.zip
           if-no-files-found: error
