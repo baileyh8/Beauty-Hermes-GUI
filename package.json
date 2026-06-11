@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "npm run build && electron .",
+    "screenshots:readme": "npm run build && node scripts/capture-readme-screenshots.mjs",
     "smoke:ui": "node scripts/verify-ui-contract.mjs",
     "smoke:config": "node scripts/smoke-config-actions.mjs",
     "smoke:gateway": "node scripts/smoke-gateway.mjs",
