@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -16,25 +16,80 @@ if (!supportedPackagePlatforms.has(packagePlatform)) {
   console.error(`Unsupported packaged smoke platform: ${packagePlatform}`);
   process.exit(1);
 }
-const packageRoot = path.join(releaseDir, `Beauty Hermes GUI-${packagePlatform}-${arch}`);
-const executable = packagePlatform === 'win32'
-  ? path.join(packageRoot, 'Beauty Hermes GUI.exe')
-  : path.join(
-    packageRoot,
-    'Beauty Hermes GUI.app',
-    'Contents',
-    'MacOS',
-    'Beauty Hermes GUI',
-  );
-const appDir = packagePlatform === 'win32'
-  ? path.join(packageRoot, 'resources', 'app')
-  : path.join(
-    packageRoot,
-    'Beauty Hermes GUI.app',
-    'Contents',
-    'Resources',
-    'app',
-  );
+const appName = 'Beauty Hermes GUI';
+const windowsExecutableName = 'Beauty Hermes GUI.exe';
+const packageJson = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+const version = typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
+const packageRoot = path.join(releaseDir, `${appName}-${packagePlatform}-${arch}`);
+
+function pathsFromPackageRoot(root) {
+  return packagePlatform === 'win32'
+    ? {
+        executable: path.join(root, windowsExecutableName),
+        appDir: path.join(root, 'resources', 'app'),
+      }
+    : {
+        executable: path.join(root, `${appName}.app`, 'Contents', 'MacOS', appName),
+        appDir: path.join(root, `${appName}.app`, 'Contents', 'Resources', 'app'),
+      };
+}
+
+function pathsFromExtractedZip(root) {
+  return packagePlatform === 'win32'
+    ? {
+        executable: path.join(root, windowsExecutableName),
+        appDir: path.join(root, 'resources', 'app'),
+      }
+    : {
+        executable: path.join(root, `${appName}.app`, 'Contents', 'MacOS', appName),
+        appDir: path.join(root, `${appName}.app`, 'Contents', 'Resources', 'app'),
+      };
+}
+
+function run(command, args) {
+  const result = spawnSync(command, args, {
+    cwd: rootDir,
+    stdio: 'pipe',
+    encoding: 'utf8',
+    shell: packagePlatform === 'win32' && command.endsWith('.ps1'),
+  });
+
+  if (result.status !== 0) {
+    const details = [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000);
+    throw new Error(`${command} ${args.join(' ')} failed\n${details}`);
+  }
+
+  return result;
+}
+
+let { executable, appDir } = pathsFromPackageRoot(packageRoot);
+let extractedRoot = '';
+
+if (!existsSync(executable)) {
+  const zipName = packagePlatform === 'win32'
+    ? `${appName.replace(/\s+/g, '-')}-${version}-windows-${arch}.zip`
+    : `${appName.replace(/\s+/g, '-')}-${version}-mac-${arch}.zip`;
+  const zipPath = path.join(releaseDir, zipName);
+
+  if (existsSync(zipPath)) {
+    extractedRoot = mkdtempSync(path.join(os.tmpdir(), 'beauty-hermes-packaged-smoke-'));
+
+    if (packagePlatform === 'win32') {
+      run('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        `Expand-Archive -Path ${JSON.stringify(zipPath)} -DestinationPath ${JSON.stringify(extractedRoot)} -Force`,
+      ]);
+    } else {
+      run('ditto', ['-x', '-k', zipPath, extractedRoot]);
+    }
+
+    ({ executable, appDir } = pathsFromExtractedZip(extractedRoot));
+  }
+}
+
 const distIndex = path.join(appDir, 'dist', 'index.html');
 const capturePath = path.join(os.tmpdir(), 'beauty-hermes-packaged-smoke.png');
 rmSync(capturePath, { force: true });
@@ -47,6 +102,20 @@ if (!existsSync(executable)) {
 if (!existsSync(distIndex)) {
   console.error(`Packaged dist index not found: ${distIndex}`);
   process.exit(1);
+}
+
+if (packagePlatform === 'darwin') {
+  const appBundle = path.join(path.dirname(path.dirname(path.dirname(executable))));
+  const verify = spawnSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appBundle], {
+    cwd: rootDir,
+    stdio: 'pipe',
+    encoding: 'utf8',
+  });
+
+  if (verify.status !== 0) {
+    console.error([verify.stdout, verify.stderr].filter(Boolean).join('\n').slice(0, 4000));
+    process.exit(1);
+  }
 }
 
 const html = readFileSync(distIndex, 'utf8');
@@ -129,6 +198,10 @@ await wait(1000);
 if (/Security Warning|ERR_FILE_NOT_FOUND|Uncaught/i.test(output)) {
   console.error(output.slice(0, 4000));
   process.exit(1);
+}
+
+if (extractedRoot) {
+  rmSync(extractedRoot, { recursive: true, force: true });
 }
 
 console.log('Packaged app smoke passed.');

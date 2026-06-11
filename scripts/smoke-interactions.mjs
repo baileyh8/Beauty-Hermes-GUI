@@ -762,12 +762,41 @@ try {
     if (findSettingButton('默认模型', '保存').disabled) {
       throw new Error('Model save action should be available after model options load.');
     }
+    findSettingButton('默认模型', '保存').click();
+    await waitFor(() => document.body.innerText.includes('默认模型保存 已完成'), 'model save feedback', 15000);
+    findButton('新建任务')?.click();
+    await waitFor(() => document.querySelector('[data-testid="composer"]'), 'model save returns to chat');
+    const composerModelButton = await waitFor(
+      () => document.querySelector('[data-testid="composer-model-button"]'),
+      'composer model button',
+      12000,
+    );
+    if (composerModelButton.textContent?.includes('上下文')) {
+      throw new Error('Composer model button should only contain the model selector label.');
+    }
+    composerModelButton.click();
+    await waitFor(() => document.querySelector('[data-testid="composer-model-menu"]'), 'composer model menu', 12000);
+    await waitFor(() => document.querySelector('[data-testid="composer-model-menu"] select[aria-label="会话模型提供方"]'), 'composer model provider select', 12000);
+    await waitFor(() => document.querySelector('[data-testid="composer-model-menu"] select[aria-label="会话模型名称"]'), 'composer model name select', 12000);
+    const composerApplyButton = await waitFor(
+      () => Array.from(document.querySelectorAll('[data-testid="composer-model-menu"] button')).find((button) => button.textContent?.includes('切换模型')),
+      'composer model apply action',
+      12000,
+    );
+    if (composerApplyButton.disabled) {
+      throw new Error('Composer model apply action should be enabled when a model is selected.');
+    }
+    findNavButton('设置')?.click();
+    await waitFor(() => document.querySelector('.settingsSurface'), 'settings surface after composer model menu');
 
     await selectSettingsSection('权限', 'Toolsets');
+    if (!document.querySelector('.settingRow .toggle')) {
+      findSettingButton('Toolsets', '同步').click();
+    }
     const toolsetToggle = await waitFor(
       () => Array.from(document.querySelectorAll('.settingRow .toggle')).find((item) => item.getAttribute('aria-label')?.includes('toolset') || item.getAttribute('aria-label')),
       'toolset toggle controls',
-      15000,
+      30000,
     );
     if (toolsetToggle.disabled) {
       throw new Error('Toolset toggle should be editable after local bridge load.');

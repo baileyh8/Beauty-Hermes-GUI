@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { cp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -12,7 +12,8 @@ const releaseDir = process.env.BEAUTY_HERMES_RELEASE_DIR
 const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
 const appName = 'Beauty Hermes GUI';
 const executableName = 'Beauty Hermes GUI.exe';
-const version = '0.1.0';
+const packageJson = JSON.parse(await readFile(path.join(rootDir, 'package.json'), 'utf8'));
+const version = typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
 const appOnly = process.argv.includes('--app-only');
 const electronDist = path.join(rootDir, 'node_modules', 'electron', 'dist');
 const electronExe = path.join(electronDist, 'electron.exe');

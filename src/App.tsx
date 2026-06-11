@@ -283,6 +283,7 @@ interface HermesRuntime {
   removeRecentSessions: (sessionIds: string[], statusText?: string) => void;
   restartGateway: () => Promise<void>;
   selectedStoredSessionId: null | string;
+  setMainModel: (provider: string, model: string, options?: { applyToSession?: boolean }) => Promise<ModelSwitchResult>;
   socketState: GatewayConnectionState;
   statusText: string;
   selectSession: (sessionId: string) => Promise<void>;
@@ -543,6 +544,14 @@ interface HermesModelOptionsInfo {
   provider?: string;
   providers?: HermesModelProviderInfo[];
   source?: string;
+}
+
+interface ModelSwitchResult {
+  model: string;
+  provider: string;
+  sessionApplied: boolean;
+  sessionError?: string;
+  sessionMessage?: string;
 }
 
 interface HermesToolsetInfo {
@@ -1322,6 +1331,48 @@ function normalizeModel(info?: SessionRuntimeInfo) {
   return info.model || null;
 }
 
+function buildModelOptionsFromInventory(inventory: HermesLocalInventory | null, fallbackModel: string): HermesModelOptionsInfo | null {
+  const config = inventory?.config;
+  const defaultModel = config?.defaultModel || fallbackModel || '';
+  const currentProvider = config?.provider
+    || inventory?.models.find((item) => item.model === defaultModel || item.name === defaultModel)?.provider
+    || '';
+
+  if (!currentProvider || !defaultModel) {
+    return null;
+  }
+
+  const modelsByProvider = new Map<string, Set<string>>();
+  const providerNames = new Map<string, string>();
+  const addModel = (provider: string, model: string, name?: string) => {
+    if (!provider || !model) {
+      return;
+    }
+    if (!modelsByProvider.has(provider)) {
+      modelsByProvider.set(provider, new Set());
+    }
+    modelsByProvider.get(provider)?.add(model);
+    providerNames.set(provider, name || providerNames.get(provider) || provider);
+  };
+
+  inventory?.models.forEach((item) => {
+    addModel(item.provider || currentProvider, item.model || item.name, item.provider || item.name);
+  });
+  addModel(currentProvider, defaultModel, currentProvider);
+
+  return {
+    model: defaultModel,
+    provider: currentProvider,
+    providers: Array.from(modelsByProvider.entries()).map(([slug, models]) => ({
+      authenticated: true,
+      models: Array.from(models),
+      name: providerNames.get(slug) || slug,
+      slug,
+    })),
+    source: 'desktop-inventory',
+  };
+}
+
 function contextPercentFromInfo(info?: SessionRuntimeInfo) {
   const value = info?.usage?.context_percent ?? info?.context_percent;
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null;
@@ -1564,6 +1615,9 @@ function useHermesRuntime(): HermesRuntime {
       const nextInventory = await window.hermesDesktop.getLocalInventory();
       setInventory(nextInventory);
       setInventoryError('');
+      if (nextInventory.config?.defaultModel) {
+        setModel(nextInventory.config.defaultModel);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setInventoryError(message);
@@ -1712,6 +1766,72 @@ function useHermesRuntime(): HermesRuntime {
     },
     [],
   );
+
+  const setMainModel = useCallback(async (
+    provider: string,
+    nextModel: string,
+    options: { applyToSession?: boolean } = {},
+  ): Promise<ModelSwitchResult> => {
+    const cleanProvider = provider.trim();
+    const cleanModel = nextModel.trim();
+
+    if (!cleanProvider || !cleanModel) {
+      throw new Error('provider and model are required');
+    }
+
+    const saved = await apiRequest<{ model?: string; provider?: string }>({
+      body: {
+        model: cleanModel,
+        provider: cleanProvider,
+        scope: 'main',
+      },
+      method: 'POST',
+      path: '/api/model/set',
+      timeoutMs: 30000,
+    });
+
+    const savedModel = saved.model || cleanModel;
+    const savedProvider = saved.provider || cleanProvider;
+    setModel(savedModel);
+    setStatusText('默认模型已保存');
+
+    let sessionApplied = false;
+    let sessionError = '';
+    let sessionMessage = '';
+    const client = clientRef.current;
+    const sessionId = activeSessionIdRef.current;
+
+    if (options.applyToSession && client?.connectionState === 'open' && sessionId) {
+      try {
+        const command = `/model ${savedModel} --provider ${savedProvider}`;
+        const result = await client.request('slash.exec', { command, session_id: sessionId }, 90000);
+        sessionMessage = slashOutputText(result) || `当前会话已切换到 ${savedModel}。`;
+        sessionApplied = true;
+        setStatusText('当前会话模型已切换');
+        upsertMessage({
+          id: makeId('model-switch'),
+          kind: 'status',
+          sessionId,
+          status: 'done',
+          text: sessionMessage,
+          title: '模型已切换',
+        }, { moveToEnd: true });
+      } catch (error) {
+        sessionError = error instanceof Error ? error.message : String(error);
+        setStatusText('默认模型已保存，当前会话未切换');
+      }
+    }
+
+    await refreshInventory();
+
+    return {
+      model: savedModel,
+      provider: savedProvider,
+      sessionApplied,
+      sessionError,
+      sessionMessage,
+    };
+  }, [apiRequest, refreshInventory, upsertMessage]);
 
   const clearConversationRuntime = useCallback((options: {
     clearMessages?: boolean;
@@ -2737,6 +2857,7 @@ function useHermesRuntime(): HermesRuntime {
     restartGateway,
     selectedStoredSessionId,
     selectSession,
+    setMainModel,
     startGateway,
     startNewTask,
     stopGateway,
@@ -3001,7 +3122,6 @@ function App() {
         activeSessionId={runtime.activeSessionId}
         activeSurface={surface}
         gatewayStatus={runtime.gatewayStatus}
-        model={runtime.model}
         onNewTask={handleStartNewTask}
         onSurfaceChange={setSurface}
         onOpenCommand={() => setCommandOpen(true)}
@@ -3214,7 +3334,6 @@ function Sidebar({
   activeSessionId,
   activeSurface,
   gatewayStatus,
-  model,
   onNewTask,
   onSurfaceChange,
   onOpenCommand,
@@ -3232,7 +3351,6 @@ function Sidebar({
   activeSessionId: null | string;
   activeSurface: Surface;
   gatewayStatus: GatewayStatus;
-  model: string;
   onNewTask: () => void;
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
@@ -3266,7 +3384,7 @@ function Sidebar({
         </span>
         <div>
           <strong>Hermes</strong>
-          <span>本地运行 · {model}</span>
+          <span>本地运行</span>
         </div>
       </button>
 
@@ -4332,6 +4450,12 @@ function Composer({
 }) {
   const [draft, setDraft] = useState('');
   const [composerNotice, setComposerNotice] = useState('');
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelMenuStatus, setModelMenuStatus] = useState('');
+  const [modelMenuBusy, setModelMenuBusy] = useState('');
+  const [composerModelOptions, setComposerModelOptions] = useState<HermesModelOptionsInfo | null>(null);
+  const [composerModelProvider, setComposerModelProvider] = useState('');
+  const [composerModelName, setComposerModelName] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissedDraft, setSlashDismissedDraft] = useState('');
@@ -4341,6 +4465,11 @@ function Composer({
   const trimmedDraft = draft.trim();
   const canRunLocalSlash = trimmedDraft.startsWith('/') && isKnownLocalSlashInput(trimmedDraft);
   const canSubmit = Boolean(trimmedDraft) && (canSend || canRunLocalSlash);
+  const composerInventoryOptions = useMemo(() => buildModelOptionsFromInventory(runtime.inventory, runtime.model), [runtime.inventory, runtime.model]);
+  const composerProviderModels = useMemo(() => {
+    const provider = composerModelOptions?.providers?.find((item) => item.slug === composerModelProvider);
+    return Array.isArray(provider?.models) ? provider.models : [];
+  }, [composerModelOptions, composerModelProvider]);
   const slashQuery = draft.trimStart().startsWith('/') ? draft.trimStart().slice(1).toLowerCase() : '';
   const slashOptions = useMemo<SlashCommandOption[]>(() => {
     const base: SlashCommandOption[] = [
@@ -4393,6 +4522,14 @@ function Composer({
   }, [slashQuery]);
 
   useEffect(() => {
+    if (!composerModelOptions && composerInventoryOptions) {
+      setComposerModelOptions(composerInventoryOptions);
+      setComposerModelProvider(composerInventoryOptions.provider || '');
+      setComposerModelName(composerInventoryOptions.model || '');
+    }
+  }, [composerInventoryOptions, composerModelOptions]);
+
+  useEffect(() => {
     if (!composerNotice) {
       return undefined;
     }
@@ -4408,6 +4545,78 @@ function Composer({
     });
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
+
+  const loadComposerModelOptions = useCallback(async (force = false) => {
+    if (composerInventoryOptions) {
+      setComposerModelOptions(composerInventoryOptions);
+      setComposerModelProvider((current) => current || composerInventoryOptions.provider || '');
+      setComposerModelName((current) => current || composerInventoryOptions.model || '');
+      if (!force) {
+        setModelMenuStatus('');
+        return;
+      }
+    }
+
+    try {
+      setModelMenuBusy('load');
+      setModelMenuStatus('');
+      const response = await runtime.apiRequest<HermesModelOptionsInfo>({ path: '/api/model/options', timeoutMs: 30000 });
+      const providers = Array.isArray(response.providers) ? response.providers : [];
+      const provider = response.provider || composerInventoryOptions?.provider || providers[0]?.slug || '';
+      const model = response.model || composerInventoryOptions?.model || providers.find((item) => item.slug === provider)?.models?.[0] || '';
+      setComposerModelOptions({ ...response, providers });
+      setComposerModelProvider(provider);
+      setComposerModelName(model);
+      setModelMenuStatus(providers.length ? '' : '没有读取到可选模型。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setModelMenuStatus(composerInventoryOptions ? `使用本地模型缓存：${message}` : `模型列表读取失败：${message}`);
+    } finally {
+      setModelMenuBusy('');
+    }
+  }, [composerInventoryOptions, runtime]);
+
+  const openModelMenu = useCallback(() => {
+    setAttachmentOpen(false);
+    setSlashDismissedDraft(draft);
+    setModelMenuOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen) {
+        void loadComposerModelOptions(false);
+      }
+      return nextOpen;
+    });
+  }, [draft, loadComposerModelOptions, setAttachmentOpen]);
+
+  const applyComposerModel = useCallback(async () => {
+    if (!composerModelProvider || !composerModelName) {
+      setModelMenuStatus('请选择 provider 和 model。');
+      return;
+    }
+
+    try {
+      setModelMenuBusy('save');
+      setModelMenuStatus('');
+      const result = await runtime.setMainModel(composerModelProvider, composerModelName, { applyToSession: true });
+      setComposerModelProvider(result.provider);
+      setComposerModelName(result.model);
+      setModelMenuOpen(false);
+      if (result.sessionApplied) {
+        setComposerNotice(`当前会话已切换到 ${result.model}`);
+      } else if (result.sessionError) {
+        setComposerNotice(`默认模型已保存，当前会话切换失败：${result.sessionError}`);
+      } else if (runtime.activeSessionId) {
+        setComposerNotice('默认模型已保存；当前会话将在下一次可连接时切换。');
+      } else {
+        setComposerNotice('默认模型已保存，新会话会使用它。');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setModelMenuStatus(`切换失败：${message}`);
+    } finally {
+      setModelMenuBusy('');
+    }
+  }, [composerModelName, composerModelProvider, runtime]);
 
   const selectSlashOption = useCallback((option?: SlashCommandOption) => {
     if (!option) {
@@ -4556,9 +4765,18 @@ function Composer({
           完全访问
           <ChevronDown size={15} />
         </button>
-        <button className="modelName" type="button" title={runtime.model} onClick={() => onOpenSettingsSection('models')}>
+        <button
+          className="modelName"
+          type="button"
+          aria-expanded={modelMenuOpen}
+          aria-haspopup="menu"
+          data-testid="composer-model-button"
+          title="切换模型"
+          onClick={openModelMenu}
+        >
           <Zap size={16} />
           {runtime.model}
+          <ChevronDown size={13} />
         </button>
         <button className="workdir" type="button" title={runtime.cwd} onClick={onOpenProjects}>
           <span className="workdirLabel">工作目录</span>
@@ -4577,7 +4795,10 @@ function Composer({
           aria-expanded={attachmentOpen}
           aria-haspopup="menu"
           aria-label="添加"
-          onClick={() => setAttachmentOpen(!attachmentOpen)}
+          onClick={() => {
+            setModelMenuOpen(false);
+            setAttachmentOpen(!attachmentOpen);
+          }}
         >
           <Plus size={22} />
         </button>
@@ -4644,6 +4865,28 @@ function Composer({
             onPick={(kind) => void handleAttachmentPick(kind)}
           />
         )}
+        {modelMenuOpen && (
+          <ComposerModelMenu
+            busy={modelMenuBusy}
+            model={composerModelName}
+            options={composerModelOptions}
+            provider={composerModelProvider}
+            providerModels={composerProviderModels}
+            status={modelMenuStatus}
+            onApply={() => void applyComposerModel()}
+            onOpenSettings={() => {
+              setModelMenuOpen(false);
+              onOpenSettingsSection('models');
+            }}
+            onProviderChange={(provider) => {
+              const models = composerModelOptions?.providers?.find((item) => item.slug === provider)?.models || [];
+              setComposerModelProvider(provider);
+              setComposerModelName(models[0] || '');
+            }}
+            onModelChange={setComposerModelName}
+            onRefresh={() => void loadComposerModelOptions(true)}
+          />
+        )}
         {slashOpen && (
           <SlashMenu
             options={visibleSlashOptions}
@@ -4653,6 +4896,81 @@ function Composer({
         )}
       </div>
       {composerNotice && <div className="composerNotice" role="status">{composerNotice}</div>}
+    </div>
+  );
+}
+
+function ComposerModelMenu({
+  busy,
+  model,
+  options,
+  provider,
+  providerModels,
+  status,
+  onApply,
+  onModelChange,
+  onOpenSettings,
+  onProviderChange,
+  onRefresh,
+}: {
+  busy: string;
+  model: string;
+  options: HermesModelOptionsInfo | null;
+  provider: string;
+  providerModels: string[];
+  status: string;
+  onApply: () => void;
+  onModelChange: (model: string) => void;
+  onOpenSettings: () => void;
+  onProviderChange: (provider: string) => void;
+  onRefresh: () => void;
+}) {
+  const providers = options?.providers || [];
+  const activeProvider = providers.find((item) => item.slug === provider);
+  const canApply = Boolean(provider && model && busy !== 'save');
+
+  return (
+    <div className="modelMenu" data-testid="composer-model-menu" role="menu" aria-label="切换模型">
+      <div className="modelMenuHeader">
+        <span>切换模型</span>
+        <button type="button" onClick={onRefresh} disabled={Boolean(busy)}>
+          {busy === 'load' ? '同步中' : '同步'}
+        </button>
+      </div>
+      <label>
+        <span>Provider</span>
+        <select
+          aria-label="会话模型提供方"
+          value={provider}
+          disabled={busy === 'load' || providers.length === 0}
+          onChange={(event) => onProviderChange(event.target.value)}
+        >
+          {providers.map((item) => (
+            <option key={item.slug} value={item.slug}>{item.name || item.slug}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>Model</span>
+        <select
+          aria-label="会话模型名称"
+          value={model}
+          disabled={busy === 'load' || providerModels.length === 0}
+          onChange={(event) => onModelChange(event.target.value)}
+        >
+          {providerModels.map((item) => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+      </label>
+      {activeProvider?.warning && <p className="modelMenuWarning">{activeProvider.warning}</p>}
+      {status && <p className="modelMenuStatus" role="status">{status}</p>}
+      <div className="modelMenuActions">
+        <button type="button" onClick={onOpenSettings}>模型设置</button>
+        <button className="primary" type="button" disabled={!canApply} onClick={onApply}>
+          {busy === 'save' ? '切换中' : '切换模型'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -8225,47 +8543,12 @@ function SettingsPanel({
     void runSettingAction('gateway:stop', 'Gateway 停止', runtime.stopGateway);
   };
   const inventoryModelOptions = useMemo<HermesModelOptionsInfo | null>(() => {
-    const defaultModel = config?.defaultModel || runtime.model || '';
-    const currentProvider = config?.provider
-      || runtime.inventory?.models.find((item) => item.model === defaultModel || item.name === defaultModel)?.provider
-      || '';
-    if (!currentProvider || !defaultModel) {
-      return null;
-    }
-
-    const modelsByProvider = new Map<string, Set<string>>();
-    const providerNames = new Map<string, string>();
-    const addModel = (provider: string, model: string, name?: string) => {
-      if (!provider || !model) {
-        return;
-      }
-      if (!modelsByProvider.has(provider)) {
-        modelsByProvider.set(provider, new Set());
-      }
-      modelsByProvider.get(provider)?.add(model);
-      providerNames.set(provider, name || providerNames.get(provider) || provider);
-    };
-
-    runtime.inventory?.models.forEach((item) => {
-      addModel(item.provider || currentProvider, item.model || item.name, item.provider || item.name);
-    });
-    addModel(currentProvider, defaultModel, currentProvider);
-
-    return {
-      model: defaultModel,
-      provider: currentProvider,
-      providers: Array.from(modelsByProvider.entries()).map(([slug, models]) => ({
-        authenticated: true,
-        models: Array.from(models),
-        name: providerNames.get(slug) || slug,
-        slug,
-      })),
-      source: 'desktop-inventory',
-    };
-  }, [config?.defaultModel, config?.provider, runtime.inventory?.models, runtime.model]);
+    return buildModelOptionsFromInventory(runtime.inventory, runtime.model);
+  }, [runtime.inventory, runtime.model]);
   useEffect(() => {
     if (!modelOptions && inventoryModelOptions) {
       setModelOptions(inventoryModelOptions);
+      setModelOptionsLoaded(true);
       setSelectedModelProvider(inventoryModelOptions.provider || '');
       setSelectedModelName(inventoryModelOptions.model || '');
     }
@@ -8305,19 +8588,11 @@ function SettingsPanel({
     }
 
     await runSettingAction('models:save', '默认模型保存', async () => {
-      await apiRequest({
-        body: {
-          model: selectedModelName,
-          provider: selectedModelProvider,
-          scope: 'main',
-        },
-        method: 'POST',
-        path: '/api/model/set',
-        timeoutMs: 30000,
-      });
-      await runtime.refreshInventory();
+      const result = await runtime.setMainModel(selectedModelProvider, selectedModelName, { applyToSession: false });
+      setSelectedModelProvider(result.provider);
+      setSelectedModelName(result.model);
     });
-  }, [apiRequest, runtime, selectedModelName, selectedModelProvider]);
+  }, [runtime, selectedModelName, selectedModelProvider]);
   const loadToolsets = useCallback(async () => {
     try {
       setSettingsBusy('toolsets:load');

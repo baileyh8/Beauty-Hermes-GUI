@@ -4,7 +4,7 @@ English | [中文](./README.md)
 
 Beauty Hermes GUI is a desktop workbench for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It does not vendor the official Hermes Agent repository and does not bundle the backend. Instead, it focuses on turning local CLI / Gateway capabilities into a cleaner, more modern desktop experience inspired by Codex Desktop.
 
-Current version: `0.1.0`, part of the `0.x.x` early release line. The priority is to make the macOS and Windows desktop apps usable, visible, and resilient before adding code signing, notarization, auto-update, and deeper production hardening.
+Current version: `0.1.1`, part of the `0.x.x` early release line. The priority is to make the macOS and Windows desktop apps usable, visible, and resilient before adding code signing, notarization, auto-update, and deeper production hardening.
 
 ![Beauty Hermes GUI chat workbench](docs/screenshots/chat-workbench.png)
 
@@ -72,7 +72,7 @@ The Windows app is currently distributed through GitHub Actions artifacts:
 1. Open the repository **Actions** page.
 2. Open the latest successful **Windows Build** workflow.
 3. Download the `Beauty-Hermes-GUI-windows` artifact.
-4. Unzip the downloaded artifact, then unzip `Beauty-Hermes-GUI-0.1.0-windows-x64.zip` inside it.
+4. Unzip the downloaded artifact, then unzip `Beauty-Hermes-GUI-0.1.1-windows-x64.zip` inside it.
 5. Run `Beauty Hermes GUI.exe`.
 
 The Windows build is verified on GitHub Actions `windows-latest` with:

@@ -29,7 +29,6 @@ const requiredText = [
   '消息网关',
   '诊断与更新',
   '首次启动',
-  'deepseek-v4-flash',
   '文件...',
   '文件夹...',
   '图片...',
@@ -44,6 +43,12 @@ const requiredText = [
   'data-testid="message-list"',
   'emptyPromptActions',
   'onSubmitPrompt',
+  'setMainModel',
+  'data-testid="composer-model-button"',
+  'data-testid="composer-model-menu"',
+  '会话模型提供方',
+  '会话模型名称',
+  '/model ${savedModel} --provider ${savedProvider}',
   'onOpenSession',
   "onOpenWorkbenchTab('files')",
   'firstRecentSession',
@@ -236,7 +241,10 @@ const requiredWorkflowText = [
   'Beauty-Hermes-GUI-windows',
 ];
 const missingWorkflowText = requiredWorkflowText.filter((token) => !windowsWorkflow.includes(token));
-const forbiddenAppText = ['window.confirm('];
+const forbiddenAppText = [
+  'window.confirm(',
+  '<span>本地运行 · {model}</span>',
+];
 const forbiddenText = forbiddenAppText.filter((token) => app.includes(token));
 
 if (

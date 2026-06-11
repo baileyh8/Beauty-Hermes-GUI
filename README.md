@@ -4,7 +4,7 @@
 
 Beauty Hermes GUI 是面向 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的桌面端工作台。它不是官方仓库的完整复制，也不内置 Hermes Agent 后端；它专注把 Hermes 的本机 CLI / Gateway 能力包装成更现代、更清晰、更接近 Codex Desktop 使用体验的 GUI。
 
-当前版本：`0.1.0`，属于 `0.x.x` 早期正式发布阶段。核心目标是先把 macOS 与 Windows 桌面端跑通、看清楚、少出错，再逐步补齐签名、公证、自动更新和更深层的生产能力。
+当前版本：`0.1.1`，属于 `0.x.x` 早期正式发布阶段。核心目标是先把 macOS 与 Windows 桌面端跑通、看清楚、少出错，再逐步补齐签名、公证、自动更新和更深层的生产能力。
 
 ![Beauty Hermes GUI chat workbench](docs/screenshots/chat-workbench.png)
 
@@ -72,7 +72,7 @@ Beauty Hermes GUI 的方向是把 Hermes Desktop 变成一个真正的 Agent wor
 1. 打开仓库的 **Actions** 页面。
 2. 进入最新成功的 **Windows Build** workflow。
 3. 下载 artifact：`Beauty-Hermes-GUI-windows`。
-4. 解压下载得到的 artifact，再解压其中的 `Beauty-Hermes-GUI-0.1.0-windows-x64.zip`。
+4. 解压下载得到的 artifact，再解压其中的 `Beauty-Hermes-GUI-0.1.1-windows-x64.zip`。
 5. 运行 `Beauty Hermes GUI.exe`。
 
 Windows 版本已在 GitHub Actions `windows-latest` 上完成：
