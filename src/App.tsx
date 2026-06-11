@@ -39,7 +39,6 @@ import Network from 'lucide-react/dist/esm/icons/network.js';
 import PanelRightClose from 'lucide-react/dist/esm/icons/panel-right-close.js';
 import PanelRightOpen from 'lucide-react/dist/esm/icons/panel-right-open.js';
 import PauseCircle from 'lucide-react/dist/esm/icons/pause-circle.js';
-import Pin from 'lucide-react/dist/esm/icons/pin.js';
 import Play from 'lucide-react/dist/esm/icons/play.js';
 import Plus from 'lucide-react/dist/esm/icons/plus.js';
 import Puzzle from 'lucide-react/dist/esm/icons/puzzle.js';
@@ -58,7 +57,7 @@ import Wrench from 'lucide-react/dist/esm/icons/wrench.js';
 import X from 'lucide-react/dist/esm/icons/x.js';
 import XCircle from 'lucide-react/dist/esm/icons/x-circle.js';
 import Zap from 'lucide-react/dist/esm/icons/zap.js';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import hermesAgentLogo from './assets/hermes-agent-logo.png';
 import { JsonRpcGatewayClient, type GatewayConnectionState, type GatewayEvent } from './gateway';
 
@@ -79,11 +78,6 @@ type SettingsSection = 'general' | 'models' | 'permissions' | 'integrations' | '
 type UiDensity = 'comfortable' | 'compact';
 type UiTheme = 'light' | 'soft';
 type GatewayStatus = 'browser' | 'starting' | 'connected' | 'skipped' | 'error' | 'stopped';
-interface SkillDeepLink {
-  nonce: number;
-  query: string;
-  skillName: string;
-}
 type ChatMessageKind =
   | 'assistant'
   | 'user'
@@ -97,43 +91,25 @@ type ChatMessageKind =
 interface SidebarItem {
   active?: boolean;
   color?: string;
+  cwd?: null | string;
   id?: string;
   meta: string;
-  projectKey?: string;
+  title: string;
+}
+
+interface SidebarProjectGroup {
+  active?: boolean;
+  color?: string;
+  items: SidebarItem[];
+  key: string;
+  meta: string;
   title: string;
 }
 
 const preferenceStorageKeys = {
   density: 'beauty-hermes-ui-density',
-  pinnedSessions: 'beauty-hermes-pinned-sessions',
-  projects: 'beauty-hermes-project-configs',
   theme: 'beauty-hermes-ui-theme',
 } as const;
-
-const defaultRightRailWidth = 420;
-const minRightRailWidth = 360;
-const maxRightRailWidth = 560;
-const minMainColumnWidth = 560;
-
-function clampRightRailWidth(width: number, density: UiDensity = 'comfortable') {
-  const sidebarWidth = density === 'compact' ? 252 : 268;
-  const viewportMax = typeof window === 'undefined'
-    ? maxRightRailWidth
-    : Math.max(minRightRailWidth, window.innerWidth - sidebarWidth - minMainColumnWidth);
-  const maxWidth = Math.min(maxRightRailWidth, viewportMax);
-
-  return Math.min(maxWidth, Math.max(minRightRailWidth, Math.round(width)));
-}
-
-interface HermesProjectConfig {
-  id: string;
-  model: string;
-  name: string;
-  notes: string;
-  path: string;
-  profile: string;
-  updatedAt: number;
-}
 
 interface ChatArtifactModel {
   kind: 'file' | 'terminal' | 'preview';
@@ -171,7 +147,6 @@ interface ToolDisplayInfo {
 
 interface GatewayToolItem {
   detail: string;
-  details?: string;
   id: string;
   label: string;
   state: 'done' | 'running' | 'pending';
@@ -184,40 +159,33 @@ interface GatewayFileItem {
   meta: string;
 }
 
-type HermesSubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running';
-type HermesSubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool';
-
-interface HermesSubagentStreamEntry {
-  at: number;
-  isError?: boolean;
-  kind: HermesSubagentStreamKind;
-  text: string;
+interface WorkbenchFileEntry {
+  extension?: string;
+  hidden?: boolean;
+  kind: 'directory' | 'file' | 'other';
+  mtime?: null | number;
+  name: string;
+  path: string;
+  size?: null | number;
 }
 
-interface HermesSubagentProgress {
-  costUsd?: number;
-  currentTool?: string;
-  durationSeconds?: number;
-  filesRead: string[];
-  filesWritten: string[];
-  goal: string;
-  id: string;
-  inputTokens?: number;
-  model?: string;
-  outputTokens?: number;
-  parentId: null | string;
-  startedAt: number;
-  status: HermesSubagentStatus;
-  stream: HermesSubagentStreamEntry[];
-  summary?: string;
-  taskCount: number;
-  taskIndex: number;
-  toolCount?: number;
-  updatedAt: number;
+interface WorkbenchFileListResponse {
+  entries: WorkbenchFileEntry[];
+  parent?: null | string;
+  path: string;
+  root?: { label: string; path: string };
+  roots?: Array<{ label: string; path: string }>;
+  truncated?: boolean;
 }
 
-interface HermesSubagentNode extends HermesSubagentProgress {
-  children: HermesSubagentNode[];
+interface WorkbenchFileReadResponse {
+  binary?: boolean;
+  encoding?: string;
+  name: string;
+  path: string;
+  size: number;
+  text?: string;
+  truncated?: boolean;
 }
 
 interface SlashCommandOption {
@@ -242,7 +210,6 @@ interface LocalSlashContext {
   socketState: GatewayConnectionState;
   statusText: string;
   tools: GatewayToolItem[];
-  subagents: HermesSubagentProgress[];
 }
 
 interface LocalSlashResponse {
@@ -289,7 +256,6 @@ interface PendingClarify {
 interface HermesRuntime {
   activeSessionId: null | string;
   apiRequest: <T = unknown>(request: HermesApiRequest) => Promise<T>;
-  applyProjectContext: (context: ProjectRuntimeContext) => void;
   archiveSession: (item: SidebarItem) => Promise<void>;
   connection: HermesGatewayConnection | null;
   connectionLabel: string;
@@ -307,16 +273,17 @@ interface HermesRuntime {
   pendingClarify: null | PendingClarify;
   recentSessions: SidebarItem[];
   refreshInventory: () => Promise<void>;
+  removeRecentSessions: (sessionIds: string[], statusText?: string) => void;
   restartGateway: () => Promise<void>;
   selectedStoredSessionId: null | string;
   socketState: GatewayConnectionState;
   statusText: string;
   selectSession: (sessionId: string) => Promise<void>;
+  deleteSessions: (sessionIds: string[]) => Promise<number>;
   startGateway: () => Promise<void>;
   startNewTask: () => Promise<void>;
   stopGateway: () => Promise<void>;
-  submitPrompt: (text: string, options?: ProjectRuntimeContext) => Promise<void>;
-  subagents: HermesSubagentProgress[];
+  submitPrompt: (text: string) => Promise<void>;
   respondApproval: (choice: 'once' | 'session' | 'always' | 'deny') => Promise<void>;
   respondClarify: (answer: string) => Promise<void>;
   tools: GatewayToolItem[];
@@ -392,20 +359,6 @@ interface HermesActionStartResponse {
   update_command?: string;
 }
 
-interface HermesLocalActionInfo {
-  args?: string[];
-  exit_code?: null | number;
-  finished_at?: null | string;
-  lines?: string[];
-  name: string;
-  pid?: null | number;
-  running?: boolean;
-  source?: string;
-  started_at?: null | string;
-  status?: string;
-  stoppable?: boolean;
-}
-
 interface HermesUpdateCommit {
   at?: number;
   author?: string;
@@ -447,17 +400,9 @@ interface SessionRuntimeInfo {
   context_percent?: number;
   cwd?: string;
   model?: string;
-  profile?: string;
-  profile_name?: string;
   provider?: string;
   running?: boolean;
   usage?: { context_percent?: number };
-}
-
-interface ProjectRuntimeContext {
-  cwd?: string;
-  model?: string;
-  profile?: string;
 }
 
 interface HermesProfileInfo {
@@ -517,6 +462,7 @@ interface HermesCronRunInfo {
 }
 
 interface HermesMessagingPlatformInfo {
+  channel_count?: number;
   configured?: boolean;
   description?: string;
   docs_url?: string;
@@ -537,6 +483,7 @@ interface HermesMessagingPlatformInfo {
   home_channel?: null | Record<string, unknown>;
   id: string;
   name: string;
+  pairing_count?: number;
   state?: string;
   updated_at?: string;
 }
@@ -591,59 +538,6 @@ interface HermesModelOptionsInfo {
   source?: string;
 }
 
-interface HermesAuxiliaryTaskAssignment {
-  base_url?: string;
-  model?: string;
-  provider?: string;
-  task: string;
-}
-
-interface HermesAuxiliaryModelsInfo {
-  main?: { model?: string; provider?: string };
-  source?: string;
-  tasks?: HermesAuxiliaryTaskAssignment[];
-}
-
-type RuntimeToolPolicy = 'always' | 'auto' | 'custom' | 'off';
-type ImageInputMode = 'auto' | 'native' | 'text';
-type ApprovalMode = 'manual' | 'smart' | 'off';
-type ApprovalCronMode = 'deny' | 'approve';
-
-interface HermesRuntimePolicyInfo {
-  clarify_timeout?: null | number;
-  environment_probe?: boolean;
-  gateway_timeout?: null | number;
-  gateway_timeout_warning?: null | number;
-  image_input_mode?: ImageInputMode | string;
-  max_turns?: null | number;
-  source?: string;
-  task_completion_guidance?: boolean;
-  tool_use_enforcement?: RuntimeToolPolicy | string;
-  tool_use_enforcement_custom?: boolean;
-}
-
-interface HermesApprovalPolicyInfo {
-  command_allowlist?: string[];
-  cron_mode?: ApprovalCronMode | string;
-  gateway_timeout?: null | number;
-  mode?: ApprovalMode | string;
-  source?: string;
-  timeout?: null | number;
-}
-
-interface HermesEnvVarInfo {
-  advanced?: boolean;
-  category?: string;
-  description?: string;
-  is_password?: boolean;
-  is_set?: boolean;
-  prompt?: string;
-  redacted_value?: null | string;
-  source?: null | string;
-  tools?: string[];
-  url?: null | string;
-}
-
 interface HermesToolsetInfo {
   available?: boolean;
   configured?: boolean;
@@ -690,21 +584,6 @@ interface HermesMcpServerInfo {
   url?: string;
 }
 
-interface HermesFilePreviewInfo {
-  data_url?: string;
-  ext?: string;
-  kind: 'html' | 'image' | 'text' | 'unsupported';
-  mime?: string;
-  name?: string;
-  ok?: boolean;
-  path?: string;
-  requested_path?: string;
-  size?: number;
-  source?: string;
-  text?: string;
-  truncated?: boolean;
-}
-
 type OnboardingMode = 'local' | 'remote' | 'status';
 
 interface HermesOnboardingConfig {
@@ -720,12 +599,12 @@ interface HermesOnboardingConfig {
   model?: string;
   ok?: boolean;
   provider?: string;
-  remote_token_preview?: null | string;
-  remote_token_set?: boolean;
   remote_url?: string;
   source?: string;
   toolsets?: string[];
 }
+
+const pinnedSessions: SidebarItem[] = [];
 
 const recentSessions: SidebarItem[] = [];
 
@@ -737,28 +616,6 @@ const settingsSections: Array<{ id: SettingsSection; label: string; desc: string
   { id: 'appearance', label: '外观', desc: '主题、密度和字体' },
   { id: 'advanced', label: '高级', desc: '日志、诊断和实验项' },
 ];
-
-const primaryCredentialKeys = [
-  'OPENAI_API_KEY',
-  'ANTHROPIC_API_KEY',
-  'DEEPSEEK_API_KEY',
-  'OPENROUTER_API_KEY',
-  'GEMINI_API_KEY',
-] as const;
-
-const auxiliaryTaskMeta: Record<string, { hint: string; label: string }> = {
-  approval: { label: 'Approval', hint: '智能审批' },
-  compression: { label: 'Compression', hint: '上下文压缩' },
-  curator: { label: 'Curator', hint: '技能复盘' },
-  kanban_decomposer: { label: 'Kanban decomposer', hint: '任务拆解' },
-  mcp: { label: 'MCP', hint: '工具路由' },
-  profile_describer: { label: 'Profile describer', hint: '身份描述' },
-  skills_hub: { label: 'Skills hub', hint: '技能搜索' },
-  title_generation: { label: 'Title generation', hint: '会话标题' },
-  triage_specifier: { label: 'Triage specifier', hint: '任务澄清' },
-  vision: { label: 'Vision', hint: '图像分析' },
-  web_extract: { label: 'Web extract', hint: '网页摘要' },
-};
 
 const surfaceMeta: Record<Surface, { title: string; subtitle: string }> = {
   chat: {
@@ -848,35 +705,6 @@ function truncateText(text: string, maxLength = 1800) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
-async function writeClipboardText(
-  value: string,
-  apiRequest?: <T = unknown>(request: HermesApiRequest) => Promise<T>,
-) {
-  if (!value) {
-    throw new Error('没有可复制内容');
-  }
-
-  if (apiRequest) {
-    try {
-      await apiRequest({
-        body: { text: value },
-        method: 'POST',
-        path: '/api/clipboard/write',
-        timeoutMs: 5000,
-      });
-      return;
-    } catch {
-      // Browser previews and stale desktop bridges can fall back to the Web Clipboard API.
-    }
-  }
-
-  if (!navigator.clipboard?.writeText) {
-    throw new Error('当前环境无法访问剪贴板');
-  }
-
-  await navigator.clipboard.writeText(value);
-}
-
 function shortenPath(pathValue: string) {
   const value = pathValue.trim();
   if (!value) {
@@ -893,6 +721,16 @@ function shortenPath(pathValue: string) {
     return `…/${parts.slice(-2).join('/')}`;
   }
   return normalized;
+}
+
+function workspaceNameFromPath(pathValue?: null | string) {
+  const value = String(pathValue || '').trim().replace(/\/+$/, '');
+  if (!value) {
+    return '本地 Hermes';
+  }
+
+  const parts = value.split('/').filter(Boolean);
+  return parts[parts.length - 1] || value;
 }
 
 function summarizeCommand(command: string) {
@@ -946,25 +784,6 @@ function normalizeStatusText(text: string) {
   return value;
 }
 
-function shouldPromoteStatusToReasoning(rawText: string, normalizedText: string) {
-  const text = cleanDisplayText(rawText).trim();
-  const normalized = cleanDisplayText(normalizedText).trim();
-
-  if (!text || !normalized || normalized === '正在思考') {
-    return false;
-  }
-
-  if (/^(就绪|等待|回复中断|出现错误|Agent 正在生成回复|Hermes Gateway|Gateway|正在连接|已连接)/.test(normalized)) {
-    return false;
-  }
-
-  if (/^[\w\s.:/_-]{1,24}$/.test(text) && !/[，。；：！？]/.test(text)) {
-    return false;
-  }
-
-  return text.length >= 8;
-}
-
 function compactDuplicateReasoning(previous: string, incoming: string, replace = false) {
   const next = cleanDisplayText(incoming);
 
@@ -985,190 +804,6 @@ function compactDuplicateReasoning(previous: string, incoming: string, replace =
   }
 
   return `${previous}${next}`;
-}
-
-const terminalSubagentStatuses = new Set<HermesSubagentStatus>(['completed', 'failed', 'interrupted']);
-
-function subagentString(value: unknown) {
-  return typeof value === 'string' ? value : '';
-}
-
-function subagentNumber(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function subagentStringList(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-}
-
-function subagentStatus(value: unknown): HermesSubagentStatus {
-  return value === 'completed' || value === 'failed' || value === 'interrupted' || value === 'queued'
-    ? value
-    : 'running';
-}
-
-function subagentId(payload: Record<string, unknown>) {
-  return subagentString(payload.subagent_id)
-    || `${subagentString(payload.parent_id) || 'root'}:${subagentNumber(payload.task_index) ?? 0}:${subagentString(payload.goal) || 'subagent'}`;
-}
-
-function formatSubagentToolName(name: string) {
-  return name
-    .split('_')
-    .filter(Boolean)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(' ') || name;
-}
-
-function compactSubagentText(text: string, maxLength = 220) {
-  return compactLine(cleanDisplayText(text).replace(/\s+/g, ' '), maxLength);
-}
-
-function formatSubagentTool(payload: Record<string, unknown>) {
-  const name = subagentString(payload.tool_name);
-  if (!name) {
-    return '';
-  }
-
-  const preview = compactSubagentText(subagentString(payload.tool_preview) || subagentString(payload.text), 96);
-  return preview ? `${formatSubagentToolName(name)}("${preview}")` : formatSubagentToolName(name);
-}
-
-function appendSubagentStream(
-  stream: HermesSubagentStreamEntry[],
-  entry: HermesSubagentStreamEntry,
-) {
-  const last = stream[stream.length - 1];
-  if (last?.kind === entry.kind && last.text === entry.text && last.isError === entry.isError) {
-    return stream;
-  }
-
-  return [...stream, entry].slice(-24);
-}
-
-function subagentStreamFromPayload(
-  payload: Record<string, unknown>,
-  status: HermesSubagentStatus,
-  eventType: string,
-  at: number,
-) {
-  const entries: HermesSubagentStreamEntry[] = [];
-  const outputTail = Array.isArray(payload.output_tail) ? payload.output_tail : [];
-
-  outputTail.forEach((item) => {
-    if (!item || typeof item !== 'object') {
-      return;
-    }
-    const row = item as Record<string, unknown>;
-    const tool = subagentString(row.tool);
-    const preview = compactSubagentText(subagentString(row.preview));
-    const text = tool ? `${formatSubagentToolName(tool)}${preview ? `("${preview}")` : ''}` : preview;
-    if (text) {
-      entries.push({
-        at,
-        isError: row.is_error === true,
-        kind: tool ? 'tool' : 'progress',
-        text,
-      });
-    }
-  });
-
-  const toolText = formatSubagentTool(payload);
-  if (toolText) {
-    entries.push({ at, isError: Boolean(payload.error), kind: 'tool', text: toolText });
-  }
-
-  const text = compactSubagentText(subagentString(payload.text));
-  if (eventType === 'subagent.progress' && text) {
-    entries.push({ at, isError: Boolean(payload.error), kind: 'progress', text });
-  }
-  if (eventType === 'subagent.thinking' && text) {
-    entries.push({ at, kind: 'thinking', text });
-  }
-
-  const summary = compactSubagentText(subagentString(payload.summary) || subagentString(payload.text));
-  if (terminalSubagentStatuses.has(status) && summary) {
-    entries.push({ at, isError: status === 'failed', kind: 'summary', text: summary });
-  }
-
-  return entries;
-}
-
-function upsertSubagentProgress(
-  current: HermesSubagentProgress[],
-  payload: Record<string, unknown>,
-  eventType: string,
-) {
-  const id = subagentId(payload);
-  const index = current.findIndex((item) => item.id === id);
-  const previous = index >= 0 ? current[index] : undefined;
-
-  if (previous && terminalSubagentStatuses.has(previous.status)) {
-    return current;
-  }
-
-  const at = Date.now();
-  const status = subagentStatus(payload.status);
-  const filesRead = subagentStringList(payload.files_read);
-  const filesWritten = subagentStringList(payload.files_written);
-  const nextStream = subagentStreamFromPayload(payload, status, eventType, at)
-    .reduce(appendSubagentStream, previous?.stream ?? []);
-  const currentTool = terminalSubagentStatuses.has(status)
-    ? undefined
-    : subagentString(payload.tool_name) || previous?.currentTool;
-  const next: HermesSubagentProgress = {
-    costUsd: subagentNumber(payload.cost_usd) ?? previous?.costUsd,
-    currentTool,
-    durationSeconds: subagentNumber(payload.duration_seconds) ?? previous?.durationSeconds,
-    filesRead: filesRead.length > 0 ? filesRead : previous?.filesRead ?? [],
-    filesWritten: filesWritten.length > 0 ? filesWritten : previous?.filesWritten ?? [],
-    goal: subagentString(payload.goal) || previous?.goal || 'Subagent',
-    id: previous?.id ?? id,
-    inputTokens: subagentNumber(payload.input_tokens) ?? previous?.inputTokens,
-    model: subagentString(payload.model) || previous?.model,
-    outputTokens: subagentNumber(payload.output_tokens) ?? previous?.outputTokens,
-    parentId: subagentString(payload.parent_id) || previous?.parentId || null,
-    startedAt: previous?.startedAt ?? at,
-    status,
-    stream: nextStream,
-    summary: subagentString(payload.summary) || previous?.summary,
-    taskCount: subagentNumber(payload.task_count) ?? previous?.taskCount ?? 1,
-    taskIndex: subagentNumber(payload.task_index) ?? previous?.taskIndex ?? 0,
-    toolCount: subagentNumber(payload.tool_count) ?? previous?.toolCount,
-    updatedAt: at,
-  };
-
-  return index >= 0
-    ? current.map((item) => (item.id === next.id ? next : item))
-    : [...current, next];
-}
-
-function buildSubagentTree(items: readonly HermesSubagentProgress[]) {
-  const nodes = new Map<string, HermesSubagentNode>();
-  items.forEach((item) => nodes.set(item.id, { ...item, children: [] }));
-
-  const roots: HermesSubagentNode[] = [];
-  nodes.forEach((node) => {
-    const parent = node.parentId ? nodes.get(node.parentId) : null;
-    if (parent) {
-      parent.children.push(node);
-    } else {
-      roots.push(node);
-    }
-  });
-
-  const sortNodes = (a: HermesSubagentNode, b: HermesSubagentNode) =>
-    a.startedAt - b.startedAt || a.taskIndex - b.taskIndex || a.goal.localeCompare(b.goal);
-  const walk = (node: HermesSubagentNode) => {
-    node.children.sort(sortNodes);
-    node.children.forEach(walk);
-  };
-  roots.sort(sortNodes).forEach(walk);
-  return roots;
-}
-
-function activeSubagentCount(items: readonly HermesSubagentProgress[]) {
-  return items.filter((item) => item.status === 'queued' || item.status === 'running').length;
 }
 
 function slashOutputText(result: unknown) {
@@ -1221,8 +856,6 @@ function isKnownLocalSlashInput(text: string) {
 
 interface LocalSlashUiTarget {
   settingsSection?: SettingsSection;
-  skillName?: string;
-  skillQuery?: string;
   surface?: Surface;
   workbenchTab?: WorkbenchTab;
 }
@@ -1252,6 +885,7 @@ function localSlashUiTarget(command: string): LocalSlashUiTarget | null {
     '/onboarding': 'onboarding',
     '/profiles': 'profiles',
     '/projects': 'projects',
+    '/skills': 'skills',
   };
   const workbenchTargets: Partial<Record<string, WorkbenchTab>> = {
     '/activity': 'activity',
@@ -1270,14 +904,6 @@ function localSlashUiTarget(command: string): LocalSlashUiTarget | null {
 
   if (name === '/approval') {
     return { settingsSection: 'permissions', surface: 'settings' };
-  }
-
-  if (name === '/skills') {
-    return { skillQuery: query, surface: 'skills' };
-  }
-
-  if (name === '/skill') {
-    return { skillName: query, skillQuery: query, surface: 'skills' };
   }
 
   if (name === '/workbench') {
@@ -1573,112 +1199,6 @@ function maybeJsonRecord(value: unknown): Record<string, unknown> | null {
   }
 }
 
-function fileChangeFromUnknown(value: unknown): 'add' | 'mod' {
-  const text = textFromUnknown(value).toLowerCase();
-  return /(add|new|create|created|新增|创建)/.test(text) ? 'add' : 'mod';
-}
-
-function gatewayFileItemFromUnknown(
-  value: unknown,
-  fallbackMeta = '文件',
-  fallbackChange: 'add' | 'mod' = 'mod',
-): GatewayFileItem | null {
-  if (typeof value === 'string') {
-    const label = compactLine(value, 220);
-    return label ? { change: fallbackChange, label, meta: fallbackMeta } : null;
-  }
-
-  const record = maybeJsonRecord(value);
-  if (!record) {
-    return null;
-  }
-
-  const label = cleanDisplayText(textFromUnknown(
-    record.path
-      ?? record.file_path
-      ?? record.filePath
-      ?? record.filepath
-      ?? record.absolute_path
-      ?? record.output_path
-      ?? record.outputPath
-      ?? record.artifact_path
-      ?? record.artifactPath
-      ?? record.label
-      ?? record.name,
-  )).trim();
-  if (!label) {
-    const nested = record.artifact ?? record.file ?? record.preview;
-    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-      return gatewayFileItemFromUnknown(nested, fallbackMeta, fallbackChange);
-    }
-    return null;
-  }
-
-  const meta = compactLine(cleanDisplayText(textFromUnknown(
-    record.meta
-      ?? record.type
-      ?? record.kind
-      ?? record.summary
-      ?? record.description
-      ?? record.mime
-      ?? fallbackMeta,
-  )).trim() || fallbackMeta, 96);
-
-  return {
-    change: fileChangeFromUnknown(record.change ?? record.status ?? record.kind ?? fallbackChange),
-    label,
-    meta,
-  };
-}
-
-function gatewayFileItemsFromPayload(payload: Record<string, unknown>, fallbackName = '文件') {
-  const items: GatewayFileItem[] = [];
-  const collect = (value: unknown, fallbackMeta = fallbackName, fallbackChange: 'add' | 'mod' = 'mod') => {
-    if (Array.isArray(value)) {
-      value.forEach((entry) => collect(entry, fallbackMeta, fallbackChange));
-      return;
-    }
-
-    const item = gatewayFileItemFromUnknown(value, fallbackMeta, fallbackChange);
-    if (item) {
-      items.push(item);
-    }
-  };
-
-  collect(payload.files, '变更文件');
-  collect(payload.changed_files ?? payload.changedFiles, '变更文件');
-  collect(payload.artifacts, '产物', 'add');
-  collect(payload.file ?? payload.path ?? payload.file_path ?? payload.filePath, fallbackName);
-  collect(payload.output_path ?? payload.outputPath, '输出产物', 'add');
-  collect(payload.artifact ?? payload.artifact_path ?? payload.artifactPath, '产物', 'add');
-
-  if (typeof payload.inline_diff === 'string' && payload.inline_diff.trim()) {
-    items.push({ change: 'mod', label: `${fallbackName} diff`, meta: 'inline diff' });
-  }
-
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    if (seen.has(item.label)) {
-      return false;
-    }
-    seen.add(item.label);
-    return true;
-  }).slice(0, 12);
-}
-
-function mergeGatewayFiles(current: GatewayFileItem[], incoming: GatewayFileItem[]) {
-  const seen = new Set<string>();
-  return [...incoming, ...current]
-    .filter((item) => {
-      if (!item.label || seen.has(item.label)) {
-        return false;
-      }
-      seen.add(item.label);
-      return true;
-    })
-    .slice(0, 12);
-}
-
 function commandFromUnknown(value: unknown): string {
   if (typeof value === 'string') {
     return value;
@@ -1729,10 +1249,10 @@ function toolDisplayFromPayload(payload: Record<string, unknown>, fallbackName =
   const args = payload.args && typeof payload.args === 'object' ? (payload.args as Record<string, unknown>) : null;
   const command = commandFromUnknown(payload.command ?? payload.args_text ?? args?.command ?? args?.cmd ?? args);
   const output = cleanDisplayText(
-    textFromUnknown(payload.output ?? payload.stdout ?? payload.stderr ?? payload.result ?? payload.preview),
+    textFromUnknown(payload.output ?? payload.stdout ?? payload.stderr ?? payload.result ?? payload.preview ?? payload.context),
   ).trim();
   const details = [command ? `$ ${command}` : '', output].filter(Boolean).join('\n\n');
-  const summary = compactLine(summarizeCommand(command) || output || fallbackName, 72);
+  const summary = compactLine(summarizeCommand(command) || output || coerceGatewayText(payload) || fallbackName, 72);
 
   return {
     details: truncateText(details || textFromUnknown(payload), 4000),
@@ -1749,21 +1269,6 @@ function toolEventKey(payload: Record<string, unknown>, name: string, display: T
 
   const firstDetail = compactLine(display.details, 80);
   return `${name}:${display.label}:${firstDetail || display.summary}`;
-}
-
-function firstExistingMessageIndex(messages: ChatMessageModel[], ids: Array<null | string | undefined>) {
-  for (const id of ids) {
-    if (!id) {
-      continue;
-    }
-
-    const index = messages.findIndex((message) => message.id === id);
-    if (index >= 0) {
-      return index;
-    }
-  }
-
-  return -1;
 }
 
 function toolGroupMessage(
@@ -1812,27 +1317,6 @@ function normalizeModel(info?: SessionRuntimeInfo) {
 function contextPercentFromInfo(info?: SessionRuntimeInfo) {
   const value = info?.usage?.context_percent ?? info?.context_percent;
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null;
-}
-
-function normalizeProjectRuntimeContext(context?: ProjectRuntimeContext): ProjectRuntimeContext {
-  const next: ProjectRuntimeContext = {};
-  const cwd = String(context?.cwd || '').trim();
-  const model = String(context?.model || '').trim();
-  const profile = String(context?.profile || '').trim();
-
-  if (cwd) {
-    next.cwd = cwd;
-  }
-
-  if (model) {
-    next.model = model;
-  }
-
-  if (profile) {
-    next.profile = profile;
-  }
-
-  return next;
 }
 
 function compactCwd(cwd?: null | string) {
@@ -1910,6 +1394,7 @@ function sessionsToSidebarItems(response: SessionListResponse): SidebarItem[] {
 
   return sessions.slice(0, 12).map((session, index) => ({
     color: index === 0 ? 'blue' : 'gray',
+    cwd: session.cwd || null,
     id: session.id,
     meta: `${session.message_count ?? 0} 条消息 · ${formatSessionTime(session.last_active)}`,
     title: sessionDisplayTitle(session),
@@ -1926,6 +1411,7 @@ function promoteSidebarItem(items: SidebarItem[], sessionId: null | string, titl
   const nextMeta = existing?.meta?.replace(/·\s*[^·]+$/, '· 刚刚') || '进行中 · 刚刚';
   const promoted: SidebarItem = {
     color: 'blue',
+    cwd: existing?.cwd,
     id: sessionId,
     meta: nextMeta,
     title: nextTitle,
@@ -1937,6 +1423,11 @@ function promoteSidebarItem(items: SidebarItem[], sessionId: null | string, titl
       .filter((item) => item.id !== sessionId)
       .map((item) => ({ ...item, color: item.color === 'blue' ? 'gray' : item.color })),
   ].slice(0, 5);
+}
+
+function isMissingSessionError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(not found|no such|missing|404|不存在|未找到)/i.test(message);
 }
 
 function messagesFromStoredTranscript(messages: SessionMessageResponse[], sessionId?: null | string): ChatMessageModel[] {
@@ -2006,7 +1497,6 @@ function useHermesRuntime(): HermesRuntime {
   const [recentSessionItems, setRecentSessionItems] = useState<SidebarItem[]>(recentSessions);
   const [tools, setTools] = useState<GatewayToolItem[]>(fallbackTools);
   const [files, setFiles] = useState<GatewayFileItem[]>(fallbackFiles);
-  const [subagents, setSubagents] = useState<HermesSubagentProgress[]>([]);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [pendingClarify, setPendingClarify] = useState<PendingClarify | null>(null);
 
@@ -2020,7 +1510,6 @@ function useHermesRuntime(): HermesRuntime {
   const ignoredSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingApprovalRef = useRef<PendingApproval | null>(null);
   const pendingClarifyRef = useRef<PendingClarify | null>(null);
-  const projectContextRef = useRef<ProjectRuntimeContext>({});
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -2041,51 +1530,18 @@ function useHermesRuntime(): HermesRuntime {
   const patchRuntimeInfo = useCallback((info?: SessionRuntimeInfo) => {
     const nextModel = normalizeModel(info);
     const nextPercent = contextPercentFromInfo(info);
-    const nextProjectContext = normalizeProjectRuntimeContext({
-      cwd: info?.cwd,
-      model: nextModel || undefined,
-      profile: info?.profile_name || info?.profile,
-    });
 
     if (nextModel) {
       setModel(nextModel);
     }
 
     if (info?.cwd) {
-      setCwd(info.cwd);
+      setCwd(compactCwd(info.cwd));
     }
 
     if (nextPercent !== null) {
       setContextPercent(nextPercent);
     }
-
-    projectContextRef.current = {
-      ...projectContextRef.current,
-      ...nextProjectContext,
-    };
-  }, []);
-
-  const applyProjectContext = useCallback((context: ProjectRuntimeContext) => {
-    const nextContext = normalizeProjectRuntimeContext(context);
-    projectContextRef.current = {
-      ...projectContextRef.current,
-      ...nextContext,
-    };
-
-    if (nextContext.cwd) {
-      setCwd(nextContext.cwd);
-    }
-
-    if (nextContext.model) {
-      setModel(nextContext.model);
-    }
-
-    const summary = [
-      nextContext.cwd ? shortenPath(nextContext.cwd) : '',
-      nextContext.model || '',
-      nextContext.profile ? `profile ${nextContext.profile}` : '',
-    ].filter(Boolean).join(' · ');
-    setStatusText(summary ? `项目上下文已应用：${summary}` : '项目上下文已应用');
   }, []);
 
   const refreshInventory = useCallback(async () => {
@@ -2117,9 +1573,7 @@ function useHermesRuntime(): HermesRuntime {
       timeoutMs: 12000,
     });
     const nextItems = sessionsToSidebarItems(response);
-    if (nextItems.length > 0) {
-      setRecentSessionItems(nextItems);
-    }
+    setRecentSessionItems(nextItems);
   }, [apiRequest]);
 
   const upsertMessage = useCallback((message: ChatMessageModel, options: { beforeId?: null | string; moveToEnd?: boolean } = {}) => {
@@ -2210,54 +1664,8 @@ function useHermesRuntime(): HermesRuntime {
     [upsertMessage],
   );
 
-  const appendReasoningPhase = useCallback(
-    (
-      text: string,
-      sessionId?: null | string,
-      options: { replace?: boolean } = {},
-    ) => {
-      const displayText = cleanDisplayText(text).trim();
-      if (!displayText) {
-        return;
-      }
-
-      const id = reasoningMessageIdRef.current || makeId('reasoning');
-      reasoningMessageIdRef.current = id;
-      updateStatusMessage('正在思考', 'running');
-
-      setMessages((current) => {
-        const index = current.findIndex((item) => item.id === id);
-        const existing = index >= 0 ? current[index] : null;
-        const nextText = compactDuplicateReasoning(existing?.text ?? '', displayText, options.replace);
-        const message: ChatMessageModel = {
-          ...(existing ?? {}),
-          id,
-          kind: 'reasoning',
-          sessionId,
-          status: 'done',
-          text: nextText,
-          title: '思考过程',
-        };
-        const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
-        const beforeIndex = firstExistingMessageIndex(next, [
-          toolDigestMessageIdRef.current,
-          statusMessageIdRef.current,
-          assistantMessageIdRef.current,
-        ]);
-        next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
-        return next;
-      });
-    },
-    [updateStatusMessage],
-  );
-
   const appendToolDigest = useCallback(
-    (
-      info: ToolDisplayInfo,
-      sessionId?: null | string,
-      toolName?: string,
-      status: ChatMessageModel['status'] = 'done',
-    ) => {
+    (info: ToolDisplayInfo, sessionId?: null | string, toolName?: string) => {
       if (!info.summary) {
         return;
       }
@@ -2271,11 +1679,7 @@ function useHermesRuntime(): HermesRuntime {
         const currentLines = existing?.text ? existing.text.split('\n').filter(Boolean) : [];
         const nextLine = `• ${info.summary}`;
         const text = currentLines.includes(nextLine) ? currentLines.join('\n') : [...currentLines, nextLine].slice(-6).join('\n');
-        const nextDetail = info.details || info.summary;
-        const detailParts = (existing?.details ? existing.details.split('\n\n---\n\n') : []).filter(Boolean);
-        const details = nextDetail && !detailParts.includes(nextDetail)
-          ? [...detailParts, nextDetail].join('\n\n---\n\n')
-          : detailParts.join('\n\n---\n\n');
+        const details = [existing?.details, info.details || info.summary].filter(Boolean).join('\n\n---\n\n');
         const message: ChatMessageModel = {
           ...(existing ?? {}),
           details,
@@ -2283,13 +1687,14 @@ function useHermesRuntime(): HermesRuntime {
           kind: 'tool',
           meta: '已折叠',
           sessionId,
-          status,
+          status: 'done',
           text,
           title: '工具调用',
           toolName,
         };
         const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
-        const beforeIndex = firstExistingMessageIndex(next, [statusMessageIdRef.current, assistantMessageIdRef.current]);
+        const beforeId = assistantMessageIdRef.current;
+        const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
         next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
         return next;
       });
@@ -2323,7 +1728,6 @@ function useHermesRuntime(): HermesRuntime {
     setPendingClarify(null);
     setTools([]);
     setFiles([]);
-    setSubagents([]);
     setContextPercent(0);
 
     if (clearMessages) {
@@ -2334,6 +1738,22 @@ function useHermesRuntime(): HermesRuntime {
       setStatusText(nextStatusText);
     }
   }, []);
+
+  const removeRecentSessions = useCallback((sessionIds: string[], nextStatusText = '会话列表已更新') => {
+    const idSet = new Set(sessionIds.map((id) => id.trim()).filter(Boolean));
+    if (idSet.size === 0) {
+      return;
+    }
+
+    setRecentSessionItems((current) => current.filter((row) => !row.id || !idSet.has(row.id)));
+
+    if (selectedStoredSessionIdRef.current && idSet.has(selectedStoredSessionIdRef.current)) {
+      clearConversationRuntime({ clearSelection: true, statusText: nextStatusText });
+      return;
+    }
+
+    setStatusText(nextStatusText);
+  }, [clearConversationRuntime]);
 
   const resumeRuntimeSession = useCallback(
     async (
@@ -2435,17 +1855,13 @@ function useHermesRuntime(): HermesRuntime {
         case 'message.complete': {
           const finalText = coerceGatewayText(payload);
           const id = assistantMessageIdRef.current || makeId('assistant');
-          const statusId = statusMessageIdRef.current;
 
           setMessages((current) => {
-            const withoutActiveStatus = statusId
-              ? current.filter((item) => item.id !== statusId)
-              : current;
-            const index = withoutActiveStatus.findIndex((item) => item.id === id);
+            const index = current.findIndex((item) => item.id === id);
             if (index === -1) {
               return finalText
                 ? [
-                    ...withoutActiveStatus,
+                    ...current,
                     {
                       id,
                       kind: 'assistant',
@@ -2455,10 +1871,10 @@ function useHermesRuntime(): HermesRuntime {
                       title: '最终结果',
                     },
                   ]
-                : withoutActiveStatus;
+                : current;
             }
 
-            const next = [...withoutActiveStatus];
+            const next = [...current];
             next[index] = {
               ...next[index],
               status: payload.status === 'error' ? 'error' : 'done',
@@ -2471,26 +1887,13 @@ function useHermesRuntime(): HermesRuntime {
           });
 
           assistantMessageIdRef.current = null;
-          statusMessageIdRef.current = null;
           setStatusText(payload.status === 'error' ? '回复中断' : '就绪');
           break;
         }
         case 'thinking.delta':
         case 'status.update': {
-          const rawText = coerceGatewayText(payload, { trim: false }) || textFromUnknown(payload.kind);
-          const text = normalizeStatusText(rawText);
-          if (!text) {
-            break;
-          }
-
-          if (shouldPromoteStatusToReasoning(rawText, text)) {
-            appendReasoningPhase(rawText, sessionId);
-            break;
-          }
-
-          if (text === '正在思考') {
-            updateStatusMessage(text, 'running');
-          } else {
+          const text = normalizeStatusText(coerceGatewayText(payload) || textFromUnknown(payload.kind));
+          if (text) {
             setStatusText(text);
           }
           break;
@@ -2502,7 +1905,49 @@ function useHermesRuntime(): HermesRuntime {
             break;
           }
 
-          appendReasoningPhase(delta, sessionId, { replace: event.type === 'reasoning.available' });
+          const id = reasoningMessageIdRef.current || makeId('reasoning');
+          reasoningMessageIdRef.current = id;
+
+          if (event.type === 'reasoning.available') {
+            setMessages((current) => {
+              const index = current.findIndex((item) => item.id === id);
+              const existing = index >= 0 ? current[index] : null;
+              const message: ChatMessageModel = {
+                ...(existing ?? {}),
+                id,
+                kind: 'reasoning',
+                sessionId,
+                status: 'done',
+                text: compactDuplicateReasoning(existing?.text ?? '', delta, true),
+                title: '推理过程',
+              };
+              const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
+              const beforeId = assistantMessageIdRef.current;
+              const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+              next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
+              return next;
+            });
+            break;
+          }
+
+          setMessages((current) => {
+            const index = current.findIndex((item) => item.id === id);
+            const existing = index >= 0 ? current[index] : null;
+            const message: ChatMessageModel = {
+              ...(existing ?? {}),
+              id,
+              kind: 'reasoning',
+              sessionId,
+              status: 'running',
+              text: existing?.text ?? '',
+              title: '推理过程',
+            };
+            const next = index >= 0 ? current.filter((_, itemIndex) => itemIndex !== index) : [...current];
+            const beforeId = assistantMessageIdRef.current;
+            const beforeIndex = beforeId ? next.findIndex((item) => item.id === beforeId) : -1;
+            next.splice(beforeIndex >= 0 ? beforeIndex : next.length, 0, message);
+            return next;
+          });
           break;
         }
         case 'tool.generating':
@@ -2519,7 +1964,6 @@ function useHermesRuntime(): HermesRuntime {
             const index = current.findIndex((item) => item.id === toolId || item.detail === text);
             const item: GatewayToolItem = {
               detail: text,
-              details: display.details,
               id: toolId,
               label: display.label,
               state: isComplete ? 'done' : 'running',
@@ -2539,35 +1983,15 @@ function useHermesRuntime(): HermesRuntime {
             return next;
           });
 
-          appendToolDigest(display, sessionId, name, isComplete ? 'done' : 'running');
-
           if (isComplete) {
-            const nextFiles = gatewayFileItemsFromPayload(payload, name);
-            if (nextFiles.length > 0) {
-              setFiles((current) => mergeGatewayFiles(current, nextFiles));
-            }
+            appendToolDigest(display, sessionId, name);
           }
-          break;
-        }
-        case 'subagent.spawn_requested':
-        case 'subagent.start':
-        case 'subagent.progress':
-        case 'subagent.thinking':
-        case 'subagent.tool':
-        case 'subagent.complete': {
-          setSubagents((current) => upsertSubagentProgress(current, payload, event.type));
-          break;
-        }
-        case 'file.changed':
-        case 'file.created':
-        case 'file.updated':
-        case 'files.changed':
-        case 'artifact.created':
-        case 'artifact.ready':
-        case 'preview.ready': {
-          const nextFiles = gatewayFileItemsFromPayload(payload, event.type);
-          if (nextFiles.length > 0) {
-            setFiles((current) => mergeGatewayFiles(current, nextFiles));
+
+          if (typeof payload.inline_diff === 'string' && payload.inline_diff.trim()) {
+            setFiles((current) => [
+              { change: 'mod', label: `${name} diff`, meta: 'inline' },
+              ...current.filter((item) => item.label !== `${name} diff`),
+            ]);
           }
           break;
         }
@@ -2633,20 +2057,8 @@ function useHermesRuntime(): HermesRuntime {
           break;
       }
     },
-    [appendReasoningPhase, appendToMessage, appendToolDigest, patchRuntimeInfo, updateStatusMessage, upsertMessage],
+    [appendToMessage, appendToolDigest, patchRuntimeInfo, upsertMessage],
   );
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (!params.has('smoke') && gatewayStatus !== 'skipped' && gatewayStatus !== 'browser') {
-      return undefined;
-    }
-
-    window.__beautyHermesInjectGatewayEvent = handleGatewayEvent;
-    return () => {
-      delete window.__beautyHermesInjectGatewayEvent;
-    };
-  }, [gatewayStatus, handleGatewayEvent]);
 
   const connectGateway = useCallback(async () => {
     if (!window.hermesDesktop) {
@@ -2846,28 +2258,13 @@ function useHermesRuntime(): HermesRuntime {
   );
 
   const ensureRuntimeSession = useCallback(
-    async (client: JsonRpcGatewayClient, title?: string, context?: ProjectRuntimeContext) => {
+    async (client: JsonRpcGatewayClient, title?: string) => {
       const currentSessionId = activeSessionIdRef.current;
       if (currentSessionId) {
         return currentSessionId;
       }
 
-      const sessionContext = normalizeProjectRuntimeContext({
-        ...projectContextRef.current,
-        ...context,
-      });
-      const createParams: Record<string, unknown> = { cols: 96, title: title || '' };
-      if (sessionContext.cwd) {
-        createParams.cwd = sessionContext.cwd;
-      }
-      if (sessionContext.model) {
-        createParams.model = sessionContext.model;
-      }
-      if (sessionContext.profile) {
-        createParams.profile = sessionContext.profile;
-      }
-
-      const created = await client.request<SessionCreateResponse>('session.create', createParams, 60000);
+      const created = await client.request<SessionCreateResponse>('session.create', { cols: 96, title: title || '' }, 60000);
       const sessionId = created.session_id;
       const storedId = created.stored_session_id || created.session_id;
       setActiveSessionId(sessionId);
@@ -2947,44 +2344,78 @@ function useHermesRuntime(): HermesRuntime {
         await client.request('session.close', { session_id: activeRuntimeId }, 15000).catch(() => undefined);
       }
 
-      await window.hermesDesktop.api({
-        method: 'DELETE',
-        path: `/api/sessions/${encodeURIComponent(item.id)}`,
-        timeoutMs: 30000,
-      });
-      setRecentSessionItems((current) => current.filter((row) => row.id !== item.id));
-      if (wasSelected) {
-        clearConversationRuntime({ clearSelection: true, statusText: '会话已删除' });
-      } else {
-        setStatusText('会话已删除');
+      try {
+        await window.hermesDesktop.api({
+          method: 'DELETE',
+          path: `/api/sessions/${encodeURIComponent(item.id)}`,
+          timeoutMs: 30000,
+        });
+      } catch (error) {
+        if (!isMissingSessionError(error)) {
+          throw error;
+        }
       }
+      removeRecentSessions([item.id], wasSelected ? '会话已删除' : '会话已删除');
       void refreshSessionList().catch((error) => {
         setLogs((current) => [`Session refresh error: ${error instanceof Error ? error.message : String(error)}`, ...current].slice(0, 120));
       });
       void refreshInventory();
     },
-    [clearConversationRuntime, refreshInventory, refreshSessionList],
+    [refreshInventory, refreshSessionList, removeRecentSessions],
+  );
+
+  const deleteSessions = useCallback(
+    async (sessionIds: string[]) => {
+      if (!window.hermesDesktop?.api) {
+        throw new Error('桌面 IPC 不可用，无法删除真实会话。');
+      }
+
+      const ids = [...new Set(sessionIds.map((id) => id.trim()).filter(Boolean))];
+      if (ids.length === 0) {
+        return 0;
+      }
+
+      const idSet = new Set(ids);
+      const activeRuntimeId = activeSessionIdRef.current;
+      const client = clientRef.current;
+      const deletingSelected = Boolean(selectedStoredSessionIdRef.current && idSet.has(selectedStoredSessionIdRef.current));
+      if (deletingSelected && activeRuntimeId) {
+        ignoredSessionIdsRef.current.add(activeRuntimeId);
+      }
+      if (deletingSelected && activeRuntimeId && client?.connectionState === 'open') {
+        await client.request('session.close', { session_id: activeRuntimeId }, 15000).catch(() => undefined);
+      }
+
+      let deleted = ids.length;
+      try {
+        const result = await window.hermesDesktop.api<{ deleted?: number }>({
+          body: { ids },
+          method: 'POST',
+          path: '/api/sessions/bulk-delete',
+          timeoutMs: 30000,
+        });
+        deleted = result.deleted ?? ids.length;
+      } catch (error) {
+        if (!isMissingSessionError(error)) {
+          throw error;
+        }
+      }
+
+      removeRecentSessions(ids, deletingSelected ? '会话已删除' : '会话列表已更新');
+      void refreshSessionList().catch((error) => {
+        setLogs((current) => [`Session refresh error: ${error instanceof Error ? error.message : String(error)}`, ...current].slice(0, 120));
+      });
+      void refreshInventory();
+      return deleted;
+    },
+    [refreshInventory, refreshSessionList, removeRecentSessions],
   );
 
   const submitPrompt = useCallback(
-    async (text: string, options?: ProjectRuntimeContext) => {
+    async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) {
         return;
-      }
-      const promptContext = normalizeProjectRuntimeContext({
-        ...projectContextRef.current,
-        ...options,
-      });
-      const effectiveCwd = promptContext.cwd || cwd;
-      const effectiveModel = promptContext.model || model;
-
-      if (promptContext.cwd && promptContext.cwd !== cwd) {
-        setCwd(promptContext.cwd);
-      }
-
-      if (promptContext.model && promptContext.model !== model) {
-        setModel(promptContext.model);
       }
 
       upsertMessage({
@@ -2997,18 +2428,17 @@ function useHermesRuntime(): HermesRuntime {
         const localResponse = buildLocalSlashResponse(trimmed, {
           connection,
           contextPercent,
-          cwd: effectiveCwd,
+          cwd,
           files,
           gatewayStatus,
           inventory,
           inventoryError,
           messages,
-          model: effectiveModel,
+          model,
           pendingApproval,
           recentSessions: recentSessionItems,
           socketState,
           statusText,
-          subagents,
           tools,
         });
 
@@ -3041,7 +2471,7 @@ function useHermesRuntime(): HermesRuntime {
       setStatusText('正在提交消息');
 
       try {
-        sessionId = await ensureRuntimeSession(client, trimmed, promptContext);
+        sessionId = await ensureRuntimeSession(client, trimmed);
 
         if (trimmed.startsWith('/')) {
           const result = await client.request('slash.exec', { command: trimmed, session_id: sessionId }, 90000);
@@ -3228,13 +2658,13 @@ function useHermesRuntime(): HermesRuntime {
   return {
     activeSessionId,
     apiRequest,
-    applyProjectContext,
     archiveSession,
     connection,
     connectionLabel,
     contextPercent,
     cwd,
     deleteSession,
+    deleteSessions,
     files,
     gatewayStatus,
     inventory,
@@ -3246,6 +2676,7 @@ function useHermesRuntime(): HermesRuntime {
     pendingClarify,
     recentSessions: recentSessionItems,
     refreshInventory,
+    removeRecentSessions,
     restartGateway,
     selectedStoredSessionId,
     selectSession,
@@ -3257,112 +2688,58 @@ function useHermesRuntime(): HermesRuntime {
     socketState,
     statusText,
     submitPrompt,
-    subagents,
     tools,
   };
 }
 
-function projectSidebarItems(runtime: HermesRuntime, selectedProjectKey: string): SidebarItem[] {
-  const cwdLabel = runtime.cwd ? shortenPath(runtime.cwd) : '未选择目录';
-  const sessionCount = runtime.recentSessions.length;
+function projectSidebarGroups(runtime: HermesRuntime): SidebarProjectGroup[] {
+  const groups = new Map<string, SidebarProjectGroup>();
+  const fallbackCwd = runtime.cwd && runtime.cwd !== 'Hermes Desktop优化' ? runtime.cwd : '';
 
-  return [
-    {
-      active: selectedProjectKey === 'project:local',
+  runtime.recentSessions.forEach((session) => {
+    const cwd = session.cwd || fallbackCwd;
+    const key = cwd || 'local-hermes';
+    const existing = groups.get(key);
+    const nextSession: SidebarItem = {
+      ...session,
+      color: session.color || 'blue',
+      cwd,
+    };
+
+    if (existing) {
+      existing.items.push(nextSession);
+      existing.meta = `${existing.items.length} 个对话 · ${cwd ? shortenPath(cwd) : runtime.connectionLabel}`;
+      return;
+    }
+
+    groups.set(key, {
       color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : 'gray',
-      meta: `${runtime.connectionLabel} · ${cwdLabel}`,
-      projectKey: 'project:local',
-      title: '本地 Hermes',
-    },
-    {
-      active: selectedProjectKey === 'project:sessions',
-      color: sessionCount > 0 ? 'blue' : 'gray',
-      meta: sessionCount > 0 ? `${sessionCount} 个最近会话` : '等待真实会话',
-      projectKey: 'project:sessions',
-      title: '会话',
-    },
-    {
-      active: selectedProjectKey === 'project:configs',
-      color: 'green',
-      meta: '目录、模型与启动提示',
-      projectKey: 'project:configs',
-      title: '项目档案',
-    },
-  ];
+      items: [nextSession],
+      key,
+      meta: `1 个对话 · ${cwd ? shortenPath(cwd) : runtime.connectionLabel}`,
+      title: workspaceNameFromPath(cwd),
+    });
+  });
+
+  if (groups.size === 0) {
+    const cwdLabel = runtime.cwd ? shortenPath(runtime.cwd) : '未选择目录';
+    return [
+      {
+        active: true,
+        color: runtime.gatewayStatus === 'connected' ? 'indigo' : runtime.gatewayStatus === 'error' ? 'red' : 'gray',
+        items: [],
+        key: 'local-hermes',
+        meta: `${runtime.connectionLabel} · ${cwdLabel}`,
+        title: '本地 Hermes',
+      },
+    ];
+  }
+
+  return [...groups.values()].slice(0, 5);
 }
 
 function sidebarItemKey(item: SidebarItem) {
-  return item.id || item.projectKey || item.title;
-}
-
-function normalizeProjectConfig(value: unknown): HermesProjectConfig | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const record = value as Partial<HermesProjectConfig>;
-  const name = String(record.name || '').trim();
-  const id = String(record.id || '').trim() || makeId('project');
-  if (!name) {
-    return null;
-  }
-
-  return {
-    id,
-    model: String(record.model || '').trim(),
-    name,
-    notes: String(record.notes || '').trim(),
-    path: String(record.path || '').trim(),
-    profile: String(record.profile || '').trim(),
-    updatedAt: Number(record.updatedAt || Date.now()),
-  };
-}
-
-function readStoredProjects(): HermesProjectConfig[] {
-  if (typeof window === 'undefined') {
-    return [];
-  }
-
-  try {
-    const raw = window.localStorage.getItem(preferenceStorageKeys.projects);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.map(normalizeProjectConfig).filter((item): item is HermesProjectConfig => Boolean(item));
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredProjects(projects: HermesProjectConfig[]) {
-  try {
-    window.localStorage.setItem(preferenceStorageKeys.projects, JSON.stringify(projects));
-  } catch {
-    // Project persistence is a GUI convenience and should not block core chat.
-  }
-}
-
-function readStoredPinnedSessionIds(): string[] {
-  if (typeof window === 'undefined') {
-    return [];
-  }
-
-  try {
-    const raw = window.localStorage.getItem(preferenceStorageKeys.pinnedSessions);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-      : [];
-  } catch {
-    return [];
-  }
+  return item.id || item.title;
 }
 
 function readStoredDensity(): UiDensity {
@@ -3403,7 +2780,6 @@ function App() {
   const runtime = useHermesRuntime();
   const [surface, setSurface] = useState<Surface>('chat');
   const [rightOpen, setRightOpen] = useState(true);
-  const [rightRailWidth, setRightRailWidth] = useState(defaultRightRailWidth);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('activity');
   const [uiDensity, setUiDensity] = useState<UiDensity>(readStoredDensity);
   const [uiTheme, setUiTheme] = useState<UiTheme>(readStoredTheme);
@@ -3415,11 +2791,8 @@ function App() {
   const [deniedRecovery, setDeniedRecovery] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [hiddenSidebarKeys, setHiddenSidebarKeys] = useState<string[]>([]);
-  const [pinnedSessionIds, setPinnedSessionIds] = useState<string[]>(readStoredPinnedSessionIds);
   const [pendingSidebarDeleteKey, setPendingSidebarDeleteKey] = useState('');
   const [selectingSessionId, setSelectingSessionId] = useState('');
-  const [selectedProjectKey, setSelectedProjectKey] = useState('project:local');
-  const [skillDeepLink, setSkillDeepLink] = useState<SkillDeepLink>({ nonce: 0, query: '', skillName: '' });
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
@@ -3429,20 +2802,6 @@ function App() {
   useEffect(() => {
     writeStoredPreference(preferenceStorageKeys.theme, uiTheme);
   }, [uiTheme]);
-
-  useEffect(() => {
-    writeStoredPreference(preferenceStorageKeys.pinnedSessions, JSON.stringify(pinnedSessionIds));
-  }, [pinnedSessionIds]);
-
-  useEffect(() => {
-    const clampForViewport = () => {
-      setRightRailWidth((width) => clampRightRailWidth(width, uiDensity));
-    };
-
-    clampForViewport();
-    window.addEventListener('resize', clampForViewport);
-    return () => window.removeEventListener('resize', clampForViewport);
-  }, [uiDensity]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3482,50 +2841,6 @@ function App() {
   const showNotice = useCallback((message: string) => {
     setNotice(message);
   }, []);
-  const shellStyle = useMemo(() => ({
-    '--right-rail-width': `${rightRailWidth}px`,
-  }) as CSSProperties, [rightRailWidth]);
-  const handleWorkbenchResizeStart = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    const target = event.currentTarget;
-    const pointerId = event.pointerId;
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-
-    try {
-      target.setPointerCapture(pointerId);
-    } catch {
-      // Pointer capture is best-effort; window listeners still drive resizing.
-    }
-
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
-    const updateWidth = (clientX: number) => {
-      setRightRailWidth(clampRightRailWidth(window.innerWidth - clientX, uiDensity));
-    };
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      updateWidth(moveEvent.clientX);
-    };
-    const stopResize = () => {
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', stopResize);
-      window.removeEventListener('pointercancel', stopResize);
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-
-      try {
-        target.releasePointerCapture(pointerId);
-      } catch {
-        // The pointer may already be released if the window lost focus.
-      }
-    };
-
-    updateWidth(event.clientX);
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', stopResize, { once: true });
-    window.addEventListener('pointercancel', stopResize, { once: true });
-  }, [uiDensity]);
 
   const chatTitle = useMemo(() => {
     if (!runtime.selectedStoredSessionId) {
@@ -3535,21 +2850,19 @@ function App() {
     return runtime.recentSessions.find((item) => item.id === runtime.selectedStoredSessionId)?.title || surfaceMeta.chat.title;
   }, [runtime.recentSessions, runtime.selectedStoredSessionId]);
   const currentMeta = surface === 'chat' ? { ...surfaceMeta.chat, title: chatTitle } : surfaceMeta[surface];
-  const projectItems = useMemo(() => projectSidebarItems(runtime, selectedProjectKey), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions, selectedProjectKey]);
-  const pinnedRecentItems = useMemo(
-    () => pinnedSessionIds
-      .map((id) => runtime.recentSessions.find((item) => item.id === id))
-      .filter((item): item is SidebarItem => Boolean(item))
-      .filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
-    [hiddenSidebarKeys, pinnedSessionIds, runtime.recentSessions],
-  );
+  const projectGroups = useMemo(() => projectSidebarGroups(runtime), [runtime.connectionLabel, runtime.cwd, runtime.gatewayStatus, runtime.recentSessions]);
   const visibleRecentItems = useMemo(
-    () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item)) && (!item.id || !pinnedSessionIds.includes(item.id))),
-    [hiddenSidebarKeys, pinnedSessionIds, runtime.recentSessions],
+    () => runtime.recentSessions.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
+    [hiddenSidebarKeys, runtime.recentSessions],
   );
-  const visibleProjectItems = useMemo(
-    () => projectItems.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
-    [hiddenSidebarKeys, projectItems],
+  const visibleProjectGroups = useMemo(
+    () => projectGroups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) => !hiddenSidebarKeys.includes(sidebarItemKey(item))),
+      }))
+      .filter((group) => !hiddenSidebarKeys.includes(group.key)),
+    [hiddenSidebarKeys, projectGroups],
   );
   const showWorkbench = surface === 'chat';
   const hideSidebarItem = useCallback((item: SidebarItem) => {
@@ -3557,18 +2870,6 @@ function App() {
     setHiddenSidebarKeys((current) => current.includes(key) ? current : [...current, key]);
     showNotice(`${item.title} 已隐藏`);
   }, [showNotice]);
-  const handleTogglePinItem = useCallback((item: SidebarItem) => {
-    if (!item.id) {
-      showNotice('只有真实会话可以置顶');
-      return;
-    }
-
-    setPinnedSessionIds((current) => {
-      const pinned = current.includes(item.id!);
-      return pinned ? current.filter((id) => id !== item.id) : [item.id!, ...current].slice(0, 8);
-    });
-    showNotice(`${item.title} ${pinnedSessionIds.includes(item.id) ? '已取消置顶' : '已置顶'}`);
-  }, [pinnedSessionIds, showNotice]);
   const handleArchiveItem = useCallback((item: SidebarItem) => {
     if (!item.id) {
       hideSidebarItem(item);
@@ -3576,10 +2877,7 @@ function App() {
     }
 
     void runtime.archiveSession(item)
-      .then(() => {
-        setPinnedSessionIds((current) => current.filter((id) => id !== item.id));
-        showNotice(`${item.title} 已归档`);
-      })
+      .then(() => showNotice(`${item.title} 已归档`))
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         showNotice(`归档失败：${message}`);
@@ -3600,10 +2898,7 @@ function App() {
     }
 
     void runtime.deleteSession(item)
-      .then(() => {
-        setPinnedSessionIds((current) => current.filter((id) => id !== item.id));
-        showNotice(`${item.title} 已删除`);
-      })
+      .then(() => showNotice(`${item.title} 已删除`))
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         showNotice(`删除失败：${message}`);
@@ -3623,44 +2918,19 @@ function App() {
       })
       .finally(() => setSelectingSessionId(''));
   }, [runtime, showNotice]);
-  const handleStartNewTask = useCallback(async () => {
+  const handleStartNewTask = useCallback(() => {
     setSurface('chat');
     setRightOpen(true);
     setPendingSidebarDeleteKey('');
     setSelectingSessionId('');
 
-    try {
-      await runtime.startNewTask();
-      showNotice('已开始新任务');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      showNotice(`新建任务失败：${message}`);
-      throw error;
-    }
+    void runtime.startNewTask()
+      .then(() => showNotice('已开始新任务'))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        showNotice(`新建任务失败：${message}`);
+      });
   }, [runtime, showNotice]);
-  const handleOpenProjects = useCallback((projectKey = 'project:local') => {
-    setSelectedProjectKey(projectKey);
-    setSurface('projects');
-  }, []);
-  const handleOpenSkills = useCallback((query = '', skillName = '') => {
-    setSkillDeepLink((current) => ({
-      nonce: current.nonce + 1,
-      query,
-      skillName,
-    }));
-    setSurface('skills');
-  }, []);
-  const handleSurfaceChange = useCallback((nextSurface: Surface) => {
-    if (nextSurface === 'projects') {
-      handleOpenProjects();
-      return;
-    }
-    if (nextSurface === 'skills') {
-      handleOpenSkills();
-      return;
-    }
-    setSurface(nextSurface);
-  }, [handleOpenProjects, handleOpenSkills]);
 
   return (
     <div
@@ -3668,7 +2938,6 @@ function App() {
       data-density={uiDensity}
       data-testid="app-shell"
       data-theme={uiTheme}
-      style={shellStyle}
     >
       <Sidebar
         activeSessionId={runtime.activeSessionId}
@@ -3676,8 +2945,7 @@ function App() {
         gatewayStatus={runtime.gatewayStatus}
         model={runtime.model}
         onNewTask={handleStartNewTask}
-        onOpenProjects={handleOpenProjects}
-        onSurfaceChange={handleSurfaceChange}
+        onSurfaceChange={setSurface}
         onOpenCommand={() => setCommandOpen(true)}
         onSelectSession={handleSelectSession}
         onArchiveItem={handleArchiveItem}
@@ -3686,15 +2954,12 @@ function App() {
           setCommandQuery(item.title);
           setCommandOpen(true);
         }}
-        pendingDeleteKey={pendingSidebarDeleteKey}
-        pinnedItems={pinnedRecentItems}
-        pinnedSessionIds={pinnedSessionIds}
-        projectItems={visibleProjectItems}
         recentItems={visibleRecentItems}
+        projectGroups={visibleProjectGroups}
+        pendingDeleteKey={pendingSidebarDeleteKey}
         selectedStoredSessionId={runtime.selectedStoredSessionId}
         selectingSessionId={selectingSessionId}
         statusText={runtime.connectionLabel}
-        onTogglePinItem={handleTogglePinItem}
       />
 
       <main className={rightOpen && showWorkbench ? 'content withWorkbench' : 'content'}>
@@ -3742,9 +3007,8 @@ function App() {
             runtime={runtime}
             setAttachmentOpen={setAttachmentOpen}
             onOpenApproval={() => setApprovalVariant('risk')}
-            onOpenSkills={handleOpenSkills}
-            onNavigate={handleSurfaceChange}
-            onOpenProjects={() => handleOpenProjects()}
+            onNavigate={(nextSurface) => setSurface(nextSurface)}
+            onOpenProjects={() => setSurface('projects')}
             onOpenSettingsSection={(section) => {
               setSettingsSection(section);
               setSurface('settings');
@@ -3758,7 +3022,6 @@ function App() {
         {surface === 'projects' && (
           <ProjectsSurface
             runtime={runtime}
-            selectedProjectKey={selectedProjectKey}
             onOpenDiagnostics={() => setSurface('diagnostics')}
             onOpenSession={handleSelectSession}
             onOpenNewTask={handleStartNewTask}
@@ -3776,7 +3039,7 @@ function App() {
         )}
         {surface === 'agents' && <AgentsSurface runtime={runtime} onOpenApproval={() => setApprovalVariant('risk')} onOpenChat={handleStartNewTask} />}
         {surface === 'profiles' && <ProfilesSurface runtime={runtime} />}
-        {surface === 'skills' && <SkillsSurface deepLink={skillDeepLink} runtime={runtime} />}
+        {surface === 'skills' && <SkillsSurface runtime={runtime} />}
         {surface === 'cron' && <CronSurface runtime={runtime} />}
         {surface === 'messaging' && <MessagingSurface runtime={runtime} />}
         {surface === 'settings' && (
@@ -3787,7 +3050,7 @@ function App() {
             theme={uiTheme}
             onDensityChange={setUiDensity}
             onOpenPermission={() => setApprovalVariant('permission')}
-            onOpenSurface={handleSurfaceChange}
+            onOpenSurface={setSurface}
             onSelect={setSettingsSection}
             onThemeChange={setUiTheme}
           />
@@ -3818,11 +3081,6 @@ function App() {
             activeTab={workbenchTab}
             onTabChange={setWorkbenchTab}
             onCollapse={() => setRightOpen(false)}
-            onResizeStart={handleWorkbenchResizeStart}
-            onOpenFilePreview={(fileLabel) => {
-              setSelectedWorkbenchFileLabel(fileLabel);
-              setWorkbenchTab('preview');
-            }}
             onOpenApproval={setApprovalVariant}
             runtime={runtime}
             selectedFileLabel={selectedWorkbenchFileLabel}
@@ -3865,10 +3123,6 @@ function App() {
             setCommandOpen(false);
             setApprovalVariant('risk');
           }}
-          onOpenSkills={(query, skillName) => {
-            setCommandOpen(false);
-            handleOpenSkills(query, skillName);
-          }}
           onOpenSettingsSection={(section) => {
             setSettingsSection(section);
             setSurface('settings');
@@ -3904,18 +3158,14 @@ function Sidebar({
   gatewayStatus,
   model,
   onNewTask,
-  onOpenProjects,
   onSurfaceChange,
   onOpenCommand,
   onArchiveItem,
   onDeleteItem,
   onMoreItem,
   onSelectSession,
-  onTogglePinItem,
   pendingDeleteKey,
-  pinnedItems,
-  pinnedSessionIds,
-  projectItems,
+  projectGroups,
   recentItems,
   selectedStoredSessionId,
   selectingSessionId,
@@ -3926,18 +3176,14 @@ function Sidebar({
   gatewayStatus: GatewayStatus;
   model: string;
   onNewTask: () => void;
-  onOpenProjects: (projectKey?: string) => void;
   onSurfaceChange: (surface: Surface) => void;
   onOpenCommand: () => void;
   onArchiveItem: (item: SidebarItem) => void;
   onDeleteItem: (item: SidebarItem) => void;
   onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
-  onTogglePinItem: (item: SidebarItem) => void;
   pendingDeleteKey: string;
-  pinnedItems: SidebarItem[];
-  pinnedSessionIds: string[];
-  projectItems: SidebarItem[];
+  projectGroups: SidebarProjectGroup[];
   recentItems: SidebarItem[];
   selectedStoredSessionId: null | string;
   selectingSessionId: string;
@@ -3979,26 +3225,26 @@ function Sidebar({
       <nav className="sidebarScroll" aria-label="会话导航">
         <SidebarSection
           title="置顶"
-          emptyText="暂无置顶会话"
-          items={pinnedItems}
+          items={pinnedSessions}
           onOpenChat={() => onSurfaceChange('chat')}
           onSelectSession={onSelectSession}
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
-          onTogglePinItem={onTogglePinItem}
           pendingDeleteKey={pendingDeleteKey}
-          pinnedSessionIds={pinnedSessionIds}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
           selectingSessionId={selectingSessionId}
         />
         <ProjectSection
-          items={projectItems}
-          onOpenProjects={onOpenProjects}
+          groups={projectGroups}
+          onOpenProjects={() => onSurfaceChange('projects')}
+          onSelectSession={onSelectSession}
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
           pendingDeleteKey={pendingDeleteKey}
+          selectedSessionId={selectedStoredSessionId || activeSessionId}
+          selectingSessionId={selectingSessionId}
         />
         <SidebarSection
           title="最近"
@@ -4010,9 +3256,7 @@ function Sidebar({
           onArchiveItem={onArchiveItem}
           onDeleteItem={onDeleteItem}
           onMoreItem={onMoreItem}
-          onTogglePinItem={onTogglePinItem}
           pendingDeleteKey={pendingDeleteKey}
-          pinnedSessionIds={pinnedSessionIds}
           selectedSessionId={selectedStoredSessionId || activeSessionId}
           selectingSessionId={selectingSessionId}
         />
@@ -4077,9 +3321,7 @@ function SidebarSection({
   onOpenChat,
   onMoreItem,
   onSelectSession,
-  onTogglePinItem,
   pendingDeleteKey,
-  pinnedSessionIds,
   selectedSessionId,
   selectingSessionId,
 }: {
@@ -4092,9 +3334,7 @@ function SidebarSection({
   onOpenChat: () => void;
   onMoreItem: (item: SidebarItem) => void;
   onSelectSession: (sessionId: string) => void;
-  onTogglePinItem: (item: SidebarItem) => void;
   pendingDeleteKey: string;
-  pinnedSessionIds: string[];
   selectedSessionId: null | string;
   selectingSessionId: string;
 }) {
@@ -4123,7 +3363,6 @@ function SidebarSection({
           active={item.id ? item.id === selectedSessionId : !selectedSessionId && !muted && index === 0}
           busy={Boolean(item.id && item.id === selectingSessionId)}
           confirmingDelete={pendingDeleteKey === sidebarItemKey(item)}
-          pinned={Boolean(item.id && pinnedSessionIds.includes(item.id))}
           onSelect={() => {
             onOpenChat();
             if (item.id) {
@@ -4133,7 +3372,6 @@ function SidebarSection({
           onArchive={() => onArchiveItem(item)}
           onDelete={() => onDeleteItem(item)}
           onMore={() => onMoreItem(item)}
-          onPin={() => onTogglePinItem(item)}
         />
       ))}
     </section>
@@ -4141,39 +3379,69 @@ function SidebarSection({
 }
 
 function ProjectSection({
-  items,
+  groups,
   onArchiveItem,
   onDeleteItem,
   onMoreItem,
   onOpenProjects,
+  onSelectSession,
   pendingDeleteKey,
+  selectedSessionId,
+  selectingSessionId,
 }: {
-  items: SidebarItem[];
+  groups: SidebarProjectGroup[];
   onArchiveItem: (item: SidebarItem) => void;
   onDeleteItem: (item: SidebarItem) => void;
   onMoreItem: (item: SidebarItem) => void;
-  onOpenProjects: (projectKey?: string) => void;
+  onOpenProjects: () => void;
+  onSelectSession: (sessionId: string) => void;
   pendingDeleteKey: string;
+  selectedSessionId: null | string;
+  selectingSessionId: string;
 }) {
   return (
     <section className="navSection">
       <div className="sectionTitleRow">
         <h2>项目</h2>
-        <button className="sectionAction" type="button" aria-label="查看全部项目" onClick={() => onOpenProjects()}>
+        <button className="sectionAction" type="button" aria-label="查看全部项目" onClick={onOpenProjects}>
           <ChevronRight size={14} />
         </button>
       </div>
-      {items.map((item) => (
-        <SessionRow
-          key={item.title}
-          item={{ ...item, color: item.active ? 'indigo' : 'gray' }}
-          active={item.active}
-          confirmingDelete={pendingDeleteKey === sidebarItemKey(item)}
-          onSelect={() => onOpenProjects(item.projectKey || item.title)}
-          onArchive={() => onArchiveItem(item)}
-          onDelete={() => onDeleteItem(item)}
-          onMore={() => onMoreItem(item)}
-        />
+      {groups.map((group) => (
+        <div className="projectGroup" key={group.key}>
+          <button className={group.active ? 'projectGroupHeader active' : 'projectGroupHeader'} type="button" onClick={onOpenProjects}>
+            <span className={`statusDot ${group.color || 'gray'}`} />
+            <span>
+              <strong>{group.title}</strong>
+              <small>{group.meta}</small>
+            </span>
+            <ChevronRight size={13} />
+          </button>
+          <div className="projectGroupSessions">
+            {group.items.length > 0 ? group.items.slice(0, 4).map((item) => (
+              <SessionRow
+                key={item.id || item.title}
+                item={{ ...item, color: item.color || 'blue' }}
+                active={Boolean(item.id && item.id === selectedSessionId)}
+                busy={Boolean(item.id && item.id === selectingSessionId)}
+                confirmingDelete={pendingDeleteKey === sidebarItemKey(item)}
+                muted
+                onSelect={() => {
+                  if (item.id) {
+                    onSelectSession(item.id);
+                  } else {
+                    onOpenProjects();
+                  }
+                }}
+                onArchive={() => onArchiveItem(item)}
+                onDelete={() => onDeleteItem(item)}
+                onMore={() => onMoreItem(item)}
+              />
+            )) : (
+              <div className="sectionEmpty compact">暂无对话</div>
+            )}
+          </div>
+        </div>
       ))}
     </section>
   );
@@ -4185,11 +3453,9 @@ function SessionRow({
   busy,
   confirmingDelete,
   muted,
-  pinned,
   onArchive,
   onDelete,
   onMore,
-  onPin,
   onSelect,
 }: {
   item: SidebarItem;
@@ -4197,11 +3463,9 @@ function SessionRow({
   busy?: boolean;
   confirmingDelete?: boolean;
   muted?: boolean;
-  pinned?: boolean;
   onArchive?: () => void;
   onDelete?: () => void;
   onMore?: () => void;
-  onPin?: () => void;
   onSelect: () => void;
 }) {
   const secondaryText = confirmingDelete
@@ -4218,21 +3482,6 @@ function SessionRow({
         </span>
       </button>
       <div className="rowActions" aria-label="会话操作">
-        {onPin && (
-          <button
-            className={pinned ? 'active' : undefined}
-            type="button"
-            aria-label={pinned ? '取消置顶' : '置顶'}
-            title={pinned ? '取消置顶' : '置顶'}
-            disabled={busy}
-            onClick={(event) => {
-              event.stopPropagation();
-              onPin();
-            }}
-          >
-            <Pin size={14} />
-          </button>
-        )}
         <button
           type="button"
           aria-label="归档"
@@ -4281,7 +3530,6 @@ function ChatSurface({
   runtime,
   setAttachmentOpen,
   onOpenApproval,
-  onOpenSkills,
   onNavigate,
   onOpenProjects,
   onOpenSettingsSection,
@@ -4292,7 +3540,6 @@ function ChatSurface({
   runtime: HermesRuntime;
   setAttachmentOpen: (open: boolean) => void;
   onOpenApproval: () => void;
-  onOpenSkills: (query?: string, skillName?: string) => void;
   onNavigate: (surface: Surface) => void;
   onOpenProjects: () => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
@@ -4365,7 +3612,6 @@ function ChatSurface({
         setAttachmentOpen={setAttachmentOpen}
         runtime={runtime}
         onNavigate={onNavigate}
-        onOpenSkills={onOpenSkills}
         onOpenProjects={onOpenProjects}
         onOpenSettingsSection={onOpenSettingsSection}
         onOpenWorkbenchTab={onOpenWorkbenchTab}
@@ -4801,13 +4047,8 @@ function MessageEventCard({
   const eventLabel = eventLineLabel(message);
   const showStatusBody = isStatus && shouldShowEventBody(message);
   const showActionBody = !isTool && !isReasoning && !isStatus && Boolean(message.text.trim());
-  const reasoningText = isReasoning ? cleanDisplayText(message.text).trim() : '';
-  const phaseText = isReasoning ? reasoningText || reasoningPhaseText(message) : '';
-  const detailsText = isTool
-    ? (message.details || message.command)
-    : isReasoning
-      ? (message.details && message.details !== reasoningText ? message.details : '')
-      : (message.details || message.command || message.text);
+  const phaseText = isReasoning ? reasoningPhaseText(message) : '';
+  const detailsText = isTool ? (message.details || message.command) : (message.details || message.command || message.text);
   const submitApproval = async (choice: 'once' | 'session' | 'always' | 'deny') => {
     try {
       setActionBusy(choice);
@@ -5016,7 +4257,6 @@ function Artifact({
 function Composer({
   attachmentOpen,
   onNavigate,
-  onOpenSkills,
   onOpenProjects,
   onOpenSettingsSection,
   onOpenWorkbenchTab,
@@ -5025,7 +4265,6 @@ function Composer({
 }: {
   attachmentOpen: boolean;
   onNavigate: (surface: Surface) => void;
-  onOpenSkills: (query?: string, skillName?: string) => void;
   onOpenProjects: () => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
@@ -5139,10 +4378,6 @@ function Composer({
       window.requestAnimationFrame(() => {
         if (uiTarget.settingsSection) {
           onOpenSettingsSection(uiTarget.settingsSection);
-          return;
-        }
-        if (uiTarget.surface === 'skills') {
-          onOpenSkills(uiTarget.skillQuery, uiTarget.skillName);
           return;
         }
         if (uiTarget.surface) {
@@ -5475,8 +4710,6 @@ function Workbench({
   activeTab,
   onTabChange,
   onCollapse,
-  onResizeStart,
-  onOpenFilePreview,
   onOpenApproval,
   runtime,
   selectedFileLabel,
@@ -5484,8 +4717,6 @@ function Workbench({
   activeTab: WorkbenchTab;
   onTabChange: (tab: WorkbenchTab) => void;
   onCollapse: () => void;
-  onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-  onOpenFilePreview: (fileLabel: string) => void;
   onOpenApproval: (variant: ApprovalVariant) => void;
   runtime: HermesRuntime;
   selectedFileLabel?: string;
@@ -5499,12 +4730,6 @@ function Workbench({
 
   return (
     <aside className="workbench" data-testid="right-workbench">
-      <button
-        className="workbenchResizeHandle"
-        type="button"
-        aria-label="调整工作区宽度"
-        onPointerDown={onResizeStart}
-      />
       <div className="workbenchHeader">
         <div className="tabs four">
           {tabs.map((tab) => (
@@ -5523,67 +4748,21 @@ function Workbench({
         </button>
       </div>
 
-      {activeTab === 'activity' && (
-        <WorkbenchActivity
-          onOpenApproval={onOpenApproval}
-          onOpenTerminal={() => onTabChange('terminal')}
-          runtime={runtime}
-        />
-      )}
-      {activeTab === 'files' && (
-        <WorkbenchFiles
-          files={runtime.files}
-          onOpenPreview={onOpenFilePreview}
-          runtime={runtime}
-          selectedFileLabel={selectedFileLabel}
-        />
-      )}
-      {activeTab === 'terminal' && <WorkbenchTerminal runtime={runtime} />}
-      {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} selectedFileLabel={selectedFileLabel} />}
+      {activeTab === 'activity' && <WorkbenchActivity onOpenApproval={onOpenApproval} runtime={runtime} />}
+      {activeTab === 'files' && <WorkbenchFiles runtime={runtime} selectedFileLabel={selectedFileLabel} />}
+      {activeTab === 'terminal' && <WorkbenchTerminal logs={runtime.logs} onStop={runtime.stopGateway} />}
+      {activeTab === 'preview' && <WorkbenchPreview runtime={runtime} />}
     </aside>
   );
 }
 
 function WorkbenchActivity({
   onOpenApproval,
-  onOpenTerminal,
   runtime,
 }: {
   onOpenApproval: (variant: ApprovalVariant) => void;
-  onOpenTerminal: () => void;
   runtime: HermesRuntime;
 }) {
-  const [selectedToolId, setSelectedToolId] = useState('');
-  const [toolStatus, setToolStatus] = useState('');
-  const selectedTool = runtime.tools.find((tool) => tool.id === selectedToolId) || runtime.tools[0] || null;
-  const selectedToolDetails = selectedTool ? selectedTool.details || selectedTool.detail || selectedTool.label : '';
-
-  useEffect(() => {
-    if (!runtime.tools.some((tool) => tool.id === selectedToolId)) {
-      setSelectedToolId(runtime.tools[0]?.id || '');
-    }
-  }, [runtime.tools, selectedToolId]);
-
-  const copySelectedTool = async () => {
-    if (!selectedTool) {
-      setToolStatus('当前没有可复制的工具调用。');
-      return;
-    }
-    try {
-      await writeClipboardText([
-        selectedTool.label,
-        selectedTool.detail,
-        selectedTool.value,
-        '',
-        selectedToolDetails,
-      ].filter(Boolean).join('\n'), runtime.apiRequest);
-      setToolStatus('工具详情已复制。');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setToolStatus(`复制失败：${message}`);
-    }
-  };
-
   return (
     <>
       <section className="taskCard">
@@ -5598,48 +4777,12 @@ function WorkbenchActivity({
         <h3>工具调用</h3>
         {runtime.tools.length > 0 ? (
           runtime.tools.map((item) => (
-            <WorkbenchItem
-              key={item.id}
-              active={selectedTool?.id === item.id}
-              detail={item.detail}
-              onSelect={() => {
-                setSelectedToolId(item.id);
-                setToolStatus('');
-              }}
-              state={item.state}
-              label={item.label}
-              value={item.value}
-            />
+            <WorkbenchItem key={item.id} detail={item.detail} state={item.state} label={item.label} value={item.value} />
           ))
         ) : (
           <div className="railEmpty">工具调用会在运行任务时出现。</div>
         )}
       </section>
-      {selectedTool && (
-        <section className="railSection toolDetailPanel">
-          <h3>工具详情</h3>
-          <dl className="fileDetailList">
-            <div>
-              <dt>名称</dt>
-              <dd title={selectedTool.label}>{selectedTool.label}</dd>
-            </div>
-            <div>
-              <dt>状态</dt>
-              <dd>{selectedTool.state === 'running' ? '运行中' : selectedTool.value}</dd>
-            </div>
-          </dl>
-          <pre className="miniCode toolDetailCode"><code>{selectedToolDetails}</code></pre>
-          <div className="workbenchActions fileActionGrid">
-            <button type="button" onClick={() => void copySelectedTool()}>
-              复制详情
-            </button>
-            <button type="button" onClick={onOpenTerminal}>
-              打开终端
-            </button>
-          </div>
-          {toolStatus && <p className="railStatus" role="status">{toolStatus}</p>}
-        </section>
-      )}
       {runtime.pendingApproval ? (
         <section className="approvalCard">
           <Shield size={17} />
@@ -5666,32 +4809,84 @@ function WorkbenchActivity({
   );
 }
 
-function WorkbenchFiles({
-  files,
-  onOpenPreview,
-  runtime,
-  selectedFileLabel,
-}: {
-  files: GatewayFileItem[];
-  onOpenPreview: (fileLabel: string) => void;
-  runtime: HermesRuntime;
-  selectedFileLabel?: string;
-}) {
+function formatFileSize(size?: null | number) {
+  if (typeof size !== 'number' || !Number.isFinite(size)) {
+    return '';
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${Math.round(size / 1024)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function WorkbenchFiles({ runtime, selectedFileLabel }: { runtime: HermesRuntime; selectedFileLabel?: string }) {
+  const files = runtime.files;
   const [copyBusy, setCopyBusy] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
-  const [openBusy, setOpenBusy] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
-  const selectedFile = files[selectedFileIndex] || files[0] || null;
-  const selectedPath = selectedFile?.label || '';
+  const [browserPath, setBrowserPath] = useState('');
+  const [browserParent, setBrowserParent] = useState<null | string>(null);
+  const [browserRoots, setBrowserRoots] = useState<Array<{ label: string; path: string }>>([]);
+  const [browserEntries, setBrowserEntries] = useState<WorkbenchFileEntry[]>([]);
+  const [browserBusy, setBrowserBusy] = useState('');
+  const [browserStatus, setBrowserStatus] = useState('');
+  const [filePreview, setFilePreview] = useState<WorkbenchFileReadResponse | null>(null);
+  const selectedFile = files[selectedFileIndex] || files[0];
   const diffSummary = selectedFile
     ? `${selectedFile.change === 'add' ? '+' : '~'} ${selectedFile.label} · ${selectedFile.meta}`
     : '等待 Hermes 返回文件变更。';
 
-  useEffect(() => {
-    if (selectedFileIndex >= files.length) {
-      setSelectedFileIndex(0);
+  const loadDirectory = useCallback(async (nextPath = browserPath) => {
+    try {
+      setBrowserBusy('list');
+      setBrowserStatus('');
+      const params = new URLSearchParams();
+      if (nextPath) {
+        params.set('path', nextPath);
+      }
+      const result = await runtime.apiRequest<WorkbenchFileListResponse>({
+        path: `/api/files/list${params.toString() ? `?${params}` : ''}`,
+        timeoutMs: 15000,
+      });
+      setBrowserPath(result.path);
+      setBrowserParent(result.parent || null);
+      setBrowserRoots(result.roots || []);
+      setBrowserEntries(result.entries || []);
+      setFilePreview(null);
+      setBrowserStatus(result.truncated ? '目录内容较多，已显示前 240 项。' : '');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setBrowserStatus(`文件浏览失败：${message}`);
+    } finally {
+      setBrowserBusy('');
     }
-  }, [files.length, selectedFileIndex]);
+  }, [browserPath, runtime]);
+
+  const previewFile = useCallback(async (entry: WorkbenchFileEntry) => {
+    try {
+      setBrowserBusy(`read:${entry.path}`);
+      setBrowserStatus('');
+      const params = new URLSearchParams({ maxBytes: '60000', path: entry.path });
+      const result = await runtime.apiRequest<WorkbenchFileReadResponse>({
+        path: `/api/files/read?${params}`,
+        timeoutMs: 15000,
+      });
+      setFilePreview(result);
+      setBrowserStatus(result.truncated ? '文件较大，预览已截断。' : '');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setBrowserStatus(`文件预览失败：${message}`);
+    } finally {
+      setBrowserBusy('');
+    }
+  }, [runtime]);
+
+  useEffect(() => {
+    void loadDirectory('');
+  }, []);
 
   useEffect(() => {
     if (!selectedFileLabel) {
@@ -5706,17 +4901,17 @@ function WorkbenchFiles({
     }
   }, [files, selectedFileLabel]);
 
-  const copyFileInfo = async (kind: 'path' | 'summary') => {
-    const label = kind === 'path' ? '路径' : '摘要';
-    const value = kind === 'path' ? selectedPath : diffSummary;
-    if (!value) {
-      setCopyStatus('当前没有可复制的文件。');
+  const copySummary = async (kind: 'entry' | 'summary') => {
+    const label = kind === 'entry' ? '条目' : '摘要';
+    if (!navigator.clipboard?.writeText) {
+      setCopyStatus('当前环境无法访问剪贴板。');
       return;
     }
+
     try {
       setCopyBusy(kind);
       setCopyStatus('');
-      await writeClipboardText(value, runtime.apiRequest);
+      await navigator.clipboard.writeText(diffSummary);
       setCopyStatus(`Diff ${label}已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -5726,35 +4921,72 @@ function WorkbenchFiles({
     }
   };
 
-  const openFile = async () => {
-    if (!selectedFile) {
-      setCopyStatus('当前没有可打开文件。');
-      return;
-    }
-
-    try {
-      setOpenBusy(true);
-      setCopyStatus('');
-      await runtime.apiRequest({
-        body: {
-          cwd: runtime.cwd,
-          path: selectedFile.label,
-        },
-        method: 'POST',
-        path: '/api/files/open',
-        timeoutMs: 15000,
-      });
-      setCopyStatus('文件已交给系统打开。');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setCopyStatus(`打开失败：${message}`);
-    } finally {
-      setOpenBusy(false);
-    }
-  };
-
   return (
     <>
+      <section className="railSection fileBrowser" data-testid="file-browser">
+        <div className="railSectionHeader">
+          <h3>文件浏览器</h3>
+          <div>
+            <button type="button" onClick={() => browserParent && void loadDirectory(browserParent)} disabled={!browserParent || Boolean(browserBusy)}>
+              <ChevronLeft size={13} />
+            </button>
+            <button type="button" onClick={() => void loadDirectory(browserPath)} disabled={Boolean(browserBusy)}>
+              <RefreshCw className={browserBusy === 'list' ? 'spinIcon' : undefined} size={13} />
+            </button>
+          </div>
+        </div>
+        {browserRoots.length > 1 && (
+          <div className="fileRootTabs">
+            {browserRoots.slice(0, 3).map((root) => (
+              <button key={root.path} type="button" onClick={() => void loadDirectory(root.path)}>
+                {root.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="fileBrowserPath" title={browserPath}>{browserPath ? shortenPath(browserPath) : 'Home'}</div>
+        <div className="fileBrowserList" aria-label="文件列表">
+          {browserEntries.length > 0 ? browserEntries.map((entry) => (
+            <button
+              className={entry.hidden ? 'fileBrowserRow hidden' : 'fileBrowserRow'}
+              key={entry.path}
+              type="button"
+              onClick={() => {
+                if (entry.kind === 'directory') {
+                  void loadDirectory(entry.path);
+                  return;
+                }
+                if (entry.kind === 'file') {
+                  void previewFile(entry);
+                }
+              }}
+            >
+              {entry.kind === 'directory' ? <Folder size={14} /> : <File size={14} />}
+              <span>{entry.name}</span>
+              <small>{entry.kind === 'directory' ? '文件夹' : formatFileSize(entry.size)}</small>
+            </button>
+          )) : (
+            <div className="railEmpty">{browserBusy ? '正在读取目录...' : '暂无可显示文件。'}</div>
+          )}
+        </div>
+        {browserStatus && <p className="miniStatus" role="status">{browserStatus}</p>}
+      </section>
+
+      {filePreview && (
+        <section className="railSection">
+          <h3>文件预览</h3>
+          <div className="filePreviewTitle">
+            <strong>{filePreview.name}</strong>
+            <span>{formatFileSize(filePreview.size)}</span>
+          </div>
+          {filePreview.binary ? (
+            <div className="railEmpty">二进制文件不可直接预览。</div>
+          ) : (
+            <pre className="miniCode filePreviewCode"><code>{filePreview.text || '空文件'}</code></pre>
+          )}
+        </section>
+      )}
+
       <section className="railSection">
         <h3>变更文件</h3>
         {files.length > 0 ? (
@@ -5775,30 +5007,14 @@ function WorkbenchFiles({
         )}
       </section>
       <section className="railSection">
-        <h3>文件动作</h3>
-        <dl className="fileDetailList">
-          <div>
-            <dt>路径</dt>
-            <dd title={selectedPath}>{selectedPath || '等待文件变更'}</dd>
-          </div>
-          <div>
-            <dt>类型</dt>
-            <dd>{selectedFile?.change === 'add' ? '新增' : selectedFile ? '修改' : '未选择'}</dd>
-          </div>
-        </dl>
+        <h3>Diff 摘要</h3>
         <pre className="miniCode"><code>{diffSummary}</code></pre>
-        <div className="workbenchActions fileActionGrid">
-          <button type="button" onClick={() => selectedFile && onOpenPreview(selectedFile.label)} disabled={!selectedFile}>
-            预览
-          </button>
-          <button type="button" onClick={() => void openFile()} disabled={openBusy || !selectedFile}>
-            {openBusy ? '打开中' : '打开'}
-          </button>
-          <button type="button" onClick={() => void copyFileInfo('path')} disabled={Boolean(copyBusy) || !selectedFile}>
-            {copyBusy === 'path' ? '复制中' : '复制路径'}
-          </button>
-          <button type="button" onClick={() => void copyFileInfo('summary')} disabled={Boolean(copyBusy)}>
+        <div className="workbenchActions">
+          <button type="button" onClick={() => void copySummary('summary')} disabled={Boolean(copyBusy)}>
             {copyBusy === 'summary' ? '复制中' : '复制摘要'}
+          </button>
+          <button type="button" onClick={() => void copySummary('entry')} disabled={Boolean(copyBusy)}>
+            {copyBusy === 'entry' ? '复制中' : '复制条目'}
           </button>
         </div>
         {copyStatus && <p className="railStatus" role="status">{copyStatus}</p>}
@@ -5807,159 +5023,60 @@ function WorkbenchFiles({
   );
 }
 
-function WorkbenchTerminal({ runtime }: { runtime: HermesRuntime }) {
-  const [busy, setBusy] = useState('');
-  const [clearedLogCount, setClearedLogCount] = useState(0);
+function WorkbenchTerminal({ logs, onStop }: { logs: string[]; onStop: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
-  const visibleLogs = runtime.logs.slice(Math.min(clearedLogCount, runtime.logs.length));
-  const renderedLogs = visibleLogs.length > 0 ? visibleLogs.slice(-18).join('\n') : 'Gateway 日志会在这里显示。';
-
-  useEffect(() => {
-    if (clearedLogCount > runtime.logs.length) {
-      setClearedLogCount(0);
-    }
-  }, [clearedLogCount, runtime.logs.length]);
-
-  const runTerminalAction = async (key: string, label: string, action: () => Promise<void>, doneMessage: string) => {
+  const renderedLogs = logs.length > 0 ? logs.slice(-12).join('\n') : 'Gateway 日志会在这里显示。';
+  const stopGateway = async () => {
     try {
-      setBusy(key);
+      setBusy(true);
       setStatus('');
-      await action();
-      setStatus(doneMessage);
+      await onStop();
+      setStatus('Gateway 停止请求已发送。');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setStatus(`${label}失败：${message}`);
+      setStatus(`停止失败：${message}`);
     } finally {
-      setBusy('');
+      setBusy(false);
     }
-  };
-  const copyLogs = async () => {
-    if (visibleLogs.length === 0) {
-      setStatus('当前没有可复制的日志。');
-      return;
-    }
-    try {
-      setBusy('copy');
-      setStatus('');
-      await writeClipboardText(visibleLogs.join('\n'), runtime.apiRequest);
-      setStatus(`已复制 ${visibleLogs.length} 条日志。`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(`复制失败：${message}`);
-    } finally {
-      setBusy('');
-    }
-  };
-  const clearLogs = () => {
-    setClearedLogCount(runtime.logs.length);
-    setStatus('当前终端视图已清空，新日志会继续显示。');
   };
 
   return (
     <>
       <section className="railSection terminalSection">
         <div className="terminalHeader">
-          <div>
-            <strong>Hermes Gateway</strong>
-            <span>{runtime.connection?.baseUrl || runtime.connectionLabel}</span>
-          </div>
-          <div className="terminalActions">
-            <button type="button" onClick={() => void runTerminalAction('start', '启动', runtime.startGateway, 'Gateway 启动请求已发送。')} disabled={Boolean(busy) || runtime.gatewayStatus === 'connected'}>
-              {busy === 'start' ? <RefreshCw className="spinIcon" size={15} /> : <Play size={15} />}
-              {busy === 'start' ? '启动中' : '启动'}
-            </button>
-            <button type="button" onClick={() => void runTerminalAction('restart', '重启', runtime.restartGateway, 'Gateway 重启请求已发送。')} disabled={Boolean(busy)}>
-              <RefreshCw className={busy === 'restart' ? 'spinIcon' : undefined} size={15} />
-              {busy === 'restart' ? '重启中' : '重启'}
-            </button>
-            <button type="button" onClick={() => void runTerminalAction('stop', '停止', runtime.stopGateway, 'Gateway 停止请求已发送。')} disabled={Boolean(busy) || runtime.gatewayStatus === 'stopped'}>
-              {busy === 'stop' ? <RefreshCw className="spinIcon" size={15} /> : <PauseCircle size={15} />}
-              {busy === 'stop' ? '停止中' : '停止'}
-            </button>
-          </div>
+          <strong>Hermes Gateway</strong>
+          <button type="button" onClick={() => void stopGateway()} disabled={busy}>
+            {busy ? <RefreshCw className="spinIcon" size={15} /> : <PauseCircle size={15} />}
+            {busy ? '停止中' : '停止'}
+          </button>
         </div>
         <pre className="terminalBlock"><code>{renderedLogs}</code></pre>
-        <div className="terminalFooter">
-          <span>{visibleLogs.length} 条日志 · {runtime.socketState}</span>
-          <div className="terminalActions">
-            <button type="button" onClick={() => void runTerminalAction('refresh', '刷新', runtime.refreshInventory, '终端状态已刷新。')} disabled={Boolean(busy)}>
-              <RefreshCw className={busy === 'refresh' ? 'spinIcon' : undefined} size={14} />
-              刷新
-            </button>
-            <button type="button" onClick={() => void copyLogs()} disabled={Boolean(busy) || visibleLogs.length === 0}>
-              <Copy size={14} />
-              {busy === 'copy' ? '复制中' : '复制日志'}
-            </button>
-            <button type="button" onClick={clearLogs} disabled={Boolean(busy) || runtime.logs.length === 0}>
-              <Trash2 size={14} />
-              清空
-            </button>
-          </div>
-        </div>
         {status && <p className="railStatus" role="status">{status}</p>}
       </section>
       <section className="railSection">
         <h3>退出状态</h3>
-        <div className={runtime.gatewayStatus === 'error' ? 'statusLine danger' : 'statusLine good'}>
+        <div className="statusLine good">
           <CheckCircle2 size={15} />
-          {runtime.gatewayStatus === 'connected' ? 'Gateway 已连接' : runtime.connectionLabel}
+          日志流已连接
         </div>
       </section>
     </>
   );
 }
 
-function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRuntime; selectedFileLabel?: string }) {
+function WorkbenchPreview({ runtime }: { runtime: HermesRuntime }) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
-  const [selectedPath, setSelectedPath] = useState('');
-  const [preview, setPreview] = useState<HermesFilePreviewInfo | null>(null);
-  const selectedFile = runtime.files.find((file) => file.label === selectedPath) || runtime.files[0] || null;
-  const previewText = selectedFile
-    ? `${selectedFile.label} · ${selectedFile.meta}`
-    : runtime.connection?.baseUrl
-      ? `Gateway: ${runtime.connection.baseUrl}`
-      : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
-  const loadFilePreview = useCallback(async (
-    file: GatewayFileItem | null = selectedFile,
-    options: { statusPrefix?: string } = {},
-  ) => {
-    if (!file) {
-      setPreview(null);
-      setStatus('当前会话还没有可预览文件。');
-      return false;
-    }
-
-    try {
-      setBusy(true);
-      setStatus('');
-      const result = await runtime.apiRequest<HermesFilePreviewInfo>({
-        path: `/api/files/preview?path=${encodeURIComponent(file.label)}&cwd=${encodeURIComponent(runtime.cwd || '')}`,
-        timeoutMs: 15000,
-      });
-      setPreview(result);
-      setSelectedPath(file.label);
-      setStatus(`${options.statusPrefix || ''}${result.name || file.label} 预览已加载。`);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setPreview(null);
-      setStatus(`预览失败：${message}`);
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }, [runtime, selectedFile]);
+  const previewText = runtime.connection?.baseUrl
+    ? `Gateway: ${runtime.connection.baseUrl}`
+    : '连接 Hermes Gateway 后，预览和外部产物会显示在这里。';
   const refreshPreview = async () => {
     try {
       setBusy(true);
       setStatus('');
       await runtime.refreshInventory();
-      if (selectedFile) {
-        await loadFilePreview(selectedFile, { statusPrefix: '刷新完成，' });
-      } else {
-        setStatus(runtime.connection?.baseUrl ? '预览状态已刷新。' : '已刷新，本机 Gateway 暂无可打开地址。');
-      }
+      setStatus(runtime.connection?.baseUrl ? '预览状态已刷新。' : '已刷新，本机 Gateway 暂无可打开地址。');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`刷新失败：${message}`);
@@ -5976,143 +5093,22 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
     const previewWindow = window.open(runtime.connection.baseUrl, '_blank', 'noopener,noreferrer');
     setStatus(previewWindow ? 'Gateway 已在新窗口打开。' : 'Gateway 窗口可能被拦截。');
   };
-  const openPreviewFile = async () => {
-    if (!selectedFile) {
-      setStatus('当前没有可打开文件。');
-      return;
-    }
-
-    try {
-      setBusy(true);
-      await runtime.apiRequest({
-        body: {
-          cwd: runtime.cwd,
-          path: selectedFile.label,
-        },
-        method: 'POST',
-        path: '/api/files/open',
-        timeoutMs: 15000,
-      });
-      setStatus('文件已交给系统打开。');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(`打开失败：${message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const copyPreviewValue = async (value: string, successText: string) => {
-    if (!value) {
-      setStatus('当前没有可复制内容。');
-      return;
-    }
-
-    try {
-      await writeClipboardText(value, runtime.apiRequest);
-      setStatus(successText);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(`复制失败：${message}`);
-    }
-  };
-  const copyPreviewPath = async () => {
-    await copyPreviewValue(preview?.path || selectedFile?.label || '', '文件路径已复制。');
-  };
-  const copyPreviewSummary = async () => {
-    const lines = [
-      `文件：${preview?.name || selectedFile?.label || '未选择'}`,
-      `路径：${preview?.path || selectedFile?.label || '未读取'}`,
-      `类型：${preview?.kind || 'unknown'}${preview?.mime ? ` · ${preview.mime}` : ''}`,
-      typeof preview?.size === 'number' ? `大小：${Math.ceil(preview.size / 1024)} KB` : '',
-      selectedFile?.meta ? `来源：${selectedFile.meta}` : '',
-      preview?.truncated ? '内容：已截断' : '',
-      preview?.text ? `摘要：${compactLine(preview.text, 240)}` : '',
-    ].filter(Boolean);
-    await copyPreviewValue(lines.join('\n'), '预览摘要已复制。');
-  };
-  const copyPreviewContent = async () => {
-    await copyPreviewValue(preview?.text || preview?.data_url || preview?.path || selectedFile?.label || '', '预览内容已复制。');
-  };
-
-  useEffect(() => {
-    if (!selectedPath && runtime.files.length > 0) {
-      void loadFilePreview(runtime.files[0]);
-    }
-  }, [loadFilePreview, runtime.files, selectedPath]);
-
-  useEffect(() => {
-    if (!selectedFileLabel) {
-      return;
-    }
-
-    const nextFile = runtime.files.find((file) => (
-      file.label === selectedFileLabel || `${file.label} ${file.meta}`.includes(selectedFileLabel)
-    ));
-    if (nextFile && nextFile.label !== selectedPath) {
-      void loadFilePreview(nextFile);
-    }
-  }, [loadFilePreview, runtime.files, selectedFileLabel, selectedPath]);
 
   return (
     <>
       <section className="previewPanel">
-        {preview?.kind === 'image' && preview.data_url ? (
-          <div className="previewMediaFrame">
-            <img src={preview.data_url} alt={preview.name || selectedFile?.label || '预览图片'} />
-          </div>
-        ) : preview?.kind === 'html' ? (
-          <iframe className="previewHtmlFrame" sandbox="" srcDoc={preview.text || ''} title={preview.name || 'HTML 预览'} />
-        ) : preview?.kind === 'text' ? (
-          <pre className="previewTextFrame"><code>{preview.text || ''}</code></pre>
-        ) : (
-          <div className="previewEmpty">
-            <Eye size={22} />
-            <strong>{selectedFile ? '选择文件预览' : '暂无预览产物'}</strong>
-            <span>{previewText}</span>
-          </div>
-        )}
+        <div className="previewEmpty">
+          <Eye size={22} />
+          <strong>暂无预览产物</strong>
+          <span>{previewText}</span>
+        </div>
       </section>
       <section className="railSection">
         <h3>预览产物</h3>
         <p>{previewText}</p>
-        {runtime.files.length > 0 && (
-          <div className="previewFilePicker">
-            {runtime.files.slice(0, 8).map((file) => (
-              <button
-                className={selectedFile?.label === file.label ? 'selected' : undefined}
-                key={`${file.label}-${file.meta}`}
-                type="button"
-                onClick={() => void loadFilePreview(file)}
-              >
-                <File size={14} />
-                <span>{file.label}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        {preview && (
-          <div className="previewMeta">
-            <span>{preview.kind}</span>
-            <span>{preview.mime || 'unknown'}</span>
-            <span>{typeof preview.size === 'number' ? `${Math.ceil(preview.size / 1024)} KB` : 'size unknown'}</span>
-            {preview.truncated && <span>已截断</span>}
-          </div>
-        )}
-        <div className="workbenchActions previewActions">
+        <div className="workbenchActions">
           <button type="button" onClick={() => void refreshPreview()} disabled={busy}>
             {busy ? '刷新中' : '刷新'}
-          </button>
-          <button type="button" onClick={() => void openPreviewFile()} disabled={busy || !selectedFile}>
-            打开文件
-          </button>
-          <button type="button" onClick={() => void copyPreviewPath()} disabled={busy || !selectedFile}>
-            复制路径
-          </button>
-          <button type="button" onClick={() => void copyPreviewSummary()} disabled={busy || !selectedFile}>
-            复制摘要
-          </button>
-          <button type="button" onClick={() => void copyPreviewContent()} disabled={busy || !selectedFile}>
-            复制内容
           </button>
           <button
             type="button"
@@ -6129,42 +5125,24 @@ function WorkbenchPreview({ runtime, selectedFileLabel }: { runtime: HermesRunti
 }
 
 function WorkbenchItem({
-  active,
   detail,
-  onSelect,
   state,
   label,
   value,
 }: {
-  active?: boolean;
   detail?: string;
-  onSelect?: () => void;
   state: 'done' | 'running' | 'pending';
   label: string;
   value: string;
 }) {
-  const content = (
-    <>
+  return (
+    <div className="workbenchItem">
       <span className={`${state}Mark`} />
       <div className="workbenchItemText">
         <strong>{label}</strong>
         {detail && <small>{detail}</small>}
       </div>
       <em>{value}</em>
-    </>
-  );
-
-  if (onSelect) {
-    return (
-      <button className={active ? 'workbenchItem selected' : 'workbenchItem'} type="button" onClick={onSelect}>
-        {content}
-      </button>
-    );
-  }
-
-  return (
-    <div className="workbenchItem">
-      {content}
     </div>
   );
 }
@@ -6189,7 +5167,6 @@ function CommandCenter({
   onOpenWorkbenchTab,
   onOpenWorkbenchFile,
   onOpenApproval,
-  onOpenSkills,
   onOpenSettingsSection,
   runtime,
 }: {
@@ -6201,7 +5178,6 @@ function CommandCenter({
   onOpenWorkbenchTab: (tab: WorkbenchTab) => void;
   onOpenWorkbenchFile: (fileLabel: string) => void;
   onOpenApproval: () => void;
-  onOpenSkills: (query?: string, skillName?: string) => void;
   onOpenSettingsSection: (section: SettingsSection) => void;
   runtime: HermesRuntime;
 }) {
@@ -6274,7 +5250,7 @@ function CommandCenter({
         group: '跳转',
         icon,
         keywords: `${surface} ${title} ${desc}`,
-        run: () => surface === 'skills' ? onOpenSkills('', '') : onNavigate(surface),
+        run: () => onNavigate(surface),
         title,
       })),
       ...settingsSections.map((section) => ({
@@ -6315,7 +5291,7 @@ function CommandCenter({
         group: 'Skills',
         icon: <Puzzle />,
         keywords: `${skill.name} ${skill.description} ${skill.path} ${skill.source}`,
-        run: () => onOpenSkills(skill.name, skill.name),
+        run: () => onNavigate('skills'),
         title: skill.name,
       })) ?? []),
     ];
@@ -6347,7 +5323,7 @@ function CommandCenter({
     }
 
     return list;
-  }, [onClose, onNavigate, onNewTask, onOpenApproval, onOpenSettingsSection, onOpenSkills, onOpenWorkbenchFile, onOpenWorkbenchTab, query, runtime]);
+  }, [onClose, onNavigate, onNewTask, onOpenApproval, onOpenSettingsSection, onOpenWorkbenchFile, onOpenWorkbenchTab, query, runtime]);
   const filteredActions = useMemo(() => {
     if (!normalized) {
       return actions;
@@ -6675,7 +5651,6 @@ function ApprovalModal({
 
 function ProjectsSurface({
   runtime,
-  selectedProjectKey,
   onOpenDiagnostics,
   onOpenNewTask,
   onOpenProjectMenu,
@@ -6684,9 +5659,8 @@ function ProjectsSurface({
   onOpenWorkbenchTab,
 }: {
   runtime: HermesRuntime;
-  selectedProjectKey: string;
   onOpenDiagnostics: () => void;
-  onOpenNewTask: () => Promise<void> | void;
+  onOpenNewTask: () => void;
   onOpenProjectMenu: (projectTitle: string) => void;
   onOpenSettings: () => void;
   onOpenSession: (sessionId: string) => void;
@@ -6701,50 +5675,11 @@ function ProjectsSurface({
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [pendingDeleteId, setPendingDeleteId] = useState('');
-  const [pendingProjectDeleteId, setPendingProjectDeleteId] = useState('');
-  const [projectConfigs, setProjectConfigs] = useState<HermesProjectConfig[]>(readStoredProjects);
   const [renamingSessionId, setRenamingSessionId] = useState('');
   const [renameDraft, setRenameDraft] = useState('');
   const gatewayReady = runtime.gatewayStatus === 'connected';
   const firstRecentSession = runtime.recentSessions.find((session) => Boolean(session.id));
   const apiRequest = runtime.apiRequest;
-  const createProjectDraft = (overrides: Partial<HermesProjectConfig> = {}): HermesProjectConfig => ({
-    id: overrides.id || '',
-    model: overrides.model ?? runtime.model,
-    name: overrides.name ?? '当前 Hermes 项目',
-    notes: overrides.notes ?? '',
-    path: overrides.path ?? runtime.cwd,
-    profile: overrides.profile ?? 'default',
-    updatedAt: overrides.updatedAt ?? Date.now(),
-  });
-  const [selectedConfigId, setSelectedConfigId] = useState('');
-  const [projectDraft, setProjectDraft] = useState<HermesProjectConfig>(() => createProjectDraft());
-
-  useEffect(() => {
-    writeStoredProjects(projectConfigs);
-  }, [projectConfigs]);
-
-  useEffect(() => {
-    if (selectedConfigId) {
-      const selected = projectConfigs.find((project) => project.id === selectedConfigId);
-      if (selected) {
-        setProjectDraft(selected);
-      }
-      return;
-    }
-
-    setProjectDraft((current) => ({
-      ...current,
-      model: current.model || runtime.model,
-      path: current.path || runtime.cwd,
-    }));
-  }, [projectConfigs, runtime.cwd, runtime.model, selectedConfigId]);
-
-  useEffect(() => {
-    const target = document.querySelector(`[data-project-key="${selectedProjectKey}"]`);
-    target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [selectedProjectKey]);
-
   const runProjectAction = async (
     key: string,
     label: string,
@@ -6930,17 +5865,13 @@ function ProjectsSurface({
       'bulk-delete',
       '批量删除',
       async () => {
-        const result = await apiRequest<{ deleted?: number }>({
-          body: { ids: selectedSessionIds },
-          method: 'POST',
-          path: '/api/sessions/bulk-delete',
-          timeoutMs: 30000,
-        });
+        const idsToDelete = [...selectedSessionIds];
+        const deleted = await runtime.deleteSessions(idsToDelete);
+        setProjectSessions((current) => current.filter((session) => !idsToDelete.includes(session.id)));
         setSelectedSessionIds([]);
         setPendingDeleteId('');
         await loadProjectSessions();
-        await runtime.refreshInventory();
-        return `已删除 ${result.deleted ?? selectedSessionIds.length} 个会话。`;
+        return `已删除 ${deleted} 个会话。`;
       },
     );
   };
@@ -6978,209 +5909,22 @@ function ProjectsSurface({
         path: `/api/sessions/${encodeURIComponent(session.id)}/export`,
         timeoutMs: 30000,
       });
-      await writeClipboardText(JSON.stringify(result.session || result, null, 2), apiRequest);
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('当前环境无法访问剪贴板');
+      }
+      await navigator.clipboard.writeText(JSON.stringify(result.session || result, null, 2));
       return '会话 JSON 已复制。';
     },
   );
-  const copyProjectText = async (value: string, label: string) => {
-    if (!value.trim()) {
-      throw new Error(`${label}为空`);
-    }
-    await writeClipboardText(value, apiRequest);
-  };
-  const openWorkspaceDirectory = async () => {
-    if (!runtime.cwd.trim()) {
-      throw new Error('当前会话还没有工作目录');
-    }
-    await apiRequest({
-      body: {
-        cwd: runtime.cwd,
-        path: runtime.cwd,
-      },
-      method: 'POST',
-      path: '/api/files/open',
-      timeoutMs: 15000,
-    });
-  };
-  const projectLaunchPrompt = (project: HermesProjectConfig) => [
-    `请以这个项目为上下文继续工作：${project.name.trim() || '未命名项目'}`,
-    project.path.trim() ? `工作目录：${project.path.trim()}` : '',
-    project.profile.trim() ? `Hermes profile：${project.profile.trim()}` : '',
-    project.model.trim() ? `默认模型：${project.model.trim()}` : '',
-    project.notes.trim() ? `项目备注：${project.notes.trim()}` : '',
-    '请先确认当前目录和关键文件，再给出下一步行动。',
-  ].filter(Boolean).join('\n');
-  const projectRuntimeContext = (project: HermesProjectConfig): ProjectRuntimeContext => normalizeProjectRuntimeContext({
-    cwd: project.path,
-    model: project.model,
-    profile: project.profile || 'default',
-  });
-  const projectContextSummary = (project: HermesProjectConfig) => {
-    const context = projectRuntimeContext(project);
-    return [
-      context.cwd ? shortenPath(context.cwd) : '',
-      context.model || '',
-      context.profile ? `profile ${context.profile}` : '',
-    ].filter(Boolean).join(' · ');
-  };
-  const applyProjectConfig = () => runProjectAction(
-    'project-config:apply',
-    '应用项目',
-    () => {
-      const context = projectRuntimeContext(projectDraft);
-      if (!context.cwd && !context.model && !context.profile) {
-        throw new Error('请先填写工作目录、模型或 Profile');
-      }
-      runtime.applyProjectContext(context);
-      const summary = projectContextSummary(projectDraft);
-      return `项目“${projectDraft.name.trim() || '未命名项目'}”已应用到当前界面和下一次新任务${summary ? `：${summary}。` : '。'}`;
-    },
-  );
-  const selectProjectConfig = (project: HermesProjectConfig) => {
-    setPendingProjectDeleteId('');
-    setSelectedConfigId(project.id);
-    setProjectDraft(project);
-    setProjectStatus(`已选中“${project.name}”。`);
-  };
-  const beginNewProjectConfig = () => {
-    setPendingProjectDeleteId('');
-    setSelectedConfigId('');
-    setProjectDraft(createProjectDraft({ id: '', name: '', notes: '', path: runtime.cwd }));
-    setProjectStatus('正在创建新的项目档案。');
-  };
-  const saveProjectConfig = () => runProjectAction(
-    'project-config:save',
-    '保存项目',
-    async () => {
-      const name = projectDraft.name.trim();
-      if (!name) {
-        throw new Error('请输入项目名称');
-      }
-      const nextProject = {
-        ...projectDraft,
-        id: projectDraft.id || makeId('project'),
-        model: projectDraft.model.trim(),
-        name,
-        notes: projectDraft.notes.trim(),
-        path: projectDraft.path.trim(),
-        profile: projectDraft.profile.trim() || 'default',
-        updatedAt: Date.now(),
-      };
-      setProjectConfigs((current) => {
-        const others = current.filter((project) => project.id !== nextProject.id);
-        return [nextProject, ...others];
-      });
-      setSelectedConfigId(nextProject.id);
-      setProjectDraft(nextProject);
-      setPendingProjectDeleteId('');
-      return `项目“${nextProject.name}”已保存。`;
-    },
-  );
-  const pickProjectDirectory = () => runProjectAction(
-    'project-config:pick-folder',
-    '选择工作目录',
-    async () => {
-      if (!window.hermesDesktop?.pickAttachment) {
-        throw new Error('桌面 IPC 不可用，无法打开目录选择器');
-      }
-      const [folder] = await window.hermesDesktop.pickAttachment('folder');
-      if (!folder?.path) {
-        return '未选择目录。';
-      }
-      setProjectDraft((current) => ({ ...current, path: folder.path || '' }));
-      return '工作目录已填入。';
-    },
-  );
-  const openProjectDirectory = () => runProjectAction(
-    'project-config:open-folder',
-    '打开项目目录',
-    async () => {
-      const targetPath = projectDraft.path.trim();
-      if (!targetPath) {
-        throw new Error('请先填写工作目录');
-      }
-      await apiRequest({
-        body: { cwd: targetPath, path: targetPath },
-        method: 'POST',
-        path: '/api/files/open',
-        timeoutMs: 15000,
-      });
-      return '项目目录已交给系统打开。';
-    },
-  );
-  const copyProjectLaunchPrompt = () => runProjectAction(
-    'project-config:copy-prompt',
-    '复制启动提示',
-    async () => {
-      await copyProjectText(projectLaunchPrompt(projectDraft), '项目启动提示');
-      return '项目启动提示已复制。';
-    },
-  );
-  const startProjectTask = () => runProjectAction(
-    'project-config:start',
-    '开始项目任务',
-    async () => {
-      const context = projectRuntimeContext(projectDraft);
-      runtime.applyProjectContext(context);
-      await Promise.resolve(onOpenNewTask());
-      await runtime.submitPrompt(projectLaunchPrompt(projectDraft), context);
-      return '项目上下文已应用，启动提示已发送。';
-    },
-  );
-  const deleteProjectConfig = () => {
-    if (!projectDraft.id) {
-      setProjectStatus('当前草稿尚未保存，无需删除。');
-      return;
-    }
-    if (pendingProjectDeleteId !== projectDraft.id) {
-      setPendingProjectDeleteId(projectDraft.id);
-      setProjectStatus(`再次点击删除“${projectDraft.name}”。`);
-      return;
-    }
-    void runProjectAction(
-      'project-config:delete',
-      '删除项目',
-      async () => {
-        setProjectConfigs((current) => current.filter((project) => project.id !== projectDraft.id));
-        setSelectedConfigId('');
-        setProjectDraft(createProjectDraft({ id: '', name: '', notes: '', path: runtime.cwd }));
-        setPendingProjectDeleteId('');
-        return '项目档案已删除。';
-      },
-    );
-  };
 
   const projectCards = [
     {
       action: '查看文件',
-      actions: [
-        {
-          icon: <Copy size={14} />,
-          key: 'workspace:copy',
-          label: '复制路径',
-          onClick: () => runProjectAction('workspace:copy', '复制工作目录', async () => {
-            await copyProjectText(runtime.cwd, '工作目录');
-            return '工作目录已复制。';
-          }),
-        },
-        {
-          icon: <FolderOpen size={14} />,
-          key: 'workspace:open',
-          label: '打开目录',
-          onClick: () => runProjectAction('workspace:open', '打开工作目录', openWorkspaceDirectory, '工作目录已交给系统打开。'),
-        },
-        {
-          icon: <Settings size={14} />,
-          key: 'workspace:settings',
-          label: '项目设置',
-          onClick: () => runProjectAction('workspace:settings', '项目设置', onOpenSettings, '项目设置已打开。'),
-        },
-      ],
       icon: <Folder size={20} />,
-      key: 'project:local',
+      key: 'workspace',
       meta: runtime.cwd ? shortenPath(runtime.cwd) : '尚未从会话读取工作目录',
       onClick: () => runProjectAction(
-        'project:local',
+        'workspace',
         '文件工作区',
         () => onOpenWorkbenchTab('files'),
         '文件工作区已打开。',
@@ -7190,31 +5934,11 @@ function ProjectsSurface({
     },
     {
       action: gatewayReady ? '查看诊断' : '修复连接',
-      actions: [
-        {
-          icon: <RefreshCw size={14} />,
-          key: 'gateway:restart',
-          label: '重启',
-          onClick: () => runProjectAction('gateway:restart', '重启 Gateway', runtime.restartGateway, 'Gateway 重启命令已发送。'),
-        },
-        {
-          icon: <XCircle size={14} />,
-          key: 'gateway:stop',
-          label: '停止',
-          onClick: () => runProjectAction('gateway:stop', '停止 Gateway', runtime.stopGateway, 'Gateway 停止命令已发送。'),
-        },
-        {
-          icon: <TerminalSquare size={14} />,
-          key: 'gateway:logs',
-          label: '打开日志',
-          onClick: () => runProjectAction('gateway:logs', 'Gateway 日志', () => onOpenWorkbenchTab('terminal'), 'Gateway 日志已打开。'),
-        },
-      ],
       icon: <Network size={20} />,
-      key: 'project:gateway',
+      key: 'gateway',
       meta: runtime.connection?.baseUrl || runtime.connectionLabel,
       onClick: () => runProjectAction(
-        'project:gateway',
+        'gateway',
         gatewayReady ? 'Gateway 诊断' : 'Gateway 修复',
         gatewayReady ? onOpenDiagnostics : runtime.restartGateway,
         gatewayReady ? 'Gateway 诊断已打开。' : 'Gateway 修复命令已发送。',
@@ -7223,44 +5947,21 @@ function ProjectsSurface({
       title: 'Hermes Gateway',
     },
     {
-      action: firstRecentSession?.id ? '打开最近' : '刷新会话',
-      actions: [
-        ...(firstRecentSession?.id ? [{
-          icon: <RefreshCw size={14} />,
-          key: 'sessions:refresh',
-          label: '刷新会话',
-          onClick: () => runProjectAction('sessions:refresh', '刷新会话', () => loadProjectSessions(), '会话已刷新。'),
-        }] : []),
-        {
-          icon: <Plus size={14} />,
-          key: 'sessions:new',
-          label: '新建任务',
-          onClick: () => runProjectAction('sessions:new', '新建任务', onOpenNewTask, '新任务已创建。'),
-        },
-        {
-          icon: <Archive size={14} />,
-          key: 'sessions:archive-toggle',
-          label: includeArchived ? '隐藏归档' : '显示归档',
-          onClick: () => runProjectAction('sessions:archive-toggle', includeArchived ? '隐藏归档' : '显示归档', () => {
-            setIncludeArchived((value) => !value);
-            return includeArchived ? '已隐藏归档会话。' : '已显示归档会话。';
-          }),
-        },
-      ],
+      action: firstRecentSession?.id ? '打开最近' : '新建任务',
       icon: <MessageSquare size={20} />,
-      key: 'project:sessions',
+      key: 'sessions',
       meta: `${projectStats?.total ?? runtime.recentSessions.length} 个会话 · ${projectStats?.messages ?? 0} 条消息`,
       onClick: () => runProjectAction(
-        'project:sessions',
-        firstRecentSession?.id ? '最近会话' : '刷新会话',
+        'sessions',
+        firstRecentSession?.id ? '最近会话' : '新建任务',
         () => {
           if (firstRecentSession?.id) {
             onOpenSession(firstRecentSession.id);
             return;
           }
-          return loadProjectSessions();
+          onOpenNewTask();
         },
-        firstRecentSession?.id ? '最近会话正在打开。' : '会话已刷新。',
+        firstRecentSession?.id ? '最近会话正在打开。' : '新任务已创建。',
       ),
       stats: [
         `${projectStats?.active_store ?? projectSessions.length} 可见`,
@@ -7286,11 +5987,7 @@ function ProjectsSurface({
 
       <div className="projectGrid">
         {projectCards.map((project) => (
-          <article
-            className={selectedProjectKey === project.key ? 'projectCard selected' : 'projectCard'}
-            data-project-key={project.key}
-            key={project.title}
-          >
+          <article className="projectCard" key={project.title}>
             <div className="cardTop">
               <div className="projectIcon">
                 {project.icon}
@@ -7313,150 +6010,14 @@ function ProjectsSurface({
               {project.stats.length > 0 ? project.stats.map((stat) => <span key={stat}>{stat}</span>) : <span>等待数据</span>}
             </div>
             <div className="projectActions">
-              <button className="projectPrimaryAction" type="button" disabled={projectBusy !== null} onClick={project.onClick}>
+              <button type="button" disabled={projectBusy !== null} onClick={project.onClick}>
                 <ChevronRight size={15} />
                 {projectBusy === project.key ? '处理中' : project.action}
               </button>
-              {project.actions.map((action) => (
-                <button type="button" key={action.key} disabled={projectBusy !== null} onClick={action.onClick}>
-                  {action.icon}
-                  {projectBusy === action.key ? '处理中' : action.label}
-                </button>
-              ))}
             </div>
           </article>
         ))}
       </div>
-
-      <section
-        className={selectedProjectKey === 'project:configs' ? 'projectConfigPanel selected' : 'projectConfigPanel'}
-        data-project-key="project:configs"
-      >
-        <div className="projectConfigHeader">
-          <div>
-            <h3>项目档案</h3>
-            <p>保存常用目录、默认模型和启动提示，下一次直接从这里进入项目。</p>
-          </div>
-          <button type="button" onClick={beginNewProjectConfig} disabled={Boolean(projectBusy)}>
-            <Plus size={14} />
-            新建项目
-          </button>
-        </div>
-        <div className="projectConfigLayout">
-          <div className="projectConfigList" aria-label="已保存项目">
-            {projectConfigs.length > 0 ? projectConfigs.map((project) => (
-              <button
-                className={selectedConfigId === project.id ? 'projectConfigRow selected' : 'projectConfigRow'}
-                key={project.id}
-                type="button"
-                onClick={() => selectProjectConfig(project)}
-              >
-                <span className="statusDot blue" />
-                <span>
-                  <strong>{project.name}</strong>
-                  <small>{project.path ? shortenPath(project.path) : '未设置工作目录'} · {project.model || '未设置模型'}</small>
-                </span>
-                <em>{project.updatedAt ? new Date(project.updatedAt).toLocaleDateString() : '刚刚'}</em>
-              </button>
-            )) : (
-              <div className="projectConfigEmpty">
-                <strong>暂无项目档案</strong>
-                <span>新建一个项目后，会保存在这台 Mac 上。</span>
-              </div>
-            )}
-          </div>
-          <form
-            className="projectConfigForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveProjectConfig();
-            }}
-          >
-            <label>
-              <span>项目名称</span>
-              <input
-                aria-label="项目名称"
-                disabled={Boolean(projectBusy)}
-                placeholder="例如 Beauty Hermes GUI"
-                value={projectDraft.name}
-                onChange={(event) => setProjectDraft((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label>
-              <span>默认模型</span>
-              <input
-                aria-label="默认模型"
-                disabled={Boolean(projectBusy)}
-                placeholder={runtime.model}
-                value={projectDraft.model}
-                onChange={(event) => setProjectDraft((current) => ({ ...current, model: event.target.value }))}
-              />
-            </label>
-            <label>
-              <span>Profile</span>
-              <input
-                aria-label="Hermes profile"
-                disabled={Boolean(projectBusy)}
-                placeholder="default"
-                value={projectDraft.profile}
-                onChange={(event) => setProjectDraft((current) => ({ ...current, profile: event.target.value }))}
-              />
-            </label>
-            <label className="projectConfigPath">
-              <span>工作目录</span>
-              <div className="projectPathControl">
-                <input
-                  aria-label="工作目录"
-                  disabled={Boolean(projectBusy)}
-                  placeholder="选择或粘贴项目目录"
-                  value={projectDraft.path}
-                  onChange={(event) => setProjectDraft((current) => ({ ...current, path: event.target.value }))}
-                />
-                <button type="button" onClick={pickProjectDirectory} disabled={Boolean(projectBusy)}>
-                  <FolderOpen size={14} />
-                  选择
-                </button>
-              </div>
-            </label>
-            <label className="projectConfigNotes">
-              <span>项目备注</span>
-              <textarea
-                aria-label="项目备注"
-                disabled={Boolean(projectBusy)}
-                placeholder="记录这个项目的目标、约束或常用启动说明"
-                value={projectDraft.notes}
-                onChange={(event) => setProjectDraft((current) => ({ ...current, notes: event.target.value }))}
-              />
-            </label>
-            <div className="projectConfigActions">
-              <button className="projectPrimaryAction" type="submit" disabled={Boolean(projectBusy)}>
-                <Check size={14} />
-                {projectBusy === 'project-config:save' ? '保存中' : '保存项目'}
-              </button>
-              <button type="button" onClick={applyProjectConfig} disabled={Boolean(projectBusy)}>
-                <CheckCircle2 size={14} />
-                {projectBusy === 'project-config:apply' ? '应用中' : '应用项目'}
-              </button>
-              <button type="button" onClick={openProjectDirectory} disabled={Boolean(projectBusy)}>
-                <FolderOpen size={14} />
-                打开目录
-              </button>
-              <button type="button" onClick={copyProjectLaunchPrompt} disabled={Boolean(projectBusy)}>
-                <Copy size={14} />
-                复制启动提示
-              </button>
-              <button type="button" onClick={startProjectTask} disabled={Boolean(projectBusy)}>
-                <SendHorizontal size={14} />
-                开始项目任务
-              </button>
-              <button className="danger" type="button" onClick={deleteProjectConfig} disabled={Boolean(projectBusy)}>
-                <Trash2 size={14} />
-                {pendingProjectDeleteId === projectDraft.id && projectDraft.id ? '确认删除' : '删除项目'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </section>
 
       <section className="projectSessionManager">
         <div className="sessionManagerHeader">
@@ -7578,49 +6139,14 @@ function AgentsSurface({
 }) {
   const [agentBusy, setAgentBusy] = useState('');
   const [agentStatus, setAgentStatus] = useState('');
-  const [localActions, setLocalActions] = useState<HermesLocalActionInfo[]>([]);
-  const [actionsLoaded, setActionsLoaded] = useState(false);
   const runningTools = runtime.tools.filter((tool) => tool.state === 'running');
   const completedTools = runtime.tools.filter((tool) => tool.state === 'done');
-  const runningActions = localActions.filter((action) => action.running);
-  const completedActions = localActions.filter((action) => !action.running);
-  const subagentTree = useMemo(() => buildSubagentTree(runtime.subagents), [runtime.subagents]);
-  const activeSubagents = activeSubagentCount(runtime.subagents);
-  const subagentInputTokens = runtime.subagents.reduce((total, item) => total + (item.inputTokens ?? 0), 0);
-  const subagentOutputTokens = runtime.subagents.reduce((total, item) => total + (item.outputTokens ?? 0), 0);
-  const subagentCost = runtime.subagents.reduce((total, item) => total + (item.costUsd ?? 0), 0);
-  const subagentFiles = runtime.subagents.reduce((total, item) => total + item.filesRead.length + item.filesWritten.length, 0);
   const gatewayControlsLocked = Boolean(agentBusy);
-  const loadActions = useCallback(async (quiet = false) => {
-    try {
-      if (!quiet) {
-        setAgentBusy('actions:load');
-      }
-      const response = await runtime.apiRequest<{ actions?: HermesLocalActionInfo[] }>({
-        path: '/api/actions',
-        timeoutMs: 12000,
-      });
-      setLocalActions(Array.isArray(response.actions) ? response.actions : []);
-      setActionsLoaded(true);
-      if (!quiet) {
-        setAgentStatus('后台动作已同步。');
-      }
-    } catch (error) {
-      if (!quiet) {
-        setAgentStatus(`后台动作读取失败：${error instanceof Error ? error.message : '未知错误'}`);
-      }
-    } finally {
-      if (!quiet) {
-        setAgentBusy('');
-      }
-    }
-  }, [runtime]);
   const refreshAgents = async () => {
     try {
       setAgentBusy('refresh');
       setAgentStatus('正在刷新 Agents 状态...');
       await runtime.refreshInventory();
-      await loadActions(true);
       setAgentStatus('Agents 状态已刷新。');
     } catch (error) {
       setAgentStatus(`Agents 状态刷新失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -7628,11 +6154,6 @@ function AgentsSurface({
       setAgentBusy('');
     }
   };
-  useEffect(() => {
-    if (!actionsLoaded && !agentBusy) {
-      void loadActions(true);
-    }
-  }, [actionsLoaded, agentBusy, loadActions]);
   const runAgentAction = async (key: string, label: string, action: () => Promise<void>) => {
     try {
       setAgentBusy(key);
@@ -7645,37 +6166,18 @@ function AgentsSurface({
       setAgentBusy('');
     }
   };
-  const refreshActionStatus = async (action: HermesLocalActionInfo) => {
-    await runAgentAction(`action:refresh:${action.name}`, `${action.name} 状态刷新`, async () => {
-      const result = await runtime.apiRequest<HermesLocalActionInfo>({
-        path: `/api/actions/${encodeURIComponent(action.name)}/status?lines=8`,
-        timeoutMs: 12000,
-      });
-      setLocalActions((current) => {
-        const next = current.some((item) => item.name === result.name)
-          ? current.map((item) => item.name === result.name ? { ...item, ...result } : item)
-          : [result, ...current];
-        return next;
-      });
-    });
-  };
-  const stopAction = async (action: HermesLocalActionInfo) => {
-    await runAgentAction(`action:stop:${action.name}`, `${action.name} 停止`, async () => {
-      await runtime.apiRequest({
-        method: 'POST',
-        path: `/api/actions/${encodeURIComponent(action.name)}/stop`,
-        timeoutMs: 12000,
-      });
-      await loadActions(true);
-    });
-  };
   const copyAgentSummary = async (tool: GatewayToolItem) => {
+    if (!navigator.clipboard?.writeText) {
+      setAgentStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
     await runAgentAction(`copy:${tool.id}`, `${tool.label} 摘要复制`, async () => {
-      await writeClipboardText([
+      await navigator.clipboard.writeText([
         tool.label,
         tool.detail,
         tool.value,
-      ].filter(Boolean).join('\n'), runtime.apiRequest);
+      ].filter(Boolean).join('\n'));
     });
   };
   const respondAgentApproval = (choice: 'once' | 'session' | 'always' | 'deny') => {
@@ -7722,46 +6224,13 @@ function AgentsSurface({
         )}
       />
     )];
-  const actionCards = localActions.length > 0
-    ? localActions.slice(0, 6).map((action) => (
-      <AgentCard
-        key={action.name}
-        title={action.name}
-        status={action.running ? '运行中' : action.exit_code === 0 ? '完成' : action.exit_code === null || action.exit_code === undefined ? '未知' : `退出 ${action.exit_code}`}
-        desc={action.args?.length ? `hermes ${action.args.join(' ')}` : '本地后台动作'}
-        meta={(action.lines || []).slice(-1)[0] || (action.started_at ? `started ${action.started_at}` : '暂无日志')}
-        muted={!action.running}
-        actions={(
-          <>
-            <button type="button" onClick={() => void refreshActionStatus(action)} disabled={gatewayControlsLocked}>
-              {agentBusy === `action:refresh:${action.name}` ? '刷新中' : '刷新日志'}
-            </button>
-            {action.stoppable && (
-              <button className="danger" type="button" onClick={() => void stopAction(action)} disabled={gatewayControlsLocked}>
-                {agentBusy === `action:stop:${action.name}` ? '停止中' : '停止'}
-              </button>
-            )}
-          </>
-        )}
-      />
-    ))
-    : [(
-      <AgentCard
-        key="actions-empty"
-        title="暂无后台动作"
-        status="空"
-        desc="更新、post-setup 等后台动作启动后会出现在这里。"
-        meta={actionsLoaded ? '本机动作队列为空' : '正在同步'}
-        muted
-      />
-    )];
 
   return (
     <section className="pageSurface">
       <div className="pageIntro">
         <div>
           <h2>Agents</h2>
-          <p>并行 subagents、运行中工具、待确认命令和 Gateway 控制集中在这里。</p>
+          <p>运行中工具、待确认命令和 Gateway 控制集中在这里。</p>
         </div>
         <div className="topActions">
           <button className="lightButton" type="button" onClick={() => void refreshAgents()} disabled={Boolean(agentBusy)}>
@@ -7775,32 +6244,6 @@ function AgentsSurface({
         </div>
       </div>
       {agentStatus && <p className="surfaceStatus" role="status">{agentStatus}</p>}
-      <section className="subagentPanel" aria-label="并行任务">
-        <div className="subagentPanelHead">
-          <div>
-            <span className="panelEyebrow">并行任务</span>
-            <strong>{activeSubagents > 0 ? `${activeSubagents} 个正在运行` : runtime.subagents.length > 0 ? '全部已完成' : '等待 subagent 事件'}</strong>
-          </div>
-          <div className="subagentMetrics">
-            <span>{runtime.subagents.length} agents</span>
-            <span>{subagentInputTokens + subagentOutputTokens > 0 ? `${formatCompactNumber(subagentInputTokens)} / ${formatCompactNumber(subagentOutputTokens)} tokens` : 'tokens 待统计'}</span>
-            <span>{subagentFiles > 0 ? `${subagentFiles} 文件` : '文件待同步'}</span>
-            <span>{subagentCost > 0 ? `$${subagentCost.toFixed(3)}` : 'cost 待统计'}</span>
-          </div>
-        </div>
-        {subagentTree.length > 0 ? (
-          <div className="subagentTree">
-            {subagentTree.map((node) => (
-              <SubagentTreeNode key={node.id} node={node} />
-            ))}
-          </div>
-        ) : (
-          <div className="subagentEmpty">
-            <GitBranch size={16} />
-            <span>Hermes 发出 <code>subagent.*</code> 事件后，会按父子关系、进度、工具流、文件和 token 成本在这里实时展开。</span>
-          </div>
-        )}
-      </section>
       <div className="agentControlStrip" aria-label="Gateway 快捷控制">
         <div>
           <Network size={15} />
@@ -7853,9 +6296,6 @@ function AgentsSurface({
             <AgentCard title="暂无待审批命令" status="空闲" desc="出现高风险操作时会固定在这里。" meta="审批队列为空" muted />
           )}
         </KanbanColumn>
-        <KanbanColumn title="后台动作" count={String(runningActions.length || completedActions.length)}>
-          {actionCards}
-        </KanbanColumn>
         <KanbanColumn title="已完成" count={String(completedTools.length)}>
           {completedTools.length > 0 ? (
             completedTools.slice(0, 4).map((tool) => (
@@ -7867,96 +6307,6 @@ function AgentsSurface({
         </KanbanColumn>
       </div>
     </section>
-  );
-}
-
-function formatCompactNumber(value: number) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return '0';
-  }
-
-  return new Intl.NumberFormat('en', {
-    maximumFractionDigits: value >= 1000 ? 1 : 0,
-    notation: value >= 1000 ? 'compact' : 'standard',
-  }).format(value);
-}
-
-function subagentStatusLabel(status: HermesSubagentStatus) {
-  const labels: Record<HermesSubagentStatus, string> = {
-    completed: '完成',
-    failed: '失败',
-    interrupted: '中断',
-    queued: '排队',
-    running: '运行中',
-  };
-  return labels[status];
-}
-
-function subagentStreamIcon(kind: HermesSubagentStreamKind) {
-  if (kind === 'tool') {
-    return <TerminalSquare size={12} />;
-  }
-  if (kind === 'thinking') {
-    return <Sparkles size={12} />;
-  }
-  if (kind === 'summary') {
-    return <CheckCircle2 size={12} />;
-  }
-  return <CircleDot size={12} />;
-}
-
-function SubagentTreeNode({ node, level = 0 }: { node: HermesSubagentNode; level?: number }) {
-  const tokenText = node.inputTokens || node.outputTokens
-    ? `${formatCompactNumber(node.inputTokens ?? 0)} / ${formatCompactNumber(node.outputTokens ?? 0)}`
-    : '';
-  const metaParts = [
-    `#${node.taskIndex + 1}/${node.taskCount}`,
-    node.model,
-    node.currentTool ? `tool ${formatSubagentToolName(node.currentTool)}` : '',
-    tokenText ? `${tokenText} tokens` : '',
-    node.costUsd ? `$${node.costUsd.toFixed(3)}` : '',
-    node.durationSeconds ? `${node.durationSeconds.toFixed(1)}s` : '',
-  ].filter(Boolean);
-  const files = [...node.filesRead, ...node.filesWritten].slice(0, 4);
-
-  return (
-    <article className="subagentNode" style={{ '--subagent-level': level } as CSSProperties}>
-      <div className="subagentNodeMain">
-        <span className={`subagentStatusDot ${node.status}`} />
-        <div>
-          <div className="subagentTitleLine">
-            <strong>{node.goal}</strong>
-            <span className={`subagentPill ${node.status}`}>{subagentStatusLabel(node.status)}</span>
-          </div>
-          <p>{metaParts.join(' · ') || '等待进度'}</p>
-        </div>
-      </div>
-      {node.stream.length > 0 && (
-        <div className="subagentStream">
-          {node.stream.slice(-4).map((entry, index) => (
-            <div className={entry.isError ? 'error' : undefined} key={`${entry.at}-${entry.kind}-${index}`}>
-              {subagentStreamIcon(entry.kind)}
-              <span>{entry.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {(node.summary || files.length > 0) && (
-        <div className="subagentMetaLine">
-          {node.summary && <span>{node.summary}</span>}
-          {files.map((file) => (
-            <code key={file}>{shortenPath(file)}</code>
-          ))}
-        </div>
-      )}
-      {node.children.length > 0 && (
-        <div className="subagentChildren">
-          {node.children.map((child) => (
-            <SubagentTreeNode key={child.id} level={level + 1} node={child} />
-          ))}
-        </div>
-      )}
-    </article>
   );
 }
 
@@ -8146,7 +6496,11 @@ function ProfilesSurface({ runtime }: { runtime: HermesRuntime }) {
         setProfileStatus(`${name} 没有可复制的 setup 命令。`);
         return;
       }
-      await writeClipboardText(command, apiRequest);
+      if (!navigator.clipboard?.writeText) {
+        setProfileStatus('当前环境无法访问剪贴板。');
+        return;
+      }
+      await navigator.clipboard.writeText(command);
       setProfileStatus(`${name} setup 命令已复制。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -8503,18 +6857,11 @@ function PolicyCard({ icon, title, desc }: { icon: React.ReactNode; title: strin
   );
 }
 
-function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime: HermesRuntime }) {
+function SkillsSurface({ runtime }: { runtime: HermesRuntime }) {
   const [query, setQuery] = useState('');
   const [skillRows, setSkillRows] = useState<HermesSkillInfo[]>([]);
-  const [localSkillRows, setLocalSkillRows] = useState<HermesSkillInfo[]>([]);
-  const [expandedSkillName, setExpandedSkillName] = useState('');
   const [skillStatus, setSkillStatus] = useState('');
   const [skillBusy, setSkillBusy] = useState('');
-  const [newSkillName, setNewSkillName] = useState('');
-  const [newSkillDescription, setNewSkillDescription] = useState('');
-  const [skillEditorName, setSkillEditorName] = useState('');
-  const [skillEditorContent, setSkillEditorContent] = useState('');
-  const [pendingSkillDeleteName, setPendingSkillDeleteName] = useState('');
   const apiRequest = runtime.apiRequest;
   const refreshInventory = runtime.refreshInventory;
   const loadSkills = useCallback(async () => {
@@ -8551,161 +6898,24 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
       setSkillBusy('');
     }
   }, [apiRequest, refreshInventory]);
-  const createSkill = useCallback(async (nameInput = newSkillName, descriptionInput = newSkillDescription) => {
-    const name = nameInput.trim();
-    const description = descriptionInput.trim();
-    if (!name) {
-      setSkillStatus('请输入本地 skill 名称。');
+  const copySkillInfo = useCallback(async (skill: HermesSkillInfo) => {
+    const value = skill.path || skill.description || skill.name;
+    if (!navigator.clipboard?.writeText) {
+      setSkillStatus('当前环境无法访问剪贴板。');
       return;
     }
 
     try {
-      setSkillBusy('create');
-      const response = await apiRequest<{ skill?: HermesSkillInfo }>({
-        body: { description, name },
-        method: 'POST',
-        path: '/api/skills',
-        timeoutMs: 20000,
-      });
-      const skill = response.skill;
-      if (skill) {
-        setLocalSkillRows((current) => [skill, ...current.filter((row) => row.name !== skill.name)]);
-        setSkillRows((current) => [skill, ...current.filter((row) => row.name !== skill.name)]);
-        setExpandedSkillName(skill.name);
-        setSkillEditorName(skill.name);
-        setSkillEditorContent('');
-      }
-      setNewSkillName('');
-      setNewSkillDescription('');
-      setSkillStatus(`${skill?.name || name} 已创建。`);
-      void refreshInventory();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSkillStatus(`创建失败：${message}`);
-    } finally {
-      setSkillBusy('');
-    }
-  }, [apiRequest, newSkillDescription, newSkillName, refreshInventory]);
-  const loadSkillContent = useCallback(async (skill: HermesSkillInfo) => {
-    try {
-      setSkillBusy(`edit:load:${skill.name}`);
-      const response = await apiRequest<{ skill?: HermesSkillInfo & { content?: string } }>({
-        path: `/api/skills/${encodeURIComponent(skill.name)}`,
-        timeoutMs: 15000,
-      });
-      setSkillEditorName(skill.name);
-      setSkillEditorContent(response.skill?.content || '');
-      setSkillStatus(`${skill.name} 已读取 SKILL.md。`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSkillStatus(`读取失败：${message}`);
-    } finally {
-      setSkillBusy('');
-    }
-  }, [apiRequest]);
-  const saveSkillContent = useCallback(async (skill: HermesSkillInfo) => {
-    if (skillEditorName !== skill.name) {
-      setSkillStatus('请先读取 SKILL.md。');
-      return;
-    }
-
-    try {
-      setSkillBusy(`edit:save:${skill.name}`);
-      const response = await apiRequest<{ skill?: HermesSkillInfo }>({
-        body: { content: skillEditorContent },
-        method: 'PUT',
-        path: `/api/skills/${encodeURIComponent(skill.name)}`,
-        timeoutMs: 20000,
-      });
-      if (response.skill) {
-        setLocalSkillRows((current) => current.map((row) => row.name === skill.name ? { ...row, ...response.skill } : row));
-        setSkillRows((current) => current.map((row) => row.name === skill.name ? { ...row, ...response.skill } : row));
-      }
-      setSkillStatus(`${skill.name} 已保存。`);
-      void refreshInventory();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSkillStatus(`保存失败：${message}`);
-    } finally {
-      setSkillBusy('');
-    }
-  }, [apiRequest, refreshInventory, skillEditorContent, skillEditorName]);
-  const deleteSkill = useCallback(async (skill: HermesSkillInfo) => {
-    if (pendingSkillDeleteName !== skill.name) {
-      setPendingSkillDeleteName(skill.name);
-      setSkillStatus(`再次点击确认删除 ${skill.name}。`);
-      return;
-    }
-
-    try {
-      setSkillBusy(`delete:${skill.name}`);
-      await apiRequest({
-        method: 'DELETE',
-        path: `/api/skills/${encodeURIComponent(skill.name)}`,
-        timeoutMs: 20000,
-      });
-      setLocalSkillRows((current) => current.filter((row) => row.name !== skill.name));
-      setSkillRows((current) => current.filter((row) => row.name !== skill.name));
-      if (expandedSkillName === skill.name) {
-        setExpandedSkillName('');
-      }
-      if (skillEditorName === skill.name) {
-        setSkillEditorName('');
-        setSkillEditorContent('');
-      }
-      setPendingSkillDeleteName('');
-      setSkillStatus(`${skill.name} 已删除。`);
-      void refreshInventory();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSkillStatus(`删除失败：${message}`);
-    } finally {
-      setSkillBusy('');
-    }
-  }, [apiRequest, expandedSkillName, pendingSkillDeleteName, refreshInventory, skillEditorName]);
-  const copySkillInfo = useCallback(async (skill: HermesSkillInfo, kind: 'path' | 'summary') => {
-    const value = kind === 'path'
-      ? skill.path || skill.name
-      : [
-        `Skill: ${skill.name}`,
-        `Source: ${skill.source || 'local'}`,
-        `Enabled: ${(skill.enabled ?? true) ? 'yes' : 'no'}`,
-        skill.path ? `Path: ${skill.path}` : '',
-        skill.description ? `Description: ${skill.description}` : '',
-      ].filter(Boolean).join('\n');
-    try {
-      setSkillBusy(`copy:${kind}:${skill.name}`);
-      await writeClipboardText(value, apiRequest);
-      setSkillStatus(`${skill.name} ${kind === 'path' ? '路径' : '摘要'}已复制。`);
+      setSkillBusy(`copy:${skill.name}`);
+      await navigator.clipboard.writeText(value);
+      setSkillStatus(`${skill.name} 已复制`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSkillStatus(`复制失败：${message}`);
     } finally {
       setSkillBusy('');
     }
-  }, [apiRequest]);
-  const openSkillPath = useCallback(async (skill: HermesSkillInfo) => {
-    if (!skill.path) {
-      setSkillStatus(`${skill.name} 没有可打开路径。`);
-      return;
-    }
-
-    try {
-      setSkillBusy(`open:${skill.name}`);
-      await apiRequest({
-        body: { path: skill.path },
-        method: 'POST',
-        path: '/api/files/open',
-        timeoutMs: 15000,
-      });
-      setSkillStatus(`${skill.name} 已交给系统打开。`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSkillStatus(`打开失败：${message}`);
-    } finally {
-      setSkillBusy('');
-    }
-  }, [apiRequest]);
+  }, []);
   useEffect(() => {
     void loadSkills();
   }, [loadSkills]);
@@ -8725,43 +6935,7 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
       source: 'plugin',
     })) ?? []),
   ];
-  const sourceRows = skillRows.length > 0 ? skillRows : fallbackRows;
-  const rows = [
-    ...localSkillRows,
-    ...sourceRows.filter((skill) => !localSkillRows.some((localSkill) => localSkill.name === skill.name)),
-  ];
-  const rowSignature = rows.map((skill) => `${skill.name}:${skill.enabled ?? true}`).join('|');
-  useEffect(() => {
-    const nextQuery = deepLink.query.trim();
-    const targetQuery = deepLink.skillName.trim().toLowerCase();
-
-    setQuery(nextQuery);
-
-    if (!targetQuery) {
-      setExpandedSkillName('');
-      if (deepLink.nonce > 0) {
-        setSkillStatus(nextQuery ? `已按“${nextQuery}”筛选 skills。` : '已打开技能库。');
-      }
-      return;
-    }
-
-    const target = rows.find((skill) => skill.name.toLowerCase() === targetQuery)
-      ?? rows.find((skill) => skill.name.toLowerCase().includes(targetQuery));
-    if (!target) {
-      setExpandedSkillName('');
-      setSkillStatus(`正在查找 ${deepLink.skillName}。`);
-      return;
-    }
-
-    setQuery(target.name);
-    setExpandedSkillName(target.name);
-    setSkillStatus(`已定位 ${target.name}。`);
-    window.requestAnimationFrame(() => {
-      const targetNode = Array.from(document.querySelectorAll<HTMLElement>('[data-skill-name]'))
-        .find((node) => node.dataset.skillName === target.name);
-      targetNode?.scrollIntoView({ block: 'center', inline: 'nearest' });
-    });
-  }, [deepLink.nonce, deepLink.query, deepLink.skillName, rowSignature]);
+  const rows = skillRows.length > 0 ? skillRows : fallbackRows;
   const filteredSkills = rows
     .filter((skill) => {
       const haystack = `${skill.name} ${skill.description || ''} ${skill.path || ''} ${skill.source || ''}`.toLowerCase();
@@ -8785,120 +6959,28 @@ function SkillsSurface({ deepLink, runtime }: { deepLink: SkillDeepLink; runtime
           {skillBusy === 'load' ? '刷新中' : '刷新'}
         </button>
       </div>
-      <form
-        className="inlineCreateForm skillCreateForm"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const formData = new FormData(event.currentTarget);
-          void createSkill(
-            String(formData.get('name') || ''),
-            String(formData.get('description') || ''),
-          );
-        }}
-      >
-        <input
-          aria-label="新建 skill 名称"
-          disabled={skillBusy === 'create'}
-          name="name"
-          placeholder="local-skill-name"
-          value={newSkillName}
-          onChange={(event) => setNewSkillName(event.target.value)}
-        />
-        <input
-          aria-label="新建 skill 描述"
-          disabled={skillBusy === 'create'}
-          name="description"
-          placeholder="一句话描述使用场景"
-          value={newSkillDescription}
-          onChange={(event) => setNewSkillDescription(event.target.value)}
-        />
-        <button
-          type="button"
-          disabled={skillBusy === 'create'}
-          onClick={(event) => {
-            event.preventDefault();
-            const form = event.currentTarget.form;
-            const formData = form ? new FormData(form) : null;
-            void createSkill(
-              String(formData?.get('name') || newSkillName),
-              String(formData?.get('description') || newSkillDescription),
-            );
-          }}
-        >
-          {skillBusy === 'create' ? '创建中' : '新建本地 skill'}
-        </button>
-      </form>
       {skillStatus && <p className="surfaceStatus">{skillStatus}</p>}
       <div className="skillGrid">
-        {filteredSkills.length > 0 ? filteredSkills.map((skill) => {
-          const expanded = expandedSkillName === skill.name;
-          const canEditSkill = skill.source !== 'plugin';
-          const editing = skillEditorName === skill.name;
-          return (
-          <article className={expanded ? 'skillCard expanded' : 'skillCard'} data-skill-name={skill.name} key={`${skill.source || 'local'}-${skill.name}`}>
-            <div className="skillCardHeader">
-              <div className="skillIcon">
-                <Puzzle size={20} />
-              </div>
-              <div className="skillTitle">
-                <strong>{skill.name}</strong>
-                <span>{skill.source || 'local'} · {(skill.enabled ?? true) ? 'enabled' : 'disabled'}</span>
-              </div>
+        {filteredSkills.length > 0 ? filteredSkills.map((skill) => (
+          <article className="skillCard" key={skill.name}>
+            <div className="skillIcon">
+              <Puzzle size={20} />
             </div>
+            <strong>{skill.name}</strong>
             <p>{skill.description || skill.path || '暂无描述'}</p>
-            {expanded && (
-              <div className="skillDetail">
-                <code>{skill.path || '暂无本地路径'}</code>
-                <span>可用 `/skill {skill.name}` 在会话中查看或调用。</span>
-                <div className="skillEditorActions">
-                  <button type="button" onClick={() => void loadSkillContent(skill)} disabled={Boolean(skillBusy) || !canEditSkill}>
-                    {skillBusy === `edit:load:${skill.name}` ? '读取中' : '读取 SKILL.md'}
-                  </button>
-                  <button type="button" onClick={() => void saveSkillContent(skill)} disabled={Boolean(skillBusy) || !canEditSkill || !editing}>
-                    {skillBusy === `edit:save:${skill.name}` ? '保存中' : '保存'}
-                  </button>
-                  <button
-                    className={pendingSkillDeleteName === skill.name ? 'danger confirm' : 'danger'}
-                    type="button"
-                    onClick={() => void deleteSkill(skill)}
-                    disabled={Boolean(skillBusy) || !canEditSkill}
-                  >
-                    {pendingSkillDeleteName === skill.name ? '确认删除' : '删除'}
-                  </button>
-                </div>
-                <textarea
-                  aria-label="Skill 编辑器"
-                  className="skillEditor"
-                  disabled={Boolean(skillBusy) || !canEditSkill || !editing}
-                  placeholder={canEditSkill ? '读取 SKILL.md 后在这里编辑...' : '插件 skill 不在本地 skills 目录内，不能在这里编辑。'}
-                  value={editing ? skillEditorContent : ''}
-                  onChange={(event) => setSkillEditorContent(event.target.value)}
-                />
-              </div>
-            )}
-            <div className="skillActions">
+            <div>
               <span className={(skill.enabled ?? true) ? 'pill green' : 'pill amber'}>
                 {skill.source || ((skill.enabled ?? true) ? 'enabled' : 'disabled')}
               </span>
-              <button type="button" onClick={() => setExpandedSkillName(expanded ? '' : skill.name)} disabled={Boolean(skillBusy)}>
-                {expanded ? '收起' : '详情'}
-              </button>
               <button type="button" onClick={() => void toggleSkill(skill)} disabled={Boolean(skillBusy)}>
                 {skillBusy === `toggle:${skill.name}` ? '更新中' : (skill.enabled ?? true) ? '停用' : '启用'}
               </button>
-              <button type="button" onClick={() => void copySkillInfo(skill, 'path')} disabled={Boolean(skillBusy)}>
-                {skillBusy === `copy:path:${skill.name}` ? '复制中' : '复制路径'}
-              </button>
-              <button type="button" onClick={() => void copySkillInfo(skill, 'summary')} disabled={Boolean(skillBusy)}>
-                {skillBusy === `copy:summary:${skill.name}` ? '复制中' : '复制摘要'}
-              </button>
-              <button type="button" onClick={() => void openSkillPath(skill)} disabled={Boolean(skillBusy) || !skill.path}>
-                {skillBusy === `open:${skill.name}` ? '打开中' : '打开位置'}
+              <button type="button" onClick={() => void copySkillInfo(skill)} disabled={Boolean(skillBusy)}>
+                {skillBusy === `copy:${skill.name}` ? '复制中' : '复制'}
               </button>
             </div>
           </article>
-          );
-        }) : (
+        )) : (
           <article className="skillCard muted">
             <div className="skillIcon">
               <Puzzle size={20} />
@@ -9345,7 +7427,6 @@ function CronSurface({ runtime }: { runtime: HermesRuntime }) {
 
 function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
   const messaging = runtime.inventory?.messaging;
-  const [messagingQuery, setMessagingQuery] = useState('');
   const [platformsState, setPlatformsState] = useState<HermesMessagingPlatformInfo[]>([]);
   const [messagingStatus, setMessagingStatus] = useState('');
   const [messagingBusy, setMessagingBusy] = useState('');
@@ -9415,46 +7496,6 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
     const docsWindow = window.open(platform.docs_url, '_blank', 'noopener,noreferrer');
     setMessagingStatus(docsWindow ? `${platform.name} 文档已打开。` : `${platform.name} 文档可能被浏览器拦截。`);
   }, []);
-  const copyPlatformSummary = useCallback(async (platform: HermesMessagingPlatformInfo, kind: 'docs' | 'summary') => {
-    const value = kind === 'docs'
-      ? platform.docs_url || ''
-      : [
-        `Platform: ${platform.name}`,
-        `State: ${platform.state || (platform.enabled ? 'enabled' : 'disabled')}`,
-        `Configured: ${platform.configured ? 'yes' : 'no'}`,
-        `Enabled: ${platform.enabled ? 'yes' : 'no'}`,
-        platform.docs_url ? `Docs: ${platform.docs_url}` : '',
-        platform.error_message ? `Error: ${platform.error_message}` : '',
-        platform.env_vars?.length ? `Env: ${platform.env_vars.map((env) => `${env.key}${env.is_set ? '=set' : '=unset'}`).join(', ')}` : '',
-      ].filter(Boolean).join('\n');
-    if (!value) {
-      setMessagingStatus(`${platform.name} 没有可复制内容。`);
-      return;
-    }
-    try {
-      setMessagingBusy(`copy:${kind}:${platform.id}`);
-      await writeClipboardText(value, apiRequest);
-      setMessagingStatus(`${platform.name} ${kind === 'docs' ? '文档链接' : '摘要'}已复制。`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setMessagingStatus(`复制失败：${message}`);
-    } finally {
-      setMessagingBusy('');
-    }
-  }, [apiRequest]);
-  const restartMessagingGateway = useCallback(async () => {
-    try {
-      setMessagingBusy('gateway:restart');
-      await runtime.restartGateway();
-      setMessagingStatus('Gateway 重启请求已发送，消息平台配置将重新加载。');
-      void refreshInventory();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setMessagingStatus(`重启 Gateway 失败：${message}`);
-    } finally {
-      setMessagingBusy('');
-    }
-  }, [refreshInventory, runtime]);
   const togglePlatformConfig = useCallback((platform: HermesMessagingPlatformInfo) => {
     if (selectedMessagingPlatformId === platform.id) {
       setSelectedMessagingPlatformId('');
@@ -9650,21 +7691,6 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
       state: platform.state,
       updated_at: platform.updatedAt,
     })) ?? [];
-  const filteredPlatforms = platforms.filter((platform) => {
-    const search = messagingQuery.trim().toLowerCase();
-    if (!search) {
-      return true;
-    }
-    const haystack = [
-      platform.id,
-      platform.name,
-      platform.state,
-      platform.description,
-      platform.docs_url,
-      platform.env_vars?.map((env) => `${env.key} ${env.description || ''} ${env.prompt || ''}`).join(' '),
-    ].filter(Boolean).join(' ').toLowerCase();
-    return haystack.includes(search);
-  });
   const channelRows = Object.entries(messaging?.channelCounts ?? {}).filter(([, count]) => count > 0);
   const pairingRows = [
     ['Feishu', messaging?.pairings.feishuApproved ?? 0, messaging?.pairings.feishuPending ?? 0],
@@ -9678,24 +7704,14 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
           <h2>消息网关</h2>
           <p>管理 Hermes Gateway 平台状态、凭据配置、连接测试和用户配对。</p>
         </div>
-        <div className="pageIntroActions">
-          <label className="inlineSearch">
-            <Search size={15} />
-            <input aria-label="搜索消息平台" placeholder="搜索平台、凭据或状态" value={messagingQuery} onChange={(event) => setMessagingQuery(event.target.value)} />
-          </label>
-          <button className="lightButton" type="button" onClick={() => void loadPlatforms()} disabled={Boolean(messagingBusy)}>
-            <RefreshCw className={messagingBusy === 'load' ? 'spinIcon' : undefined} size={16} />
-            {messagingBusy === 'load' ? '刷新中' : '刷新平台'}
-          </button>
-          <button className="lightButton" type="button" onClick={() => void restartMessagingGateway()} disabled={Boolean(messagingBusy)}>
-            <RefreshCw className={messagingBusy === 'gateway:restart' ? 'spinIcon' : undefined} size={16} />
-            {messagingBusy === 'gateway:restart' ? '重启中' : '重启 Gateway'}
-          </button>
-        </div>
+        <button className="lightButton" type="button" onClick={() => void loadPlatforms()} disabled={Boolean(messagingBusy)}>
+          <RefreshCw className={messagingBusy === 'load' ? 'spinIcon' : undefined} size={16} />
+          {messagingBusy === 'load' ? '刷新中' : '刷新平台'}
+        </button>
       </div>
       {messagingStatus && <p className="surfaceStatus">{messagingStatus}</p>}
       <div className="gatewayGrid">
-        {filteredPlatforms.length > 0 ? filteredPlatforms.map((platform) => {
+        {platforms.length > 0 ? platforms.map((platform) => {
           const isConfigOpen = selectedMessagingPlatformId === platform.id;
           const envVars = platform.env_vars ?? [];
           const missingRequired = envVars.filter((env) => env.required && !env.is_set).map((env) => env.key);
@@ -9703,6 +7719,12 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
             ? '已连接'
             : platform.state === 'not_configured'
               ? '待配置'
+              : platform.state === 'gateway_stopped'
+                ? '待连接'
+                : platform.state === 'pending_restart'
+                  ? '需重启'
+                  : platform.state === 'configured'
+                    ? '已配置'
               : platform.state === 'disabled'
                 ? '已停用'
                 : platform.state || (platform.enabled ? '待连接' : '已停用');
@@ -9716,12 +7738,13 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
             <article className={isConfigOpen ? 'gatewayCard gatewayPlatformCard configOpen' : 'gatewayCard gatewayPlatformCard'} key={platform.id}>
               <div className="gatewayCardHeader">
                 <Network size={18} />
-                <span className={platform.state === 'connected' ? 'pill green' : platform.enabled ? 'pill amber' : 'pill'}>{stateLabel}</span>
+                <span className={platform.state === 'connected' ? 'pill green' : platform.enabled || platform.configured ? 'pill amber' : 'pill'}>{stateLabel}</span>
               </div>
             <strong>{platform.name}</strong>
-            <p>{messagingPlatformDescriptions[platform.id] || platform.description || `${messaging?.channelCounts[platform.id] ?? 0} 个频道 · ${platform.updated_at || '未记录更新时间'}`}</p>
+            <p>{platform.description || messagingPlatformDescriptions[platform.id] || `${platform.channel_count ?? messaging?.channelCounts[platform.id] ?? 0} 个频道 · ${platform.updated_at || '未记录更新时间'}`}</p>
             <div className="platformMetaLine">
               <span>{configLabel}</span>
+              {(platform.channel_count || platform.pairing_count) ? <span>{platform.channel_count ?? 0} 频道 · {platform.pairing_count ?? 0} 配对</span> : null}
               <span>{envVars.length} 项配置</span>
               {platform.error_message && <span className="dangerText">{platform.error_message}</span>}
             </div>
@@ -9735,14 +7758,6 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
               <button type="button" onClick={() => void testPlatform(platform)} disabled={Boolean(messagingBusy)}>
                 {messagingBusy === `test:${platform.id}` ? '测试中' : '测试'}
               </button>
-              <button type="button" onClick={() => void copyPlatformSummary(platform, 'summary')} disabled={Boolean(messagingBusy)}>
-                {messagingBusy === `copy:summary:${platform.id}` ? '复制中' : '复制摘要'}
-              </button>
-              {platform.docs_url && (
-                <button type="button" onClick={() => void copyPlatformSummary(platform, 'docs')} disabled={Boolean(messagingBusy)}>
-                  {messagingBusy === `copy:docs:${platform.id}` ? '复制中' : '复制文档'}
-                </button>
-              )}
               {platform.docs_url && <button type="button" onClick={() => openPlatformDocs(platform)} disabled={Boolean(messagingBusy)}>文档</button>}
             </div>
             {isConfigOpen && (
@@ -9854,9 +7869,7 @@ function MessagingSurface({ runtime }: { runtime: HermesRuntime }) {
             )}
           </article>
           );
-        }) : platforms.length > 0 ? (
-          <GatewayCard title="没有匹配平台" status="已过滤" desc="清空搜索或换个关键词查看平台配置。" />
-        ) : (
+        }) : (
           <GatewayCard title="Gateway" status={runtime.connectionLabel} desc={runtime.inventoryError || '等待本机 Gateway 状态。'} />
         )}
       </div>
@@ -9978,9 +7991,6 @@ function SettingsPanel({
   const [modelOptionsLoaded, setModelOptionsLoaded] = useState(false);
   const [selectedModelProvider, setSelectedModelProvider] = useState('');
   const [selectedModelName, setSelectedModelName] = useState('');
-  const [auxiliaryModels, setAuxiliaryModels] = useState<HermesAuxiliaryModelsInfo | null>(null);
-  const [auxiliaryModelsLoaded, setAuxiliaryModelsLoaded] = useState(false);
-  const [auxiliaryDrafts, setAuxiliaryDrafts] = useState<Record<string, { model: string; provider: string }>>({});
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[]>([]);
   const [toolsetsLoaded, setToolsetsLoaded] = useState(false);
   const [expandedToolsetName, setExpandedToolsetName] = useState('');
@@ -9994,34 +8004,6 @@ function SettingsPanel({
   const [mcpDraftEndpoint, setMcpDraftEndpoint] = useState('');
   const [mcpDraftArgs, setMcpDraftArgs] = useState('');
   const [pendingMcpDeleteName, setPendingMcpDeleteName] = useState('');
-  const [envCredentials, setEnvCredentials] = useState<Record<string, HermesEnvVarInfo>>({});
-  const [envCredentialsLoaded, setEnvCredentialsLoaded] = useState(false);
-  const [envCredentialDrafts, setEnvCredentialDrafts] = useState<Record<string, string>>({});
-  const [pendingEnvClearKey, setPendingEnvClearKey] = useState('');
-  const [gatewayConfig, setGatewayConfig] = useState<HermesOnboardingConfig | null>(null);
-  const [gatewayConfigLoaded, setGatewayConfigLoaded] = useState(false);
-  const [gatewayModeDraft, setGatewayModeDraft] = useState<'local' | 'remote'>('local');
-  const [gatewayRemoteUrlDraft, setGatewayRemoteUrlDraft] = useState('');
-  const [gatewayRemoteTokenDraft, setGatewayRemoteTokenDraft] = useState('');
-  const [gatewayAutoStartDraft, setGatewayAutoStartDraft] = useState(true);
-  const [runtimePolicy, setRuntimePolicy] = useState<HermesRuntimePolicyInfo | null>(null);
-  const [runtimePolicyLoaded, setRuntimePolicyLoaded] = useState(false);
-  const [policyMaxTurnsDraft, setPolicyMaxTurnsDraft] = useState('');
-  const [policyGatewayTimeoutDraft, setPolicyGatewayTimeoutDraft] = useState('');
-  const [policyGatewayWarningDraft, setPolicyGatewayWarningDraft] = useState('');
-  const [policyClarifyTimeoutDraft, setPolicyClarifyTimeoutDraft] = useState('');
-  const [policyToolUseDraft, setPolicyToolUseDraft] = useState<RuntimeToolPolicy>('auto');
-  const [policyTaskGuidanceDraft, setPolicyTaskGuidanceDraft] = useState(true);
-  const [policyEnvironmentProbeDraft, setPolicyEnvironmentProbeDraft] = useState(true);
-  const [policyImageInputDraft, setPolicyImageInputDraft] = useState<ImageInputMode>('auto');
-  const [approvalPolicy, setApprovalPolicy] = useState<HermesApprovalPolicyInfo | null>(null);
-  const [approvalPolicyLoaded, setApprovalPolicyLoaded] = useState(false);
-  const [approvalModeDraft, setApprovalModeDraft] = useState<ApprovalMode>('manual');
-  const [approvalTimeoutDraft, setApprovalTimeoutDraft] = useState('');
-  const [approvalGatewayTimeoutDraft, setApprovalGatewayTimeoutDraft] = useState('');
-  const [approvalCronModeDraft, setApprovalCronModeDraft] = useState<ApprovalCronMode>('deny');
-  const [approvalAllowlistDraft, setApprovalAllowlistDraft] = useState('');
-  const [approvalOffConfirmed, setApprovalOffConfirmed] = useState(false);
   const selectedRef = useRef(selected);
   useEffect(() => {
     selectedRef.current = selected;
@@ -10044,9 +8026,14 @@ function SettingsPanel({
       setSettingsStatus(`${label} 暂无可复制内容。`);
       return;
     }
+    if (!navigator.clipboard?.writeText) {
+      setSettingsStatus('当前环境无法访问剪贴板。');
+      return;
+    }
+
     try {
       setSettingsBusy(`copy:${label}`);
-      await writeClipboardText(value, apiRequest);
+      await navigator.clipboard.writeText(value);
       setSettingsStatus(`${label} 已复制`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -10064,227 +8051,6 @@ function SettingsPanel({
   const stopGateway = () => {
     void runSettingAction('gateway:stop', 'Gateway 停止', runtime.stopGateway);
   };
-  const applyGatewayConfig = useCallback((result: HermesOnboardingConfig) => {
-    setGatewayConfig(result);
-    setGatewayConfigLoaded(true);
-    setGatewayModeDraft(result.mode === 'remote' ? 'remote' : 'local');
-    setGatewayRemoteUrlDraft(result.remote_url || '');
-    setGatewayRemoteTokenDraft('');
-    setGatewayAutoStartDraft(result.auto_start_gateway !== false);
-  }, []);
-  const loadGatewayConfig = useCallback(async () => {
-    try {
-      setSettingsBusy('gateway:config:load');
-      const result = await apiRequest<HermesOnboardingConfig>({ path: '/api/onboarding/config', timeoutMs: 12000 });
-      applyGatewayConfig(result);
-      if (selectedRef.current === 'integrations') {
-        setSettingsStatus('Gateway 连接配置已读取');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (selectedRef.current === 'integrations') {
-        setSettingsStatus(`Gateway 连接配置读取失败：${message}`);
-      }
-    } finally {
-      setSettingsBusy('');
-    }
-  }, [apiRequest, applyGatewayConfig]);
-  const runGatewayConfigAction = useCallback(async (
-    key: string,
-    label: string,
-    action: () => Promise<HermesOnboardingConfig>,
-  ) => {
-    try {
-      setSettingsBusy(key);
-      const result = await action();
-      applyGatewayConfig(result);
-      setSettingsStatus(result.message || `${label} 已完成`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSettingsStatus(`${label} 失败：${message}`);
-    } finally {
-      setSettingsBusy('');
-    }
-  }, [applyGatewayConfig]);
-  const checkGatewayConfig = useCallback(() => {
-    void runGatewayConfigAction('gateway:config:check', 'Gateway 连接检查', () => apiRequest<HermesOnboardingConfig>({
-      body: {
-        mode: gatewayModeDraft,
-        remote_token: gatewayRemoteTokenDraft.trim(),
-        remote_url: gatewayRemoteUrlDraft.trim(),
-      },
-      method: 'POST',
-      path: '/api/onboarding/check',
-      timeoutMs: 12000,
-    }));
-  }, [apiRequest, gatewayModeDraft, gatewayRemoteTokenDraft, gatewayRemoteUrlDraft, runGatewayConfigAction]);
-  const saveGatewayConfig = useCallback(() => {
-    if (gatewayModeDraft === 'remote' && !gatewayRemoteUrlDraft.trim()) {
-      setSettingsStatus('请输入远程 Gateway URL。');
-      return;
-    }
-
-    void runGatewayConfigAction('gateway:config:save', 'Gateway 连接配置保存', async () => {
-      const result = await apiRequest<HermesOnboardingConfig>({
-        body: {
-          auto_start_gateway: gatewayAutoStartDraft,
-          mode: gatewayModeDraft,
-          remote_token: gatewayRemoteTokenDraft.trim(),
-          remote_url: gatewayRemoteUrlDraft.trim(),
-        },
-        method: 'PUT',
-        path: '/api/onboarding/config',
-        timeoutMs: 30000,
-      });
-      await runtime.refreshInventory();
-      return result;
-    });
-  }, [apiRequest, gatewayAutoStartDraft, gatewayModeDraft, gatewayRemoteTokenDraft, gatewayRemoteUrlDraft, runGatewayConfigAction, runtime]);
-  const applyRuntimePolicy = useCallback((result: HermesRuntimePolicyInfo) => {
-    const toolPolicy = ['auto', 'always', 'off', 'custom'].includes(String(result.tool_use_enforcement || ''))
-      ? String(result.tool_use_enforcement) as RuntimeToolPolicy
-      : 'custom';
-    const imageMode = ['auto', 'native', 'text'].includes(String(result.image_input_mode || ''))
-      ? String(result.image_input_mode) as ImageInputMode
-      : 'auto';
-    setRuntimePolicy(result);
-    setRuntimePolicyLoaded(true);
-    setPolicyMaxTurnsDraft(String(result.max_turns ?? config?.maxTurns ?? 90));
-    setPolicyGatewayTimeoutDraft(String(result.gateway_timeout ?? config?.gatewayTimeout ?? 1800));
-    setPolicyGatewayWarningDraft(String(result.gateway_timeout_warning ?? config?.gatewayTimeoutWarning ?? 900));
-    setPolicyClarifyTimeoutDraft(String(result.clarify_timeout ?? config?.clarifyTimeout ?? 600));
-    setPolicyToolUseDraft(toolPolicy);
-    setPolicyTaskGuidanceDraft(result.task_completion_guidance !== false);
-    setPolicyEnvironmentProbeDraft(result.environment_probe !== false);
-    setPolicyImageInputDraft(imageMode);
-  }, [config?.clarifyTimeout, config?.gatewayTimeout, config?.gatewayTimeoutWarning, config?.maxTurns]);
-  const loadRuntimePolicy = useCallback(async () => {
-    try {
-      setSettingsBusy('policy:runtime:load');
-      const result = await apiRequest<HermesRuntimePolicyInfo>({ path: '/api/settings/runtime-policy', timeoutMs: 20000 });
-      applyRuntimePolicy(result);
-      if (['advanced', 'general', 'permissions'].includes(selectedRef.current)) {
-        setSettingsStatus('运行策略已同步');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (['advanced', 'general', 'permissions'].includes(selectedRef.current)) {
-        setSettingsStatus(`运行策略读取失败：${message}`);
-      }
-    } finally {
-      setSettingsBusy('');
-    }
-  }, [apiRequest, applyRuntimePolicy]);
-  const saveRuntimePolicy = useCallback(async (scope: 'advanced' | 'general' | 'permissions') => {
-    const timeout = Number(policyGatewayTimeoutDraft);
-    const warning = Number(policyGatewayWarningDraft);
-    if (timeout > 0 && warning > timeout) {
-      setSettingsStatus('超时预警不能大于 Gateway 空闲超时；设为 0 可关闭预警。');
-      return;
-    }
-
-    await runSettingAction(`policy:runtime:${scope}`, '运行策略保存', async () => {
-      const result = await apiRequest<HermesRuntimePolicyInfo>({
-        body: {
-          clarify_timeout: policyClarifyTimeoutDraft.trim(),
-          environment_probe: policyEnvironmentProbeDraft,
-          gateway_timeout: policyGatewayTimeoutDraft.trim(),
-          gateway_timeout_warning: policyGatewayWarningDraft.trim(),
-          image_input_mode: policyImageInputDraft,
-          max_turns: policyMaxTurnsDraft.trim(),
-          task_completion_guidance: policyTaskGuidanceDraft,
-          tool_use_enforcement: policyToolUseDraft,
-        },
-        method: 'PUT',
-        path: '/api/settings/runtime-policy',
-        timeoutMs: 30000,
-      });
-      applyRuntimePolicy(result);
-      await runtime.refreshInventory();
-      setSettingsStatus('运行策略已保存，新的会话/重启后的 Gateway 会使用这些值。');
-    });
-  }, [
-    apiRequest,
-    applyRuntimePolicy,
-    policyClarifyTimeoutDraft,
-    policyEnvironmentProbeDraft,
-    policyGatewayTimeoutDraft,
-    policyGatewayWarningDraft,
-    policyImageInputDraft,
-    policyMaxTurnsDraft,
-    policyTaskGuidanceDraft,
-    policyToolUseDraft,
-    runtime,
-  ]);
-  const applyApprovalPolicy = useCallback((result: HermesApprovalPolicyInfo) => {
-    const mode = ['manual', 'smart', 'off'].includes(String(result.mode || ''))
-      ? String(result.mode) as ApprovalMode
-      : 'manual';
-    const cronMode = ['deny', 'approve'].includes(String(result.cron_mode || ''))
-      ? String(result.cron_mode) as ApprovalCronMode
-      : 'deny';
-    const allowlist = Array.isArray(result.command_allowlist) ? result.command_allowlist : [];
-    setApprovalPolicy(result);
-    setApprovalPolicyLoaded(true);
-    setApprovalModeDraft(mode);
-    setApprovalTimeoutDraft(String(result.timeout ?? 60));
-    setApprovalGatewayTimeoutDraft(String(result.gateway_timeout ?? 300));
-    setApprovalCronModeDraft(cronMode);
-    setApprovalAllowlistDraft(allowlist.join('\n'));
-    setApprovalOffConfirmed(false);
-  }, []);
-  const loadApprovalPolicy = useCallback(async () => {
-    try {
-      setSettingsBusy('policy:approval:load');
-      const result = await apiRequest<HermesApprovalPolicyInfo>({ path: '/api/settings/approval-policy', timeoutMs: 20000 });
-      applyApprovalPolicy(result);
-      if (selectedRef.current === 'permissions') {
-        setSettingsStatus('审批策略已同步');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (selectedRef.current === 'permissions') {
-        setSettingsStatus(`审批策略读取失败：${message}`);
-      }
-    } finally {
-      setSettingsBusy('');
-    }
-  }, [apiRequest, applyApprovalPolicy]);
-  const saveApprovalPolicy = useCallback(async () => {
-    if (approvalModeDraft === 'off' && !approvalOffConfirmed) {
-      setSettingsStatus('关闭审批会跳过安全提示，请先勾选确认。');
-      return;
-    }
-
-    await runSettingAction('policy:approval:save', '审批策略保存', async () => {
-      const result = await apiRequest<HermesApprovalPolicyInfo>({
-        body: {
-          command_allowlist: approvalAllowlistDraft,
-          cron_mode: approvalCronModeDraft,
-          gateway_timeout: approvalGatewayTimeoutDraft.trim(),
-          mode: approvalModeDraft,
-          mode_off_confirmed: approvalOffConfirmed,
-          timeout: approvalTimeoutDraft.trim(),
-        },
-        method: 'PUT',
-        path: '/api/settings/approval-policy',
-        timeoutMs: 30000,
-      });
-      applyApprovalPolicy(result);
-      await runtime.refreshInventory();
-      setSettingsStatus('审批策略与命令允许列表已保存。');
-    });
-  }, [
-    apiRequest,
-    applyApprovalPolicy,
-    approvalAllowlistDraft,
-    approvalCronModeDraft,
-    approvalGatewayTimeoutDraft,
-    approvalModeDraft,
-    approvalOffConfirmed,
-    approvalTimeoutDraft,
-    runtime,
-  ]);
   const inventoryModelOptions = useMemo<HermesModelOptionsInfo | null>(() => {
     const defaultModel = config?.defaultModel || runtime.model || '';
     const currentProvider = config?.provider
@@ -10379,117 +8145,6 @@ function SettingsPanel({
       await runtime.refreshInventory();
     });
   }, [apiRequest, runtime, selectedModelName, selectedModelProvider]);
-  const loadAuxiliaryModels = useCallback(async (announce = false) => {
-    try {
-      setSettingsBusy('models:auxiliary:load');
-      const response = await apiRequest<HermesAuxiliaryModelsInfo>({ path: '/api/model/auxiliary', timeoutMs: 30000 });
-      const tasks = Array.isArray(response.tasks) ? response.tasks : [];
-      const normalized = { ...response, tasks };
-      setAuxiliaryModels(normalized);
-      setAuxiliaryModelsLoaded(true);
-      setAuxiliaryDrafts((current) => {
-        const next = { ...current };
-        tasks.forEach((task) => {
-          const provider = task.provider && task.provider !== 'auto'
-            ? task.provider
-            : response.main?.provider || selectedModelProvider || '';
-          const model = task.model || response.main?.model || selectedModelName || '';
-          if (!next[task.task]) {
-            next[task.task] = { provider, model };
-          }
-        });
-        return next;
-      });
-      if (announce && selectedRef.current === 'models') {
-        setSettingsStatus(`已同步 ${tasks.length} 个辅助模型任务`);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (announce && selectedRef.current === 'models') {
-        setSettingsStatus(`辅助模型读取失败：${message}`);
-      }
-    } finally {
-      setSettingsBusy('');
-    }
-  }, [apiRequest, selectedModelName, selectedModelProvider]);
-  const saveAuxiliaryModel = useCallback(async (task: string) => {
-    const draft = auxiliaryDrafts[task] || { model: '', provider: '' };
-    if (!draft.provider) {
-      setSettingsStatus('请选择辅助模型 provider。');
-      return;
-    }
-
-    await runSettingAction(`models:auxiliary:${task}`, `${auxiliaryTaskMeta[task]?.label || task} 辅助模型保存`, async () => {
-      await apiRequest({
-        body: {
-          model: draft.model,
-          provider: draft.provider,
-          scope: 'auxiliary',
-          task,
-        },
-        method: 'POST',
-        path: '/api/model/set',
-        timeoutMs: 30000,
-      });
-      await loadAuxiliaryModels();
-      await runtime.refreshInventory();
-    });
-  }, [apiRequest, auxiliaryDrafts, loadAuxiliaryModels, runtime]);
-  const saveAuxiliaryAsMainModel = useCallback(async (task: string) => {
-    const provider = auxiliaryModels?.main?.provider || selectedModelProvider || config?.provider || '';
-    const model = auxiliaryModels?.main?.model || selectedModelName || config?.defaultModel || '';
-    if (!provider || !model) {
-      setSettingsStatus('主模型配置还不可用，先同步默认模型。');
-      return;
-    }
-
-    await runSettingAction(`models:auxiliary:${task}:main`, `${auxiliaryTaskMeta[task]?.label || task} 设为主模型`, async () => {
-      await apiRequest({
-        body: {
-          model,
-          provider,
-          scope: 'auxiliary',
-          task,
-        },
-        method: 'POST',
-        path: '/api/model/set',
-        timeoutMs: 30000,
-      });
-      setAuxiliaryDrafts((current) => ({ ...current, [task]: { provider, model } }));
-      await loadAuxiliaryModels();
-      await runtime.refreshInventory();
-    });
-  }, [
-    apiRequest,
-    auxiliaryModels?.main?.model,
-    auxiliaryModels?.main?.provider,
-    config?.defaultModel,
-    config?.provider,
-    loadAuxiliaryModels,
-    runtime,
-    selectedModelName,
-    selectedModelProvider,
-  ]);
-  const resetAuxiliaryModels = useCallback(async () => {
-    const provider = auxiliaryModels?.main?.provider || selectedModelProvider || config?.provider || '';
-    const model = auxiliaryModels?.main?.model || selectedModelName || config?.defaultModel || '';
-    await runSettingAction('models:auxiliary:reset', '辅助模型重置', async () => {
-      await apiRequest({
-        body: {
-          model,
-          provider,
-          scope: 'auxiliary',
-          task: '__reset__',
-        },
-        method: 'POST',
-        path: '/api/model/set',
-        timeoutMs: 30000,
-      });
-      setAuxiliaryDrafts({});
-      await loadAuxiliaryModels();
-      await runtime.refreshInventory();
-    });
-  }, [apiRequest, auxiliaryModels?.main?.model, auxiliaryModels?.main?.provider, config?.defaultModel, config?.provider, loadAuxiliaryModels, runtime, selectedModelName, selectedModelProvider]);
   const loadToolsets = useCallback(async () => {
     try {
       setSettingsBusy('toolsets:load');
@@ -10597,19 +8252,19 @@ function SettingsPanel({
       });
     });
   }, [apiRequest]);
-  const loadMcpServers = useCallback(async (announce = false) => {
+  const loadMcpServers = useCallback(async () => {
     try {
       setSettingsBusy('mcp:load');
       const response = await apiRequest<{ servers?: HermesMcpServerInfo[] }>({ path: '/api/mcp/servers', timeoutMs: 30000 });
       const rows = Array.isArray(response.servers) ? response.servers : [];
       setMcpServers(rows);
       setMcpServersLoaded(true);
-      if (announce && selectedRef.current === 'integrations') {
+      if (selectedRef.current === 'integrations') {
         setSettingsStatus(`已同步 ${rows.length} 个 MCP servers`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (announce && selectedRef.current === 'integrations') {
+      if (selectedRef.current === 'integrations') {
         setSettingsStatus(`MCP servers 读取失败：${message}`);
       }
     } finally {
@@ -10710,205 +8365,24 @@ function SettingsPanel({
       setSettingsStatus(`${server.name} 连接正常，发现 ${result.tools?.length ?? 0} 个工具`);
     });
   }, [apiRequest]);
-  const loadEnvCredentials = useCallback(async (announce = false) => {
-    try {
-      setSettingsBusy('env:load');
-      const result = await apiRequest<Record<string, HermesEnvVarInfo>>({ path: '/api/env', timeoutMs: 30000 });
-      setEnvCredentials(result && typeof result === 'object' && !Array.isArray(result) ? result : {});
-      setEnvCredentialsLoaded(true);
-      if (announce && selectedRef.current === 'integrations') {
-        setSettingsStatus(`已同步 ${Object.keys(result || {}).length} 个 env key`);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (announce && selectedRef.current === 'integrations') {
-        setSettingsStatus(`API Keys 读取失败：${message}`);
-      }
-    } finally {
-      setSettingsBusy('');
-    }
-  }, [apiRequest]);
-  const saveEnvCredential = useCallback(async (key: string) => {
-    const value = (envCredentialDrafts[key] || '').trim();
-    if (!value) {
-      setSettingsStatus(`请输入 ${key} 的新值；已配置的值不会回显。`);
-      return;
-    }
-
-    await runSettingAction(`env:${key}:save`, `${key} 保存`, async () => {
-      await apiRequest({
-        body: { key, value },
-        method: 'PUT',
-        path: '/api/env',
-        timeoutMs: 30000,
-      });
-      setEnvCredentialDrafts((current) => {
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
-      setPendingEnvClearKey('');
-      await loadEnvCredentials();
-      await runtime.refreshInventory();
-    });
-  }, [apiRequest, envCredentialDrafts, loadEnvCredentials, runtime]);
-  const clearEnvCredential = useCallback(async (key: string) => {
-    if (pendingEnvClearKey !== key) {
-      setPendingEnvClearKey(key);
-      setSettingsStatus(`再次点击清除 ${key}，将从 Hermes .env 移除这个值。`);
-      return;
-    }
-
-    await runSettingAction(`env:${key}:clear`, `${key} 清除`, async () => {
-      await apiRequest({
-        body: { key },
-        method: 'DELETE',
-        path: '/api/env',
-        timeoutMs: 30000,
-      });
-      setPendingEnvClearKey('');
-      setEnvCredentialDrafts((current) => {
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
-      await loadEnvCredentials();
-      await runtime.refreshInventory();
-    });
-  }, [apiRequest, loadEnvCredentials, pendingEnvClearKey, runtime]);
-  const validateEnvCredential = useCallback(async (key: string) => {
-    try {
-      setSettingsBusy(`env:${key}:validate`);
-      const result = await apiRequest<{ message?: string; ok?: boolean; reachable?: boolean }>({
-        body: { key, value: (envCredentialDrafts[key] || '').trim() },
-        method: 'POST',
-        path: '/api/providers/validate',
-        timeoutMs: 30000,
-      });
-      setSettingsStatus(`${key} ${result.ok ? '检查通过' : '检查未通过'}：${result.message || '已完成本地检查'}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSettingsStatus(`${key} 检查失败：${message}`);
-    } finally {
-      setSettingsBusy('');
-    }
-  }, [apiRequest, envCredentialDrafts]);
   useEffect(() => {
-    if (['advanced', 'general', 'permissions'].includes(selected) && !runtimePolicyLoaded && !settingsBusy) {
-      void loadRuntimePolicy();
-    }
-    if (selected === 'permissions' && !approvalPolicyLoaded && !settingsBusy) {
-      void loadApprovalPolicy();
-    }
     if (selected === 'models' && !modelOptionsLoaded && !settingsBusy) {
       void loadModelSettings();
-    }
-    if (selected === 'models' && modelOptionsLoaded && !auxiliaryModelsLoaded && !settingsBusy) {
-      void loadAuxiliaryModels();
     }
     if (selected === 'permissions' && !toolsetsLoaded && !settingsBusy) {
       void loadToolsets();
     }
-    if (selected === 'integrations' && !gatewayConfigLoaded && !settingsBusy) {
-      void loadGatewayConfig();
-    }
     if (selected === 'integrations' && !mcpServersLoaded && !settingsBusy) {
       void loadMcpServers();
     }
-    if (selected === 'integrations' && !envCredentialsLoaded && !settingsBusy) {
-      void loadEnvCredentials();
-    }
-  }, [
-    approvalPolicyLoaded,
-    auxiliaryModelsLoaded,
-    envCredentialsLoaded,
-    gatewayConfigLoaded,
-    loadApprovalPolicy,
-    loadAuxiliaryModels,
-    loadEnvCredentials,
-    loadGatewayConfig,
-    loadMcpServers,
-    loadModelSettings,
-    loadRuntimePolicy,
-    loadToolsets,
-    mcpServersLoaded,
-    modelOptionsLoaded,
-    runtimePolicyLoaded,
-    selected,
-    settingsBusy,
-    toolsetsLoaded,
-  ]);
+  }, [loadMcpServers, loadModelSettings, loadToolsets, mcpServersLoaded, modelOptionsLoaded, selected, settingsBusy, toolsetsLoaded]);
   const enabledToolsetCount = toolsets.filter((item) => item.enabled).length;
   const enabledMcpCount = mcpServers.filter((item) => item.enabled !== false).length;
-  const auxiliaryTaskEntries = useMemo(() => {
-    const tasks = auxiliaryModels?.tasks || [];
-    return tasks.map((task) => ({
-      ...task,
-      meta: auxiliaryTaskMeta[task.task] || {
-        hint: task.task.replace(/_/g, ' '),
-        label: task.task.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
-      },
-    }));
-  }, [auxiliaryModels?.tasks]);
-  const credentialEntries = useMemo(() => {
-    const primaryEntries = primaryCredentialKeys
-      .map((key) => [key, envCredentials[key]] as [string, HermesEnvVarInfo | undefined])
-      .filter((entry): entry is [string, HermesEnvVarInfo] => Boolean(entry[1]));
-    const extraSetEntries = Object.entries(envCredentials)
-      .filter(([key, info]) => !primaryCredentialKeys.includes(key as typeof primaryCredentialKeys[number])
-        && info?.category === 'provider'
-        && info?.is_set)
-      .sort(([a], [b]) => a.localeCompare(b));
-
-    return [...primaryEntries, ...extraSetEntries].slice(0, 12);
-  }, [envCredentials]);
-  const configuredCredentialCount = credentialEntries.filter(([, info]) => info.is_set).length;
   const settingsControlLocked = Boolean(settingsBusy && !settingsBusy.endsWith(':load'));
   const rowsBySection: Record<SettingsSection, Array<{ desc: string; icon: React.ReactNode; title: string; control: React.ReactNode }>> = {
     advanced: [
       { icon: <HardDrive size={18} />, title: 'Hermes Home', desc: runtime.inventory?.diagnostics.hermesHome || '浏览器预览不可用', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void copyText(runtime.inventory?.diagnostics.hermesHome || '', 'Hermes Home')}>{settingsBusy === 'copy:Hermes Home' ? '复制中' : '复制'}</button> },
       { icon: <TerminalSquare size={18} />, title: 'Gateway PID', desc: String(runtime.inventory?.diagnostics.gatewayPid ?? '-'), control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('advanced:pid', 'Gateway 状态')}>{settingsBusy === 'advanced:pid' ? '刷新中' : runtime.gatewayStatus}</button> },
-      {
-        icon: <SlidersHorizontal size={18} />,
-        title: '高级运行参数',
-        desc: `clarify ${policyClarifyTimeoutDraft || runtimePolicy?.clarify_timeout || '未设置'}s · image ${policyImageInputDraft}`,
-        control: (
-          <form
-            className="settingControlStack wide policyForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveRuntimePolicy('advanced');
-            }}
-          >
-            <input
-              aria-label="Clarify 等待秒数"
-              className="settingInput short"
-              disabled={settingsControlLocked}
-              inputMode="numeric"
-              placeholder="clarify s"
-              value={policyClarifyTimeoutDraft}
-              onChange={(event) => setPolicyClarifyTimeoutDraft(event.target.value)}
-            />
-            <select
-              aria-label="图片输入模式"
-              className="settingSelect short"
-              disabled={settingsControlLocked}
-              value={policyImageInputDraft}
-              onChange={(event) => setPolicyImageInputDraft(event.target.value as ImageInputMode)}
-            >
-              <option value="auto">图片自动</option>
-              <option value="native">原生视觉</option>
-              <option value="text">转文本</option>
-            </select>
-            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadRuntimePolicy()}>
-              {settingsBusy === 'policy:runtime:load' ? '同步中' : '同步'}
-            </button>
-            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
-              {settingsBusy === 'policy:runtime:advanced' ? '保存中' : '保存'}
-            </button>
-          </form>
-        ),
-      },
       { icon: <RefreshCw size={18} />, title: '刷新本机状态', desc: runtime.inventoryError || '重新读取配置、skills、sessions 和 pairing。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('advanced:refresh', '本机状态刷新')}>{settingsBusy === 'advanced:refresh' ? '刷新中' : '刷新'}</button> },
     ],
     appearance: [
@@ -10953,173 +8427,13 @@ function SettingsPanel({
     ],
     general: [
       { icon: <Command size={18} />, title: '启动行为', desc: '打开应用后连接本机 Hermes Gateway，并读取最近会话。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => runtime.gatewayStatus === 'connected' ? stopGateway() : restartGateway()}>{settingsBusy === 'gateway:stop' || settingsBusy === 'gateway:restart' ? '处理中' : runtime.gatewayStatus === 'connected' ? '停止' : '启动'}</button> },
-      {
-        icon: <Clock size={18} />,
-        title: '运行策略',
-        desc: `max turns ${policyMaxTurnsDraft || config?.maxTurns || '未设置'} · timeout ${policyGatewayTimeoutDraft || config?.gatewayTimeout || '未设置'}s`,
-        control: (
-          <form
-            className="settingControlStack wide policyForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveRuntimePolicy('general');
-            }}
-          >
-            <input
-              aria-label="最大回合数"
-              className="settingInput short"
-              disabled={settingsControlLocked}
-              inputMode="numeric"
-              placeholder="turns"
-              value={policyMaxTurnsDraft}
-              onChange={(event) => setPolicyMaxTurnsDraft(event.target.value)}
-            />
-            <input
-              aria-label="Gateway 空闲超时秒数"
-              className="settingInput short"
-              disabled={settingsControlLocked}
-              inputMode="numeric"
-              placeholder="timeout s"
-              value={policyGatewayTimeoutDraft}
-              onChange={(event) => setPolicyGatewayTimeoutDraft(event.target.value)}
-            />
-            <input
-              aria-label="Gateway 超时预警秒数"
-              className="settingInput short"
-              disabled={settingsControlLocked}
-              inputMode="numeric"
-              placeholder="warn s"
-              value={policyGatewayWarningDraft}
-              onChange={(event) => setPolicyGatewayWarningDraft(event.target.value)}
-            />
-            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadRuntimePolicy()}>
-              {settingsBusy === 'policy:runtime:load' ? '同步中' : '同步'}
-            </button>
-            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
-              {settingsBusy === 'policy:runtime:general' ? '保存中' : '保存'}
-            </button>
-          </form>
-        ),
-      },
       { icon: <Database size={18} />, title: '会话', desc: `${runtime.inventory?.sessions.count ?? runtime.recentSessions.length} 个本机会话`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('general:sessions', '会话列表刷新')}>{settingsBusy === 'general:sessions' ? '刷新中' : '刷新'}</button> },
     ],
     integrations: [
       { icon: <Network size={18} />, title: 'Gateway', desc: runtime.connection?.baseUrl || runtime.connectionLabel, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={restartGateway}>{settingsBusy === 'gateway:restart' ? '重启中' : '重启'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={stopGateway}>{settingsBusy === 'gateway:stop' ? '停止中' : '停止'}</button></div> },
-      {
-        icon: <SlidersHorizontal size={18} />,
-        title: 'Gateway 连接方式',
-        desc: gatewayModeDraft === 'remote'
-          ? `远程 · ${gatewayRemoteUrlDraft || gatewayConfig?.remote_url || '未填写 URL'}${gatewayConfig?.remote_token_set ? ' · token 已保存' : ''}`
-          : `本机 · ${gatewayAutoStartDraft ? '启动时自动复用或启动 Gateway' : '启动时不自动拉起 Gateway'}`,
-        control: (
-          <form
-            className="settingControlStack wide gatewayConfigForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              saveGatewayConfig();
-            }}
-          >
-            <select
-              aria-label="Gateway 连接方式"
-              className="settingSelect short"
-              disabled={settingsControlLocked}
-              value={gatewayModeDraft}
-              onChange={(event) => setGatewayModeDraft(event.target.value === 'remote' ? 'remote' : 'local')}
-            >
-              <option value="local">本机 Gateway</option>
-              <option value="remote">远程 Gateway</option>
-            </select>
-            <input
-              aria-label="远程 Gateway URL"
-              className="settingInput"
-              disabled={settingsControlLocked || gatewayModeDraft !== 'remote'}
-              placeholder="https://gateway.example.com"
-              value={gatewayRemoteUrlDraft}
-              onChange={(event) => setGatewayRemoteUrlDraft(event.target.value)}
-            />
-            <input
-              aria-label="远程 Gateway Token"
-              className="settingInput"
-              disabled={settingsControlLocked || gatewayModeDraft !== 'remote'}
-              placeholder={gatewayConfig?.remote_token_set ? `已保存 ${gatewayConfig.remote_token_preview || 'token'}，留空保持不变` : 'Gateway token'}
-              type="password"
-              value={gatewayRemoteTokenDraft}
-              onChange={(event) => setGatewayRemoteTokenDraft(event.target.value)}
-            />
-            <label className="settingCheckbox compact">
-              <input
-                checked={gatewayAutoStartDraft}
-                disabled={settingsControlLocked}
-                type="checkbox"
-                onChange={(event) => setGatewayAutoStartDraft(event.target.checked)}
-              />
-              <span>自动启动</span>
-            </label>
-            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadGatewayConfig()}>
-              {settingsBusy === 'gateway:config:load' ? '读取中' : '读取'}
-            </button>
-            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={checkGatewayConfig}>
-              {settingsBusy === 'gateway:config:check' ? '检查中' : '检查'}
-            </button>
-            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
-              {settingsBusy === 'gateway:config:save' ? '保存中' : '保存'}
-            </button>
-          </form>
-        ),
-      },
-      {
-        icon: <KeyRound size={18} />,
-        title: 'API Keys / 凭据',
-        desc: `${configuredCredentialCount}/${credentialEntries.length || primaryCredentialKeys.length} 已配置；写入 Hermes .env，列表只显示脱敏状态。`,
-        control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadEnvCredentials(true)}>{settingsBusy === 'env:load' ? '同步中' : '同步'}</button>,
-      },
-      ...credentialEntries.map(([key, info]) => ({
-        icon: <Lock size={18} />,
-        title: info.prompt || key,
-        desc: `${key} · ${info.is_set ? info.redacted_value || '已配置' : '未配置'}${info.source ? ` · ${info.source}` : ''}`,
-        control: (
-          <form
-            className="settingControlStack wide credentialForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveEnvCredential(key);
-            }}
-          >
-            <input
-              aria-label={`API Key ${key}`}
-              autoComplete="off"
-              className="settingInput credentialValueInput"
-              disabled={settingsControlLocked}
-              placeholder={info.is_set ? '留空保持不变' : key}
-              type={info.is_password === false ? 'text' : 'password'}
-              value={envCredentialDrafts[key] || ''}
-              onChange={(event) => {
-                setPendingEnvClearKey('');
-                setEnvCredentialDrafts((current) => ({ ...current, [key]: event.target.value }));
-              }}
-            />
-            {info.url && (
-              <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => window.open(info.url || '', '_blank', 'noopener,noreferrer')}>
-                文档
-              </button>
-            )}
-            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void validateEnvCredential(key)}>
-              {settingsBusy === `env:${key}:validate` ? '检查中' : '检查'}
-            </button>
-            <button className="selectButton" type="submit" disabled={settingsControlLocked || !(envCredentialDrafts[key] || '').trim()}>
-              {settingsBusy === `env:${key}:save` ? '保存中' : info.is_set ? '替换' : '保存'}
-            </button>
-            {info.is_set && (
-              <button className={pendingEnvClearKey === key ? 'selectButton danger' : 'selectButton'} type="button" disabled={settingsControlLocked} onClick={() => void clearEnvCredential(key)}>
-                {pendingEnvClearKey === key ? '确认清除' : '清除'}
-              </button>
-            )}
-          </form>
-        ),
-      })),
       { icon: <MessageSquare size={18} />, title: '消息平台', desc: `${runtime.inventory?.messaging.platforms.length ?? 0} 个平台状态`, control: <div className="settingInlineActions"><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => refreshSettings('integrations:messaging', '消息平台刷新')}>{settingsBusy === 'integrations:messaging' ? '刷新中' : '刷新'}</button><button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('messaging')}>管理</button></div> },
       { icon: <Puzzle size={18} />, title: 'Plugins', desc: `${runtime.inventory?.plugins.length ?? 0} 个本机插件`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => onOpenSurface('skills')}>查看</button> },
-      { icon: <Network size={18} />, title: 'MCP Servers', desc: `${enabledMcpCount}/${mcpServers.length} 已启用，配置写入 Hermes mcp_servers。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadMcpServers(true)}>{settingsBusy === 'mcp:load' ? '同步中' : '同步'}</button> },
+      { icon: <Network size={18} />, title: 'MCP Servers', desc: `${enabledMcpCount}/${mcpServers.length} 已启用，配置写入 Hermes mcp_servers。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadMcpServers()}>{settingsBusy === 'mcp:load' ? '同步中' : '同步'}</button> },
       {
         icon: <Plus size={18} />,
         title: '添加 MCP Server',
@@ -11248,239 +8562,9 @@ function SettingsPanel({
         desc: `${modelOptions?.providers?.length ?? runtime.inventory?.models.length ?? 0} 个 provider · ${currentModelProvider?.authenticated === false ? '需要配置凭据' : '已可选择'}${currentModelProvider?.warning ? ` · ${currentModelProvider.warning}` : ''}`,
         control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadModelSettings()}>{settingsBusy === 'models:load' ? '同步中' : '同步'}</button>,
       },
-      {
-        icon: <Sparkles size={18} />,
-        title: '辅助模型',
-        desc: `${auxiliaryTaskEntries.length || 0} 个任务槽 · ${auxiliaryTaskEntries.filter((task) => task.provider && task.provider !== 'auto').length} 个已单独指定，未指定时跟随主模型。`,
-        control: (
-          <div className="settingInlineActions">
-            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadAuxiliaryModels(true)}>
-              {settingsBusy === 'models:auxiliary:load' ? '同步中' : '同步'}
-            </button>
-            <button className="selectButton" type="button" disabled={settingsControlLocked || !auxiliaryTaskEntries.length} onClick={() => void resetAuxiliaryModels()}>
-              {settingsBusy === 'models:auxiliary:reset' ? '重置中' : '全部跟随主模型'}
-            </button>
-          </div>
-        ),
-      },
-      ...auxiliaryTaskEntries.map((task) => {
-        const draft = auxiliaryDrafts[task.task] || {
-          model: task.model || auxiliaryModels?.main?.model || selectedModelName || '',
-          provider: task.provider && task.provider !== 'auto'
-            ? task.provider
-            : auxiliaryModels?.main?.provider || selectedModelProvider || '',
-        };
-        const models = modelOptions?.providers?.find((provider) => provider.slug === draft.provider)?.models || [];
-        const isAuto = !task.provider || task.provider === 'auto';
-        return {
-          icon: <SlidersHorizontal size={18} />,
-          title: task.meta.label,
-          desc: `${isAuto ? '跟随主模型' : `${task.provider} · ${task.model || 'provider 默认'}`} · ${task.meta.hint}`,
-          control: (
-            <form
-              className="settingControlStack wide auxiliaryModelForm"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void saveAuxiliaryModel(task.task);
-              }}
-            >
-              <select
-                aria-label={`辅助模型 ${task.task} provider`}
-                className="settingSelect short"
-                disabled={settingsControlLocked || !modelOptions?.providers?.length}
-                value={draft.provider}
-                onChange={(event) => {
-                  const provider = event.target.value;
-                  const nextModels = modelOptions?.providers?.find((item) => item.slug === provider)?.models || [];
-                  setAuxiliaryDrafts((current) => ({
-                    ...current,
-                    [task.task]: {
-                      model: nextModels[0] || '',
-                      provider,
-                    },
-                  }));
-                }}
-              >
-                {(modelOptions?.providers || []).map((provider) => (
-                  <option key={provider.slug} value={provider.slug}>{provider.name || provider.slug}</option>
-                ))}
-              </select>
-              <select
-                aria-label={`辅助模型 ${task.task} model`}
-                className="settingSelect model"
-                disabled={settingsControlLocked || models.length === 0}
-                value={draft.model}
-                onChange={(event) => {
-                  setAuxiliaryDrafts((current) => ({
-                    ...current,
-                    [task.task]: {
-                      ...draft,
-                      model: event.target.value,
-                    },
-                  }));
-                }}
-              >
-                {models.map((model) => <option key={model} value={model}>{model}</option>)}
-              </select>
-              <button className="selectButton" type="submit" disabled={settingsControlLocked || !draft.provider}>
-                {settingsBusy === `models:auxiliary:${task.task}` ? '保存中' : '保存'}
-              </button>
-              <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void saveAuxiliaryAsMainModel(task.task)}>
-                {settingsBusy === `models:auxiliary:${task.task}:main` ? '设置中' : '设为主模型'}
-              </button>
-            </form>
-          ),
-        };
-      }),
     ],
     permissions: [
       { icon: <Shield size={18} />, title: '命令审批', desc: '高风险命令进入确认队列。', control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={onOpenPermission}>手动确认</button> },
-      {
-        icon: <Shield size={18} />,
-        title: '审批策略',
-        desc: `${approvalModeDraft} · 等待 ${approvalTimeoutDraft || approvalPolicy?.timeout || 60}s · Gateway ${approvalGatewayTimeoutDraft || approvalPolicy?.gateway_timeout || 300}s`,
-        control: (
-          <form
-            className="settingControlStack wide policyForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveApprovalPolicy();
-            }}
-          >
-            <select
-              aria-label="审批模式"
-              className="settingSelect short"
-              disabled={settingsControlLocked}
-              value={approvalModeDraft}
-              onChange={(event) => setApprovalModeDraft(event.target.value as ApprovalMode)}
-            >
-              <option value="manual">手动</option>
-              <option value="smart">智能</option>
-              <option value="off">关闭</option>
-            </select>
-            <input
-              aria-label="审批等待秒数"
-              className="settingInput short"
-              disabled={settingsControlLocked}
-              inputMode="numeric"
-              placeholder="wait s"
-              value={approvalTimeoutDraft}
-              onChange={(event) => setApprovalTimeoutDraft(event.target.value)}
-            />
-            <input
-              aria-label="Gateway 审批等待秒数"
-              className="settingInput short"
-              disabled={settingsControlLocked}
-              inputMode="numeric"
-              placeholder="gateway s"
-              value={approvalGatewayTimeoutDraft}
-              onChange={(event) => setApprovalGatewayTimeoutDraft(event.target.value)}
-            />
-            <select
-              aria-label="Cron 审批模式"
-              className="settingSelect short"
-              disabled={settingsControlLocked}
-              value={approvalCronModeDraft}
-              onChange={(event) => setApprovalCronModeDraft(event.target.value as ApprovalCronMode)}
-            >
-              <option value="deny">Cron 拒绝</option>
-              <option value="approve">Cron 允许</option>
-            </select>
-            {approvalModeDraft === 'off' && (
-              <label className="settingCheckbox compact">
-                <input
-                  checked={approvalOffConfirmed}
-                  disabled={settingsControlLocked}
-                  type="checkbox"
-                  onChange={(event) => setApprovalOffConfirmed(event.target.checked)}
-                />
-                <span>确认关闭</span>
-              </label>
-            )}
-            <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadApprovalPolicy()}>
-              {settingsBusy === 'policy:approval:load' ? '同步中' : '同步'}
-            </button>
-            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
-              {settingsBusy === 'policy:approval:save' ? '保存中' : '保存'}
-            </button>
-          </form>
-        ),
-      },
-      {
-        icon: <KeyRound size={18} />,
-        title: '命令允许列表',
-        desc: `${approvalPolicy?.command_allowlist?.length ?? 0} 条永久允许模式；每行一条。`,
-        control: (
-          <form
-            className="settingControlStack wide policyForm allowlistForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveApprovalPolicy();
-            }}
-          >
-            <textarea
-              aria-label="命令允许列表"
-              className="settingTextarea"
-              disabled={settingsControlLocked}
-              placeholder="例如：npm test"
-              rows={3}
-              value={approvalAllowlistDraft}
-              onChange={(event) => setApprovalAllowlistDraft(event.target.value)}
-            />
-            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
-              {settingsBusy === 'policy:approval:save' ? '保存中' : '保存'}
-            </button>
-          </form>
-        ),
-      },
-      {
-        icon: <Wrench size={18} />,
-        title: '工具使用策略',
-        desc: `${policyToolUseDraft === 'custom' ? '自定义配置保留' : policyToolUseDraft} · guidance ${policyTaskGuidanceDraft ? 'on' : 'off'} · env probe ${policyEnvironmentProbeDraft ? 'on' : 'off'}`,
-        control: (
-          <form
-            className="settingControlStack wide policyForm"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveRuntimePolicy('permissions');
-            }}
-          >
-            <select
-              aria-label="工具使用强制策略"
-              className="settingSelect"
-              disabled={settingsControlLocked}
-              value={policyToolUseDraft}
-              onChange={(event) => setPolicyToolUseDraft(event.target.value as RuntimeToolPolicy)}
-            >
-              <option value="auto">自动强制</option>
-              <option value="always">始终强制</option>
-              <option value="off">关闭强制</option>
-              {policyToolUseDraft === 'custom' && <option value="custom">自定义保留</option>}
-            </select>
-            <label className="settingCheckbox compact">
-              <input
-                checked={policyTaskGuidanceDraft}
-                disabled={settingsControlLocked}
-                type="checkbox"
-                onChange={(event) => setPolicyTaskGuidanceDraft(event.target.checked)}
-              />
-              <span>完成指导</span>
-            </label>
-            <label className="settingCheckbox compact">
-              <input
-                checked={policyEnvironmentProbeDraft}
-                disabled={settingsControlLocked}
-                type="checkbox"
-                onChange={(event) => setPolicyEnvironmentProbeDraft(event.target.checked)}
-              />
-              <span>环境探测</span>
-            </label>
-            <button className="selectButton" type="submit" disabled={settingsControlLocked}>
-              {settingsBusy === 'policy:runtime:permissions' ? '保存中' : '保存'}
-            </button>
-          </form>
-        ),
-      },
       { icon: <KeyRound size={18} />, title: 'Toolsets', desc: `${enabledToolsetCount}/${toolsets.length || config?.toolsets.length || 0} 已启用，写入 platform_toolsets.cli。`, control: <button className="selectButton" type="button" disabled={settingsControlLocked} onClick={() => void loadToolsets()}>{settingsBusy === 'toolsets:load' ? '同步中' : '同步'}</button> },
       ...toolsets.flatMap((toolset) => {
         const label = toolset.label || toolset.name;
@@ -11643,6 +8727,11 @@ function DiagnosticsSurface({
     };
     const label = labels[verb];
     await runDiagnosticAction(`gateway:${verb}`, label, async () => {
+      const result = await runtime.apiRequest<HermesActionStartResponse>({
+        method: 'POST',
+        path: `/api/gateway/${verb}`,
+        timeoutMs: 45000,
+      });
       if (verb === 'stop') {
         await runtime.stopGateway();
       } else if (verb === 'start') {
@@ -11651,7 +8740,7 @@ function DiagnosticsSurface({
         await runtime.restartGateway();
       }
       await runtime.refreshInventory();
-      return `${label} 已发送。`;
+      return `${label} 已发送${result.pid ? ` · pid ${result.pid}` : ''}${result.source ? ` · ${result.source}` : ''}`;
     });
   };
   const checkUpdates = async () => {
@@ -11694,7 +8783,11 @@ function DiagnosticsSurface({
   };
   const copyDiagnosticsSummary = async () => {
     await runDiagnosticAction('copy', '复制诊断摘要', async () => {
-      await writeClipboardText([
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('当前环境无法访问剪贴板');
+      }
+
+      await navigator.clipboard.writeText([
         `Beauty Hermes GUI diagnostics`,
         `Desktop: ${diagnostics?.desktopVersion || 'unknown'}`,
         `Hermes: ${diagnostics?.hermesVersion || 'unknown'}`,
@@ -11705,7 +8798,7 @@ function DiagnosticsSurface({
         `Update: ${formatUpdateCheckSummary(updateCheck)}`,
         `Logs:`,
         ...runtime.logs.slice(0, 12),
-      ].join('\n'), runtime.apiRequest);
+      ].join('\n'));
       return '诊断摘要已复制。';
     });
   };
@@ -11840,7 +8933,6 @@ function OnboardingSurface({
 }) {
   const [selectedMode, setSelectedMode] = useState<OnboardingMode>('local');
   const [remoteUrl, setRemoteUrl] = useState('');
-  const [remoteToken, setRemoteToken] = useState('');
   const [providerDraft, setProviderDraft] = useState('');
   const [modelDraft, setModelDraft] = useState('');
   const [autoStartGateway, setAutoStartGateway] = useState(true);
@@ -11860,7 +8952,6 @@ function OnboardingSurface({
       setOnboardingConfig(result);
       setSelectedMode(result.mode === 'remote' ? 'remote' : 'local');
       setRemoteUrl(result.remote_url || '');
-      setRemoteToken('');
       setProviderDraft(result.provider || config?.provider || '');
       setModelDraft(result.model || config?.defaultModel || runtime.model || '');
       setAutoStartGateway(result.auto_start_gateway !== false);
@@ -11894,7 +8985,6 @@ function OnboardingSurface({
           mode: selectedMode === 'remote' ? 'remote' : 'local',
           model: modelDraft.trim(),
           provider: providerDraft.trim(),
-          remote_token: remoteToken.trim(),
           remote_url: remoteUrl.trim(),
         },
         method: 'PUT',
@@ -11911,7 +9001,6 @@ function OnboardingSurface({
       const result = await apiRequest<HermesOnboardingConfig>({
         body: {
           mode: selectedMode === 'remote' ? 'remote' : 'local',
-          remote_token: remoteToken.trim(),
           remote_url: remoteUrl.trim(),
         },
         method: 'POST',
@@ -11985,17 +9074,6 @@ function OnboardingSurface({
           <label className={selectedMode === 'remote' ? undefined : 'muted'}>
             <span>远程 Gateway URL</span>
             <input className="settingInput" disabled={Boolean(onboardingBusy) || selectedMode !== 'remote'} placeholder="https://gateway.example.com" value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} />
-          </label>
-          <label className={selectedMode === 'remote' ? undefined : 'muted'}>
-            <span>Gateway Token</span>
-            <input
-              className="settingInput"
-              disabled={Boolean(onboardingBusy) || selectedMode !== 'remote'}
-              placeholder={onboardingConfig?.remote_token_set ? `已保存 ${onboardingConfig.remote_token_preview || 'token'}，留空保持不变` : '粘贴远程 Gateway token'}
-              type="password"
-              value={remoteToken}
-              onChange={(event) => setRemoteToken(event.target.value)}
-            />
           </label>
         </div>
         <label className="onboardingToggle">

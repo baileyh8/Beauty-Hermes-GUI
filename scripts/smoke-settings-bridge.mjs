@@ -7,9 +7,13 @@ import { setTimeout as wait } from 'node:timers/promises';
 const rootDir = new URL('..', import.meta.url);
 const hermesAgentRepo = process.env.HERMES_AGENT_REPO || join(homedir(), '.hermes', 'hermes-agent');
 const hermesHome = mkdtempSync(join(tmpdir(), 'beauty-hermes-bridge-smoke.'));
+const smokeWorkspacePath = join(hermesHome, 'workspace');
+const smokeWorkspaceFilePath = join(smokeWorkspacePath, 'page-map.md');
 const port = 9600 + Math.floor(Math.random() * 300);
 
 mkdirSync(hermesHome, { recursive: true });
+mkdirSync(join(hermesHome, 'pairing'), { recursive: true });
+mkdirSync(smokeWorkspacePath, { recursive: true });
 writeFileSync(
   join(hermesHome, 'config.yaml'),
   [
@@ -21,7 +25,16 @@ writeFileSync(
     '',
   ].join('\n'),
 );
-writeFileSync(join(hermesHome, 'preview-smoke.md'), '# Preview Smoke\n\n- file preview works\n');
+writeFileSync(smokeWorkspaceFilePath, '# Smoke Workspace\n\nfile browser fixture\n');
+writeFileSync(join(hermesHome, 'pairing', 'feishu-approved.json'), JSON.stringify({ smoke_feishu_user: { name: 'Smoke Feishu' } }, null, 2));
+writeFileSync(join(hermesHome, 'pairing', 'weixin-approved.json'), JSON.stringify({ smoke_weixin_user: { name: 'Smoke Weixin' } }, null, 2));
+writeFileSync(join(hermesHome, 'channel_directory.json'), JSON.stringify({
+  platforms: {
+    feishu: [{ id: 'feishu-smoke', name: 'Feishu Smoke' }],
+    telegram: [{ id: 'telegram-smoke', name: 'Telegram Smoke' }],
+    weixin: [{ id: 'weixin-smoke', name: 'Weixin Smoke' }],
+  },
+}, null, 2));
 
 const hermesPython = existsSync(join(hermesAgentRepo, 'venv', 'bin', 'python'))
   ? join(hermesAgentRepo, 'venv', 'bin', 'python')
@@ -166,7 +179,6 @@ try {
   client = createCdpClient(wsUrl);
   await client.send('Runtime.enable');
   const result = await evaluate(client, `(${async () => {
-    const smokeHermesHome = '__SMOKE_HERMES_HOME__';
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const waitFor = async (predicate, label, timeout = 15000) => {
       const deadline = Date.now() + timeout;
@@ -181,219 +193,13 @@ try {
     };
     await waitFor(() => window.hermesDesktop?.api, 'desktop api');
     const api = (request) => window.hermesDesktop.api(request);
-    const runtimePolicyPath = '/api/settings/runtime-policy';
-    const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
-    const runtimePolicyWritableKeys = [
-      'clarify_timeout',
-      'environment_probe',
-      'gateway_timeout',
-      'gateway_timeout_warning',
-      'image_input_mode',
-      'max_turns',
-      'task_completion_guidance',
-      'tool_use_enforcement',
-    ];
-    const approvalPolicyPath = '/api/settings/approval-policy';
-    const approvalPolicyWritableKeys = [
-      'command_allowlist',
-      'cron_mode',
-      'gateway_timeout',
-      'mode',
-      'timeout',
-    ];
-    const extractRuntimePolicy = (response) => {
-      const directPolicy = response?.policy || response?.runtime_policy || response?.runtimePolicy || response?.settings;
-      const rawPolicy = directPolicy && typeof directPolicy === 'object' && !Array.isArray(directPolicy)
-        ? directPolicy
-        : response;
-      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) {
-        throw new Error('Runtime policy response did not return an object');
-      }
-      const policy = Object.fromEntries(runtimePolicyWritableKeys
-        .filter((key) => hasOwn(rawPolicy, key) && rawPolicy[key] !== null && rawPolicy[key] !== undefined)
-        .map((key) => [key, rawPolicy[key]]));
-      if (!Object.keys(policy).length) {
-        throw new Error('Runtime policy response did not expose writable fields');
-      }
-      return policy;
-    };
-    const buildTemporaryRuntimePolicy = (readResponse) => {
-      const originalPolicy = extractRuntimePolicy(readResponse);
-      const temporaryPolicy = {
-        ...originalPolicy,
-        clarify_timeout: 90,
-        environment_probe: false,
-        gateway_timeout: 120,
-        gateway_timeout_warning: 60,
-        image_input_mode: 'text',
-        max_turns: 91,
-        task_completion_guidance: true,
-      };
-      if (originalPolicy.tool_use_enforcement !== 'custom') {
-        temporaryPolicy.tool_use_enforcement = 'auto';
-      }
-      return { originalPolicy, temporaryPolicy };
-    };
-    const assertRuntimePolicyContains = (actualPolicy, expectedPolicy, label) => {
-      const comparableEntries = Object.entries(expectedPolicy)
-        .filter(([, value]) => value !== null && value !== undefined && ['boolean', 'number', 'string'].includes(typeof value));
-      if (!comparableEntries.length) {
-        throw new Error(`Runtime policy ${label} had no comparable primitive fields`);
-      }
-      for (const [key, expectedValue] of comparableEntries) {
-        const actualValue = actualPolicy[key];
-        if (String(actualValue) !== String(expectedValue)) {
-          throw new Error(`Runtime policy ${label} mismatch for ${key}: expected ${String(expectedValue)}, got ${String(actualValue)}`);
-        }
-      }
-    };
-    const putRuntimePolicy = async (policy, label) => {
-      try {
-        const response = await api({
-          body: policy,
-          method: 'PUT',
-          path: runtimePolicyPath,
-          timeoutMs: 30000,
-        });
-        return { response, submittedPolicy: policy };
-      } catch (error) {
-        throw new Error(`Runtime policy ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    };
-    const extractApprovalPolicy = (response) => {
-      const directPolicy = response?.policy || response?.approval_policy || response?.approvalPolicy || response?.settings;
-      const rawPolicy = directPolicy && typeof directPolicy === 'object' && !Array.isArray(directPolicy)
-        ? directPolicy
-        : response;
-      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) {
-        throw new Error('Approval policy response did not return an object');
-      }
-      const policy = Object.fromEntries(approvalPolicyWritableKeys
-        .filter((key) => hasOwn(rawPolicy, key) && rawPolicy[key] !== null && rawPolicy[key] !== undefined)
-        .map((key) => [key, rawPolicy[key]]));
-      if (!Object.keys(policy).length) {
-        throw new Error('Approval policy response did not expose writable fields');
-      }
-      return policy;
-    };
-    const assertApprovalPolicyContains = (actualPolicy, expectedPolicy, label) => {
-      for (const [key, expectedValue] of Object.entries(expectedPolicy)) {
-        const actualValue = actualPolicy[key];
-        if (Array.isArray(expectedValue)) {
-          const actualList = Array.isArray(actualValue) ? actualValue : [];
-          if (actualList.join('\n') !== expectedValue.join('\n')) {
-            throw new Error(`Approval policy ${label} mismatch for ${key}`);
-          }
-        } else if (String(actualValue) !== String(expectedValue)) {
-          throw new Error(`Approval policy ${label} mismatch for ${key}: expected ${String(expectedValue)}, got ${String(actualValue)}`);
-        }
-      }
-    };
-    const putApprovalPolicy = async (policy, label) => {
-      try {
-        const response = await api({
-          body: {
-            ...policy,
-            mode_off_confirmed: policy.mode === 'off',
-          },
-          method: 'PUT',
-          path: approvalPolicyPath,
-          timeoutMs: 30000,
-        });
-        return { response, submittedPolicy: policy };
-      } catch (error) {
-        throw new Error(`Approval policy ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    };
 
     const status = await api({ path: '/api/status', timeoutMs: 30000 });
     if (!status.hermes_home || !status.config_path || status.source !== 'desktop-local-bridge') {
       throw new Error('Local status fallback did not return desktop diagnostics');
     }
-    const runtimePolicyBefore = await api({ path: runtimePolicyPath, timeoutMs: 30000 });
-    const { originalPolicy, temporaryPolicy } = buildTemporaryRuntimePolicy(runtimePolicyBefore);
-    let runtimePolicyRestoreStatus = 'pending';
-    try {
-      const savedRuntimePolicy = await putRuntimePolicy(temporaryPolicy, 'temporary save');
-      assertRuntimePolicyContains(extractRuntimePolicy(savedRuntimePolicy.response), savedRuntimePolicy.submittedPolicy, 'temporary save response');
-      const runtimePolicyAfterSave = await api({ path: runtimePolicyPath, timeoutMs: 30000 });
-      assertRuntimePolicyContains(extractRuntimePolicy(runtimePolicyAfterSave), savedRuntimePolicy.submittedPolicy, 'temporary save readback');
-    } finally {
-      const restoredRuntimePolicy = await putRuntimePolicy(originalPolicy, 'restore original');
-      assertRuntimePolicyContains(extractRuntimePolicy(restoredRuntimePolicy.response), restoredRuntimePolicy.submittedPolicy, 'restore response');
-      const runtimePolicyAfterRestore = await api({ path: runtimePolicyPath, timeoutMs: 30000 });
-      assertRuntimePolicyContains(extractRuntimePolicy(runtimePolicyAfterRestore), restoredRuntimePolicy.submittedPolicy, 'restore readback');
-      runtimePolicyRestoreStatus = 'restored';
-    }
-    const approvalPolicyBefore = await api({ path: approvalPolicyPath, timeoutMs: 30000 });
-    const originalApprovalPolicy = extractApprovalPolicy(approvalPolicyBefore);
-    const temporaryApprovalPolicy = {
-      command_allowlist: ['echo bridge-approval-smoke', 'npm run smoke:ui'],
-      cron_mode: 'deny',
-      gateway_timeout: 45,
-      mode: 'smart',
-      timeout: 15,
-    };
-    let approvalPolicyRestoreStatus = 'pending';
-    try {
-      const savedApprovalPolicy = await putApprovalPolicy(temporaryApprovalPolicy, 'temporary save');
-      assertApprovalPolicyContains(extractApprovalPolicy(savedApprovalPolicy.response), savedApprovalPolicy.submittedPolicy, 'temporary save response');
-      const approvalPolicyAfterSave = await api({ path: approvalPolicyPath, timeoutMs: 30000 });
-      assertApprovalPolicyContains(extractApprovalPolicy(approvalPolicyAfterSave), savedApprovalPolicy.submittedPolicy, 'temporary save readback');
-    } finally {
-      const restoredApprovalPolicy = await putApprovalPolicy(originalApprovalPolicy, 'restore original');
-      assertApprovalPolicyContains(extractApprovalPolicy(restoredApprovalPolicy.response), restoredApprovalPolicy.submittedPolicy, 'restore response');
-      const approvalPolicyAfterRestore = await api({ path: approvalPolicyPath, timeoutMs: 30000 });
-      assertApprovalPolicyContains(extractApprovalPolicy(approvalPolicyAfterRestore), restoredApprovalPolicy.submittedPolicy, 'restore readback');
-      approvalPolicyRestoreStatus = 'restored';
-    }
-    const envBefore = await api({ path: '/api/env', timeoutMs: 30000 });
-    if (!envBefore.OPENAI_API_KEY || !envBefore.DEEPSEEK_API_KEY) {
-      throw new Error('Env credentials API should expose common provider keys');
-    }
-    const smokeEnvKey = 'BEAUTY_HERMES_SMOKE_API_KEY';
-    const smokeEnvValue = `smoke-secret-${Date.now()}`;
-    await api({
-      body: { key: smokeEnvKey, value: smokeEnvValue },
-      method: 'PUT',
-      path: '/api/env',
-      timeoutMs: 30000,
-    });
-    const envAfterSave = await api({ path: '/api/env', timeoutMs: 30000 });
-    if (envAfterSave[smokeEnvKey]?.is_set !== true) {
-      throw new Error('Env credential save did not persist is_set=true');
-    }
-    if (String(envAfterSave[smokeEnvKey]?.redacted_value || '').includes(smokeEnvValue)) {
-      throw new Error('Env credential response leaked the raw secret');
-    }
-    const envReveal = await api({
-      body: { key: smokeEnvKey },
-      method: 'POST',
-      path: '/api/env/reveal',
-      timeoutMs: 30000,
-    });
-    if (envReveal.value !== smokeEnvValue) {
-      throw new Error('Env credential reveal did not return the saved value');
-    }
-    const envValidate = await api({
-      body: { key: smokeEnvKey },
-      method: 'POST',
-      path: '/api/providers/validate',
-      timeoutMs: 30000,
-    });
-    if (envValidate.ok !== true || String(envValidate.message || '').includes(smokeEnvValue)) {
-      throw new Error('Env credential local validation failed or leaked the raw value');
-    }
-    await api({
-      body: { key: smokeEnvKey },
-      method: 'DELETE',
-      path: '/api/env',
-      timeoutMs: 30000,
-    });
-    const envAfterDelete = await api({ path: '/api/env', timeoutMs: 30000 });
-    if (envAfterDelete[smokeEnvKey]?.is_set === true) {
-      throw new Error('Env credential delete did not clear the saved value');
-    }
+    const smokeWorkspacePath = status.hermes_home + '/workspace';
+    const smokeWorkspaceFilePath = smokeWorkspacePath + '/page-map.md';
     const gatewayStart = await api({ method: 'POST', path: '/api/gateway/start', timeoutMs: 30000 });
     if (!gatewayStart.name || !['gateway-start', 'gateway-restart'].includes(gatewayStart.name)) {
       throw new Error('Local gateway start fallback did not return action metadata');
@@ -409,14 +215,6 @@ try {
     const updateStatus = await api({ path: '/api/actions/hermes-update/status?lines=5', timeoutMs: 30000 });
     if (updateStatus.name !== 'hermes-update' || !Array.isArray(updateStatus.lines)) {
       throw new Error('Local action status fallback did not return log metadata');
-    }
-    const actionsBefore = await api({ path: '/api/actions', timeoutMs: 30000 });
-    if (!Array.isArray(actionsBefore.actions)) {
-      throw new Error('Local actions list did not return an array');
-    }
-    const stopMissingAction = await api({ method: 'POST', path: '/api/actions/not-running-smoke/stop', timeoutMs: 30000 });
-    if (stopMissingAction.ok !== false || stopMissingAction.running !== false) {
-      throw new Error('Local action stop should be safe for non-running actions');
     }
     const sessions = await api({ path: '/api/sessions?limit=20&archived=include&order=recent', timeoutMs: 30000 });
     if (!sessions.sessions?.some((session) => session.id === 'smoke_project_session')) {
@@ -525,54 +323,6 @@ try {
       path: '/api/model/set',
       timeoutMs: 30000,
     });
-    const auxiliaryBefore = await api({ path: '/api/model/auxiliary', timeoutMs: 30000 });
-    const visionBefore = auxiliaryBefore.tasks?.find((task) => task.task === 'vision');
-    if (!visionBefore || auxiliaryBefore.main?.provider !== 'smoke-provider' || auxiliaryBefore.main?.model !== 'smoke-model-next') {
-      throw new Error('Auxiliary model readback did not expose main model and vision slot');
-    }
-    const savedVisionAuxiliary = await api({
-      body: {
-        model: 'smoke-model-vision',
-        provider: 'smoke-provider-vision',
-        scope: 'auxiliary',
-        task: 'vision',
-      },
-      method: 'POST',
-      path: '/api/model/set',
-      timeoutMs: 30000,
-    });
-    if (
-      savedVisionAuxiliary.scope !== 'auxiliary'
-      || !savedVisionAuxiliary.tasks?.includes('vision')
-      || savedVisionAuxiliary.provider !== 'smoke-provider-vision'
-      || savedVisionAuxiliary.model !== 'smoke-model-vision'
-    ) {
-      throw new Error('Auxiliary vision model save did not return expected metadata');
-    }
-    const auxiliaryAfterSave = await api({ path: '/api/model/auxiliary', timeoutMs: 30000 });
-    const visionAfterSave = auxiliaryAfterSave.tasks?.find((task) => task.task === 'vision');
-    if (visionAfterSave?.provider !== 'smoke-provider-vision' || visionAfterSave?.model !== 'smoke-model-vision') {
-      throw new Error('Auxiliary vision model save did not persist');
-    }
-    const resetAuxiliary = await api({
-      body: {
-        model: 'smoke-model-next',
-        provider: 'smoke-provider',
-        scope: 'auxiliary',
-        task: '__reset__',
-      },
-      method: 'POST',
-      path: '/api/model/set',
-      timeoutMs: 30000,
-    });
-    if (resetAuxiliary.scope !== 'auxiliary' || resetAuxiliary.reset !== true) {
-      throw new Error('Auxiliary model reset did not return reset metadata');
-    }
-    const auxiliaryAfterReset = await api({ path: '/api/model/auxiliary', timeoutMs: 30000 });
-    const visionAfterReset = auxiliaryAfterReset.tasks?.find((task) => task.task === 'vision');
-    if (visionAfterReset?.provider !== 'auto' || visionAfterReset?.model) {
-      throw new Error('Auxiliary model reset did not restore vision to main-model fallback');
-    }
     const onboardingBefore = await api({ path: '/api/onboarding/config', timeoutMs: 30000 });
     if (!onboardingBefore.hermes_home || onboardingBefore.mode !== 'local') {
       throw new Error('Onboarding config did not expose local Hermes state');
@@ -583,7 +333,6 @@ try {
         mode: 'remote',
         model: 'smoke-model-onboarding',
         provider: 'smoke-provider-onboarding',
-        remote_token: 'smoke-remote-token',
         remote_url: 'https://gateway.smoke.local',
       },
       method: 'PUT',
@@ -593,9 +342,6 @@ try {
     if (onboardingRemote.mode !== 'remote' || onboardingRemote.remote_url !== 'https://gateway.smoke.local' || onboardingRemote.auto_start_gateway !== false) {
       throw new Error('Onboarding remote config did not persist desktop settings');
     }
-    if (onboardingRemote.remote_token_set !== true || String(onboardingRemote.remote_token_preview || '').includes('smoke-remote-token')) {
-      throw new Error('Onboarding remote token should persist without leaking the raw value');
-    }
     const onboardingCheck = await api({
       body: { mode: 'local' },
       method: 'POST',
@@ -604,13 +350,6 @@ try {
     });
     if (!onboardingCheck.message || onboardingCheck.ok !== true) {
       throw new Error('Onboarding local check did not report ready state');
-    }
-    const filePreview = await api({
-      path: `/api/files/preview?path=${encodeURIComponent('preview-smoke.md')}&cwd=${encodeURIComponent(smokeHermesHome)}`,
-      timeoutMs: 30000,
-    });
-    if (filePreview.kind !== 'text' || !filePreview.text?.includes('Preview Smoke') || !filePreview.path?.endsWith('preview-smoke.md')) {
-      throw new Error('File preview fallback did not return readable text content');
     }
     const onboardingLocal = await api({
       body: {
@@ -633,6 +372,12 @@ try {
     if (!telegramBefore?.env_vars?.some((env) => env.key === 'TELEGRAM_BOT_TOKEN' && env.required === true)) {
       throw new Error('Messaging platform metadata did not expose Telegram token config');
     }
+    for (const platformId of ['feishu', 'telegram', 'weixin']) {
+      const platform = messagingBefore.platforms?.find((item) => item.id === platformId);
+      if (!platform || platform.state === 'disabled' || platform.enabled === false) {
+        throw new Error(`Configured ${platformId} channel should not be shown as disabled`);
+      }
+    }
     await api({
       body: {
         enabled: false,
@@ -649,6 +394,7 @@ try {
     const telegramAfterSave = messagingAfterSave.platforms?.find((platform) => platform.id === 'telegram');
     if (
       telegramAfterSave?.enabled !== false
+      || telegramAfterSave?.state !== 'disabled'
       || !telegramAfterSave.env_vars?.some((env) => env.key === 'TELEGRAM_BOT_TOKEN' && env.is_set === true)
       || !telegramAfterSave.env_vars?.some((env) => env.key === 'TELEGRAM_ALLOWED_USERS' && env.is_set === true)
     ) {
@@ -853,23 +599,35 @@ try {
       throw new Error('MCP delete did not persist');
     }
 
+    const fileList = await api({
+      path: '/api/files/list?path=' + encodeURIComponent(smokeWorkspacePath),
+      timeoutMs: 30000,
+    });
+    if (!fileList.entries?.some((entry) => entry.name === 'page-map.md' && entry.kind === 'file')) {
+      throw new Error('File browser list did not expose seeded workspace file');
+    }
+    const fileRead = await api({
+      path: '/api/files/read?path=' + encodeURIComponent(smokeWorkspaceFilePath),
+      timeoutMs: 30000,
+    });
+    if (fileRead.binary || !fileRead.text?.includes('file browser fixture')) {
+      throw new Error('File browser read did not return seeded text file');
+    }
+
     return {
+      files: 'list-read',
       mcp: 'create-toggle-delete',
       messaging: 'env-save-clear-onboarding',
       model: 'saved',
       onboarding: 'read-save-check',
-      preview: 'file-read',
       profiles: 'create-edit-soul-rename-delete',
-      approvalPolicy: `read-save-${approvalPolicyRestoreStatus}`,
-      envCredentials: 'save-redact-reveal-validate-clear',
-      runtimePolicy: `read-save-${runtimePolicyRestoreStatus}`,
       sessions: 'list-search-rename-archive-export-clean-delete',
-      system: 'status-gateway-update-check-actions',
+      system: 'status-gateway-update-check',
       cron: 'create-update-runs-delete',
       toolset: firstToolset.name,
       toolsetConfig: 'provider-env',
     };
-  }})()`.replace('__SMOKE_HERMES_HOME__', hermesHome.replace(/\\/g, '\\\\').replace(/'/g, "\\'")));
+  }})()`);
 
   console.log(`Settings bridge smoke passed. ${JSON.stringify({ hermesHome, ...result })}`);
 } catch (error) {

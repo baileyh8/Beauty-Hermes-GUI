@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -11,46 +11,6 @@ let mainWindow = null;
 const localTelegramOnboardingPairings = new Map();
 const localActionProcesses = new Map();
 const localActionResults = new Map();
-const localActionMetadata = new Map();
-const GATEWAY_TOKEN_RE = /__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
-
-const LOCAL_ENV_CREDENTIAL_FALLBACKS = {
-  ANTHROPIC_API_KEY: {
-    category: 'provider',
-    description: 'Anthropic API key',
-    password: true,
-    prompt: 'Anthropic API key',
-    url: 'https://console.anthropic.com/settings/keys',
-  },
-  DEEPSEEK_API_KEY: {
-    category: 'provider',
-    description: 'DeepSeek API key',
-    password: true,
-    prompt: 'DeepSeek API key',
-    url: 'https://platform.deepseek.com/api_keys',
-  },
-  GEMINI_API_KEY: {
-    category: 'provider',
-    description: 'Google AI Studio / Gemini API key',
-    password: true,
-    prompt: 'Gemini API key',
-    url: 'https://aistudio.google.com/app/apikey',
-  },
-  OPENAI_API_KEY: {
-    category: 'provider',
-    description: 'OpenAI API key',
-    password: true,
-    prompt: 'OpenAI API key',
-    url: 'https://platform.openai.com/api-keys',
-  },
-  OPENROUTER_API_KEY: {
-    category: 'provider',
-    description: 'OpenRouter API key',
-    password: true,
-    prompt: 'OpenRouter API key',
-    url: 'https://openrouter.ai/keys',
-  },
-};
 
 const LOCAL_MESSAGING_CATALOG = [
   {
@@ -423,71 +383,6 @@ function safeReadJson(filePath) {
   }
 }
 
-function expandLocalPath(value) {
-  const raw = String(value || '').trim().replace(/^@+/, '');
-  if (!raw) {
-    return '';
-  }
-  if (raw === '~') {
-    return os.homedir();
-  }
-  if (raw.startsWith('~/')) {
-    return path.join(os.homedir(), raw.slice(2));
-  }
-  return raw;
-}
-
-function resolveLocalPreviewPath(rawPath, cwd = '') {
-  const target = expandLocalPath(rawPath);
-  if (!target) {
-    return '';
-  }
-
-  if (path.isAbsolute(target)) {
-    return path.normalize(target);
-  }
-
-  const baseCandidates = [
-    expandLocalPath(cwd),
-    process.env.BEAUTY_HERMES_WORKDIR,
-    process.cwd(),
-    resolveHermesHome(),
-  ].filter(Boolean);
-  const candidates = baseCandidates.map((base) => path.resolve(base, target));
-  return candidates.find((candidate) => {
-    try {
-      return fs.statSync(candidate).isFile();
-    } catch {
-      return false;
-    }
-  }) || candidates[0] || path.resolve(target);
-}
-
-function mimeFromPath(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  const table = {
-    '.css': 'text/css',
-    '.gif': 'image/gif',
-    '.htm': 'text/html',
-    '.html': 'text/html',
-    '.jpeg': 'image/jpeg',
-    '.jpg': 'image/jpeg',
-    '.js': 'text/javascript',
-    '.json': 'application/json',
-    '.md': 'text/markdown',
-    '.mjs': 'text/javascript',
-    '.png': 'image/png',
-    '.svg': 'image/svg+xml',
-    '.ts': 'text/typescript',
-    '.tsx': 'text/typescript',
-    '.txt': 'text/plain',
-    '.webp': 'image/webp',
-    '.yaml': 'text/yaml',
-    '.yml': 'text/yaml',
-  };
-  return table[ext] || 'application/octet-stream';
-}
-
 function resolveHermesHome() {
   return process.env.HERMES_HOME || path.join(os.homedir(), '.hermes');
 }
@@ -507,37 +402,145 @@ function writeDesktopConfig(nextConfig) {
   return configPath;
 }
 
-function previewSecret(value) {
+function expandUserPath(value) {
   const text = String(value || '').trim();
-  if (!text) {
-    return null;
+  if (!text || text === '~') {
+    return os.homedir();
   }
-  if (text.length <= 8) {
-    return `${text.slice(0, 2)}...${text.slice(-2)}`;
+  if (text.startsWith('~/')) {
+    return path.join(os.homedir(), text.slice(2));
   }
-  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+  return text;
 }
 
-function normalizeRemoteGatewayUrl(value) {
-  const raw = String(value || '').trim();
-  if (!raw) {
-    return '';
-  }
-
-  let parsed;
+function realPathIfExists(filePath) {
   try {
-    parsed = new URL(raw);
+    return fs.realpathSync.native(filePath);
   } catch {
-    throw new Error('远程 Gateway URL 格式无效。');
+    return path.resolve(filePath);
+  }
+}
+
+function isPathInside(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function fileBrowserRoots(cwd) {
+  const config = readDesktopConfig();
+  const candidates = [
+    os.homedir(),
+    resolveHermesHome(),
+    cwd,
+    config.default_project_dir,
+  ].filter(Boolean).map((item) => realPathIfExists(expandUserPath(item)));
+  return [...new Set(candidates)].filter((item) => {
+    try {
+      return fs.existsSync(item);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function resolveFileBrowserPath(rawPath, cwd) {
+  const roots = fileBrowserRoots(cwd);
+  const fallback = roots[0] || os.homedir();
+  const requested = rawPath ? expandUserPath(rawPath) : (cwd ? expandUserPath(cwd) : fallback);
+  const absolute = path.isAbsolute(requested) ? requested : path.resolve(fallback, requested);
+  const resolved = realPathIfExists(absolute);
+  const root = roots.find((item) => isPathInside(resolved, item));
+
+  if (!root) {
+    throw new Error('路径不在允许的文件浏览根目录内。');
   }
 
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('远程 Gateway URL 需要以 http:// 或 https:// 开头。');
+  return { path: resolved, root, roots };
+}
+
+async function localFilesApi(method, url, body) {
+  if (method !== 'GET') {
+    return null;
   }
 
-  parsed.hash = '';
-  parsed.search = '';
-  return parsed.toString().replace(/\/$/, '');
+  if (url.pathname === '/api/files/list') {
+    const requestedPath = url.searchParams.get('path') || (typeof body?.path === 'string' ? body.path : '');
+    const cwd = url.searchParams.get('cwd') || (typeof body?.cwd === 'string' ? body.cwd : '');
+    const target = resolveFileBrowserPath(requestedPath, cwd);
+    const stat = fs.statSync(target.path);
+    if (!stat.isDirectory()) {
+      throw new Error('只能列出文件夹。');
+    }
+
+    const entries = fs.readdirSync(target.path, { withFileTypes: true })
+      .slice(0, 500)
+      .map((entry) => {
+        const entryPath = path.join(target.path, entry.name);
+        let entryStat = null;
+        try {
+          entryStat = fs.statSync(entryPath);
+        } catch {
+          entryStat = null;
+        }
+        const kind = entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other';
+        return {
+          extension: entry.isFile() ? path.extname(entry.name).replace(/^\./, '') : '',
+          hidden: entry.name.startsWith('.'),
+          kind,
+          mtime: entryStat?.mtimeMs ?? null,
+          name: entry.name,
+          path: entryPath,
+          size: entryStat?.size ?? null,
+        };
+      })
+      .sort((left, right) => {
+        if (left.kind !== right.kind) {
+          return left.kind === 'directory' ? -1 : right.kind === 'directory' ? 1 : 0;
+        }
+        return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+      })
+      .slice(0, 240);
+
+    const parent = target.path === target.root ? null : path.dirname(target.path);
+    return {
+      entries,
+      parent,
+      path: target.path,
+      root: { label: path.basename(target.root) || target.root, path: target.root },
+      roots: target.roots.map((rootPath) => ({ label: rootPath === os.homedir() ? os.userInfo().username : path.basename(rootPath) || rootPath, path: rootPath })),
+      source: 'desktop-local-bridge',
+      truncated: entries.length >= 240,
+    };
+  }
+
+  if (url.pathname === '/api/files/read') {
+    const requestedPath = url.searchParams.get('path') || (typeof body?.path === 'string' ? body.path : '');
+    const cwd = url.searchParams.get('cwd') || (typeof body?.cwd === 'string' ? body.cwd : '');
+    const target = resolveFileBrowserPath(requestedPath, cwd);
+    const stat = fs.statSync(target.path);
+    if (!stat.isFile()) {
+      throw new Error('只能预览文件。');
+    }
+
+    const maxBytes = Math.max(1024, Math.min(Number(url.searchParams.get('maxBytes') || body?.maxBytes || 60000), 180000));
+    const buffer = Buffer.alloc(Math.min(maxBytes, stat.size));
+    const fd = fs.openSync(target.path, 'r');
+    fs.readSync(fd, buffer, 0, buffer.length, 0);
+    fs.closeSync(fd);
+    const binary = buffer.includes(0);
+    return {
+      binary,
+      encoding: binary ? 'binary' : 'utf8',
+      name: path.basename(target.path),
+      path: target.path,
+      size: stat.size,
+      source: 'desktop-local-bridge',
+      text: binary ? '' : buffer.toString('utf8'),
+      truncated: stat.size > buffer.length,
+    };
+  }
+
+  return null;
 }
 
 async function fetchText(url, options = {}, timeoutMs = 3000) {
@@ -554,15 +557,6 @@ async function fetchText(url, options = {}, timeoutMs = 3000) {
     return { ok: response.ok, status: response.status, text };
   } finally {
     clearTimeout(timer);
-  }
-}
-
-async function discoverGatewayToken(baseUrl) {
-  try {
-    const root = await fetchText(baseUrl, {}, 2500);
-    return root.text.match(GATEWAY_TOKEN_RE)?.[1] || '';
-  } catch {
-    return '';
   }
 }
 
@@ -628,42 +622,11 @@ function tailLocalActionLog(name, maxLines = 200) {
   return text.split(/\r?\n/).filter(Boolean).slice(-Math.max(1, Math.min(maxLines, 2000)));
 }
 
-function localActionSummary(name) {
-  const proc = localActionProcesses.get(name);
-  const result = localActionResults.get(name) || null;
-  const meta = localActionMetadata.get(name) || {};
-  const exitCode = proc ? proc.exitCode : result?.exitCode ?? null;
-  return {
-    args: Array.isArray(meta.args) ? meta.args : [],
-    exit_code: exitCode,
-    finished_at: meta.finishedAt || result?.finishedAt || null,
-    lines: tailLocalActionLog(name, 5),
-    name,
-    pid: proc?.pid ?? result?.pid ?? meta.pid ?? null,
-    running: Boolean(proc && exitCode === null),
-    source: 'desktop-local-bridge',
-    started_at: meta.startedAt || null,
-    stoppable: Boolean(proc && exitCode === null),
-  };
-}
-
-function listLocalActions() {
-  const names = new Set([
-    ...localActionMetadata.keys(),
-    ...localActionProcesses.keys(),
-    ...localActionResults.keys(),
-  ]);
-  return Array.from(names)
-    .map((name) => localActionSummary(name))
-    .sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')));
-}
-
 function spawnLocalHermesAction(args, name) {
   const agentRepo = resolveHermesAgentRepo();
   const logPath = localActionLogPath(name);
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-  const startedAt = new Date().toISOString();
-  logStream.write(`\n=== ${name} started ${startedAt} ===\n`);
+  logStream.write(`\n=== ${name} started ${new Date().toISOString()} ===\n`);
   localActionResults.delete(name);
   const child = spawn(resolveHermesPython(), ['-m', 'hermes_cli.main', ...args], {
     cwd: agentRepo,
@@ -679,30 +642,19 @@ function spawnLocalHermesAction(args, name) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  localActionMetadata.set(name, {
-    args: Array.from(args || []),
-    pid: child.pid ?? null,
-    startedAt,
-  });
 
   child.stdout.on('data', (chunk) => logStream.write(chunk));
   child.stderr.on('data', (chunk) => logStream.write(chunk));
   child.on('close', (code, signal) => {
-    const finishedAt = new Date().toISOString();
-    logStream.write(`\n=== ${name} finished ${finishedAt} exit=${code ?? signal ?? 'unknown'} ===\n`);
+    logStream.write(`\n=== ${name} finished ${new Date().toISOString()} exit=${code ?? signal ?? 'unknown'} ===\n`);
     logStream.end();
-    const currentMeta = localActionMetadata.get(name) || {};
-    localActionMetadata.set(name, { ...currentMeta, finishedAt });
-    localActionResults.set(name, { exitCode: code, finishedAt, pid: child.pid });
+    localActionResults.set(name, { exitCode: code, pid: child.pid });
     localActionProcesses.delete(name);
   });
   child.on('error', (error) => {
-    const finishedAt = new Date().toISOString();
     logStream.write(`\n=== ${name} failed to start: ${error.message} ===\n`);
     logStream.end();
-    const currentMeta = localActionMetadata.get(name) || {};
-    localActionMetadata.set(name, { ...currentMeta, finishedAt });
-    localActionResults.set(name, { exitCode: 1, finishedAt, pid: child.pid ?? null });
+    localActionResults.set(name, { exitCode: 1, pid: child.pid ?? null });
     localActionProcesses.delete(name);
   });
   localActionProcesses.set(name, child);
@@ -972,101 +924,6 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "path": str(path), "sou
 }
 
 async function localSkillsApi(method, url, body) {
-  const localSkillName = (value) => {
-    const name = String(value || '').trim();
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,79}$/.test(name)) {
-      throw new Error('Skill 名称只能包含字母、数字、点、下划线和短横线，长度 2-80。');
-    }
-    return name;
-  };
-  const localSkillRoot = () => path.join(resolveHermesHome(), 'skills');
-  const localSkillFile = (name) => {
-    const safeName = localSkillName(name);
-    const root = localSkillRoot();
-    const dir = path.join(root, safeName);
-    const resolvedDir = path.resolve(dir);
-    const resolvedRoot = path.resolve(root);
-    if (resolvedDir !== resolvedRoot && !resolvedDir.startsWith(`${resolvedRoot}${path.sep}`)) {
-      throw new Error('Skill 路径越界。');
-    }
-    return { dir: resolvedDir, filePath: path.join(resolvedDir, 'SKILL.md'), name: safeName };
-  };
-  const skillPayload = (name) => {
-    const target = localSkillFile(name);
-    if (!fs.existsSync(target.filePath)) {
-      throw new Error(`本地 skill 不存在：${target.name}`);
-    }
-    const content = safeReadText(target.filePath, 240000);
-    return {
-      content,
-      description: content.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1] || '',
-      name: target.name,
-      path: target.filePath,
-      source: 'local',
-    };
-  };
-  const detailMatch = url.pathname.match(/^\/api\/skills\/([^/]+)$/);
-
-  if (method === 'POST' && url.pathname === '/api/skills') {
-    const name = localSkillName(body?.name);
-    const description = String(body?.description || '').trim();
-    const target = localSkillFile(name);
-    if (fs.existsSync(target.filePath)) {
-      throw new Error(`本地 skill 已存在：${name}`);
-    }
-
-    fs.mkdirSync(target.dir, { recursive: true });
-    const safeDescription = description || '本地创建的 Hermes skill。';
-    const content = String(body?.content || '').trim() || [
-      '---',
-      `name: ${JSON.stringify(name)}`,
-      `description: ${JSON.stringify(safeDescription)}`,
-      '---',
-      '',
-      `# ${name}`,
-      '',
-      safeDescription,
-      '',
-      '## 使用场景',
-      '',
-      '- 描述这个 skill 适合处理的问题。',
-      '',
-      '## 工作方式',
-      '',
-      '- 写清楚输入、执行步骤和输出格式。',
-      '',
-    ].join('\n');
-    fs.writeFileSync(target.filePath, `${content.replace(/\s+$/, '')}\n`, { mode: 0o600 });
-    return { ok: true, skill: skillPayload(name), source: 'desktop-local-bridge' };
-  }
-
-  if (detailMatch) {
-    const name = decodeURIComponent(detailMatch[1]);
-    if (method === 'GET') {
-      return { skill: skillPayload(name), source: 'desktop-local-bridge' };
-    }
-    if (method === 'PUT') {
-      const target = localSkillFile(name);
-      if (!fs.existsSync(target.filePath)) {
-        throw new Error(`本地 skill 不存在：${target.name}`);
-      }
-      const content = String(body?.content || '').trim();
-      if (!content) {
-        throw new Error('SKILL.md 内容不能为空。');
-      }
-      fs.writeFileSync(target.filePath, `${content.replace(/\s+$/, '')}\n`, { mode: 0o600 });
-      return { ok: true, skill: skillPayload(name), source: 'desktop-local-bridge' };
-    }
-    if (method === 'DELETE') {
-      const target = localSkillFile(name);
-      if (!fs.existsSync(target.filePath)) {
-        throw new Error(`本地 skill 不存在：${target.name}`);
-      }
-      fs.rmSync(target.dir, { force: false, recursive: true });
-      return { ok: true, name: target.name, source: 'desktop-local-bridge' };
-    }
-  }
-
   const script = `
 import json, sys
 payload = json.loads(sys.stdin.read() or "{}")
@@ -1261,6 +1118,39 @@ ENV_HINTS = {
     "TWILIO_AUTH_TOKEN": {"prompt": "Twilio Auth Token", "description": "Twilio Auth Token", "password": True},
 }
 COMMON = [entry["id"] for entry in CATALOG]
+def hermes_home():
+    return os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+def read_json_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+def platform_aliases(platform_id):
+    aliases = {platform_id}
+    if platform_id == "weixin":
+        aliases.update(["wechat", "weixin_official"])
+    if platform_id == "feishu":
+        aliases.update(["lark"])
+    return aliases
+def channel_count(platform_id):
+    data = read_json_file(os.path.join(hermes_home(), "channel_directory.json"))
+    platforms = data.get("platforms") if isinstance(data, dict) else {}
+    total = 0
+    if isinstance(platforms, dict):
+        for name in platform_aliases(platform_id):
+            rows = platforms.get(name)
+            if isinstance(rows, list):
+                total += len(rows)
+    return total
+def pairing_count(platform_id):
+    total = 0
+    for name in platform_aliases(platform_id):
+        for state in ("approved", "pending"):
+            data = read_json_file(os.path.join(hermes_home(), "pairing", f"{name}-{state}.json"))
+            if isinstance(data, dict):
+                total += len(data.keys())
+    return total
 def catalog_lookup(platform_id):
     entry = CATALOG_BY_ID.get(platform_id)
     if entry:
@@ -1305,6 +1195,10 @@ def platform_enabled(platform_id):
     cfg = load_config()
     item = (cfg.get("platforms", {}) or {}).get(platform_id, {})
     return bool(isinstance(item, dict) and item.get("enabled") is not False and item)
+def platform_explicitly_disabled(platform_id):
+    cfg = load_config()
+    item = (cfg.get("platforms", {}) or {}).get(platform_id, {})
+    return bool(isinstance(item, dict) and item.get("enabled") is False)
 def set_platform_enabled(platform_id, enabled):
     cfg = load_config()
     platforms = cfg.setdefault("platforms", {})
@@ -1322,6 +1216,7 @@ def payload_for(platform_id):
     runtime = read_runtime_status() or {}
     runtime_platforms = runtime.get("platforms") if isinstance(runtime, dict) else {}
     runtime_platform = runtime_platforms.get(platform_id, {}) if isinstance(runtime_platforms, dict) else {}
+    explicit_disabled = platform_explicitly_disabled(platform_id)
     enabled = platform_enabled(platform_id)
     required_env = set(entry.get("required_env") or [])
     env_vars = []
@@ -1334,7 +1229,14 @@ def payload_for(platform_id):
             "redacted_value": redact(value),
             **env_info(key),
         })
-    configured = all(bool(get_env_value(key)) for key in required_env)
+    required_configured = all(bool(get_env_value(key)) for key in required_env)
+    channels = channel_count(platform_id)
+    pairings = pairing_count(platform_id)
+    runtime_seen = bool(runtime_platform)
+    local_evidence = bool(required_configured or channels or pairings or runtime_seen)
+    configured = bool(required_configured or local_evidence)
+    if not explicit_disabled and local_evidence:
+        enabled = True
     home_channel = None
     if Platform is not None and load_gateway_config is not None:
         try:
@@ -1346,7 +1248,7 @@ def payload_for(platform_id):
         except Exception:
             home_channel = None
     state = runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
-    if not enabled:
+    if explicit_disabled or not enabled:
         state = "disabled"
     elif not configured:
         state = "not_configured"
@@ -1359,6 +1261,8 @@ def payload_for(platform_id):
         "docs_url": entry.get("docs_url") or "",
         "enabled": enabled,
         "configured": configured,
+        "channel_count": channels,
+        "pairing_count": pairings,
         "gateway_running": bool(get_running_pid()),
         "state": state,
         "error_code": runtime_platform.get("error_code") if isinstance(runtime_platform, dict) else None,
@@ -1497,12 +1401,9 @@ async function localOnboardingApi(method, url, body) {
     const inventory = readHermesInventory();
     const desktopConfig = readDesktopConfig();
     const mode = desktopConfig.connectionMode === 'remote' ? 'remote' : 'local';
-    const remoteToken = typeof desktopConfig.remoteGatewayToken === 'string' ? desktopConfig.remoteGatewayToken : '';
     return {
       mode,
       remote_url: typeof desktopConfig.remoteGatewayUrl === 'string' ? desktopConfig.remoteGatewayUrl : '',
-      remote_token_set: Boolean(remoteToken),
-      remote_token_preview: previewSecret(remoteToken),
       auto_start_gateway: desktopConfig.autoStartGateway !== false,
       desktop_config_path: path.join(resolveHermesHome(), 'desktop.json'),
       hermes_home: inventory.diagnostics.hermesHome,
@@ -1523,49 +1424,24 @@ async function localOnboardingApi(method, url, body) {
 
   if (method === 'POST' && url.pathname === '/api/onboarding/check') {
     const mode = body?.mode === 'remote' ? 'remote' : 'local';
-    const rawRemoteUrl = String(body?.remote_url || '').trim();
-    const remoteTokenDraft = String(body?.remote_token || '').trim();
+    const remoteUrl = String(body?.remote_url || '').trim();
     const result = summary();
 
     if (mode === 'remote') {
-      if (!rawRemoteUrl) {
+      if (!remoteUrl) {
         return { ...result, ok: false, message: '请输入远程 Gateway URL。' };
+      }
+      if (!/^https?:\/\//i.test(remoteUrl)) {
+        return { ...result, ok: false, message: '远程 Gateway URL 需要以 http:// 或 https:// 开头。' };
       }
 
       try {
-        const remoteUrl = normalizeRemoteGatewayUrl(rawRemoteUrl);
-        const storedConfig = readDesktopConfig();
-        const storedToken = typeof storedConfig.remoteGatewayToken === 'string' ? storedConfig.remoteGatewayToken.trim() : '';
-        const remoteToken = remoteTokenDraft || storedToken || await discoverGatewayToken(remoteUrl);
-
-        if (!remoteToken) {
-          return {
-            ...result,
-            ok: false,
-            mode,
-            remote_url: remoteUrl,
-            remote_token_set: false,
-            message: '请输入远程 Gateway Token，或确认远程页面能暴露会话 token。',
-          };
-        }
-
-        const health = await fetchText(
-          new URL('/api/status', `${remoteUrl}/`).toString(),
-          {
-            headers: {
-              Accept: 'application/json',
-              'X-Hermes-Session-Token': remoteToken,
-            },
-          },
-          2500,
-        );
+        const health = await fetchText(new URL('/api/status', remoteUrl).toString(), { headers: { Accept: 'application/json' } }, 2500);
         return {
           ...result,
           ok: health.ok,
           mode,
           remote_url: remoteUrl,
-          remote_token_set: true,
-          remote_token_preview: previewSecret(remoteToken),
           message: health.ok ? '远程 Gateway 可以访问。' : `远程 Gateway 返回 HTTP ${health.status}。`,
         };
       } catch (error) {
@@ -1592,8 +1468,6 @@ async function localOnboardingApi(method, url, body) {
   if (method === 'PUT' && url.pathname === '/api/onboarding/config') {
     const mode = body?.mode === 'remote' ? 'remote' : 'local';
     const remoteUrl = String(body?.remote_url || '').trim();
-    const remoteToken = String(body?.remote_token || '').trim();
-    const clearRemoteToken = body?.clear_remote_token === true;
     const provider = String(body?.provider || '').trim();
     const model = String(body?.model || '').trim();
     const autoStartGateway = body?.auto_start_gateway !== false;
@@ -1603,21 +1477,13 @@ async function localOnboardingApi(method, url, body) {
     }
 
     const current = readDesktopConfig();
-    const nextDesktopConfig = {
+    const configPath = writeDesktopConfig({
       ...current,
       autoStartGateway,
       connectionMode: mode,
-      remoteGatewayUrl: remoteUrl ? normalizeRemoteGatewayUrl(remoteUrl) : '',
+      remoteGatewayUrl: remoteUrl,
       updatedAt: new Date().toISOString(),
-    };
-
-    if (remoteToken) {
-      nextDesktopConfig.remoteGatewayToken = remoteToken;
-    } else if (clearRemoteToken) {
-      delete nextDesktopConfig.remoteGatewayToken;
-    }
-
-    const configPath = writeDesktopConfig(nextDesktopConfig);
+    });
 
     let modelResult = null;
     if (provider && model) {
@@ -1652,7 +1518,7 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"provider": provider, "model": mode
       provider: modelResult?.provider || provider || summary().provider,
       model: modelResult?.model || model || summary().model,
       message: mode === 'remote'
-        ? '远程 Gateway 连接配置已保存。'
+        ? '连接配置已保存。远程接入需要在集成页确认凭据和 token。'
         : '本机 Hermes 启动配置已保存。',
     };
   }
@@ -1660,352 +1526,7 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"provider": provider, "model": mode
   return null;
 }
 
-async function localEnvApi(method, url, body) {
-  if (url.pathname === '/api/env' && method === 'GET') {
-    const fallbackJson = JSON.stringify(LOCAL_ENV_CREDENTIAL_FALLBACKS);
-    const fallbackJsonLiteral = JSON.stringify(fallbackJson);
-    return runHermesPython(`
-import json, os, sys
-from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_value, load_env
-
-FALLBACKS = json.loads(${fallbackJsonLiteral})
-SECRET_WORDS = ("TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH", "PRIVATE")
-
-def redact(value):
-    text = str(value or "")
-    if not text:
-        return None
-    if len(text) <= 8:
-        return "****"
-    return f"{text[:4]}...{text[-4:]}"
-
-def normalize_info(key, info, source):
-    info = info if isinstance(info, dict) else {}
-    value = get_env_value(key) or ""
-    disk_env = load_env()
-    return {
-        "advanced": bool(info.get("advanced", False)),
-        "category": str(info.get("category") or source or "setting"),
-        "description": str(info.get("description") or info.get("prompt") or key),
-        "is_password": bool(info.get("password") or any(word in key.upper() for word in SECRET_WORDS)),
-        "is_set": bool(value),
-        "prompt": str(info.get("prompt") or key),
-        "redacted_value": redact(value),
-        "source": "dotenv" if key in disk_env else ("process" if os.environ.get(key) else None),
-        "tools": list(info.get("tools") or []),
-        "url": info.get("url"),
-    }
-
-items = {}
-for key, info in FALLBACKS.items():
-    items[key] = normalize_info(key, info, "provider")
-for key, info in OPTIONAL_ENV_VARS.items():
-    merged = dict(FALLBACKS.get(key, {}))
-    merged.update(info if isinstance(info, dict) else {})
-    items[key] = normalize_info(key, merged, merged.get("category") or "setting")
-for key in load_env().keys():
-    if key not in items:
-        items[key] = normalize_info(key, {}, "setting")
-
-print("__BEAUTY_HERMES_JSON__" + json.dumps(dict(sorted(items.items()))))
-`, {}, 20000);
-  }
-
-  if (url.pathname === '/api/env' && method === 'PUT') {
-    return runHermesPython(`
-import json, sys
-from hermes_cli.config import get_env_value, save_env_value
-
-payload = json.loads(sys.stdin.read() or "{}")
-key = str(payload.get("key") or "").strip()
-value = str(payload.get("value") or "").strip()
-if not key:
-    raise SystemExit("key is required")
-if not value:
-    raise SystemExit("value is required")
-
-save_env_value(key, value)
-stored = get_env_value(key) or ""
-redacted = "****" if len(stored) <= 8 else f"{stored[:4]}...{stored[-4:]}"
-print("__BEAUTY_HERMES_JSON__" + json.dumps({
-    "ok": True,
-    "key": key,
-    "is_set": bool(stored),
-    "redacted_value": redacted,
-    "source": "desktop-local-bridge",
-}))
-`, body || {}, 20000);
-  }
-
-  if (url.pathname === '/api/env' && method === 'DELETE') {
-    return runHermesPython(`
-import json, sys
-from hermes_cli.config import get_env_value, remove_env_value
-
-payload = json.loads(sys.stdin.read() or "{}")
-key = str(payload.get("key") or "").strip()
-if not key:
-    raise SystemExit("key is required")
-removed = bool(remove_env_value(key))
-value = get_env_value(key) or ""
-redacted = None if not value else ("****" if len(value) <= 8 else f"{value[:4]}...{value[-4:]}")
-print("__BEAUTY_HERMES_JSON__" + json.dumps({
-    "ok": True,
-    "key": key,
-    "removed": removed,
-    "is_set": bool(value),
-    "redacted_value": redacted,
-    "source": "desktop-local-bridge",
-}))
-`, body || {}, 20000);
-  }
-
-  if (url.pathname === '/api/env/reveal' && method === 'POST') {
-    return runHermesPython(`
-import json, sys
-from hermes_cli.config import get_env_value
-
-payload = json.loads(sys.stdin.read() or "{}")
-key = str(payload.get("key") or "").strip()
-if not key:
-    raise SystemExit("key is required")
-print("__BEAUTY_HERMES_JSON__" + json.dumps({
-    "key": key,
-    "value": get_env_value(key) or "",
-    "source": "desktop-local-bridge",
-}))
-`, body || {}, 20000);
-  }
-
-  if (url.pathname === '/api/providers/validate' && method === 'POST') {
-    return runHermesPython(`
-import json, sys
-from urllib.parse import urlparse
-from hermes_cli.config import get_env_value
-
-payload = json.loads(sys.stdin.read() or "{}")
-key = str(payload.get("key") or "").strip()
-value = str(payload.get("value") or "").strip() or (get_env_value(key) or "")
-if not key:
-    raise SystemExit("key is required")
-if not value:
-    print("__BEAUTY_HERMES_JSON__" + json.dumps({
-        "ok": False,
-        "reachable": False,
-        "message": "请输入凭据值，或先保存后再检查。",
-        "source": "desktop-local-bridge",
-    }))
-    raise SystemExit(0)
-if key.endswith("_URL") or key.endswith("_BASE_URL") or key.endswith("_ENDPOINT"):
-    parsed = urlparse(value)
-    ok = parsed.scheme in ("http", "https") and bool(parsed.netloc)
-    message = "URL 格式有效。" if ok else "URL 需要以 http:// 或 https:// 开头，并包含 host。"
-else:
-    ok = len(value) >= 6 and "\\n" not in value and "\\r" not in value
-    message = "凭据格式已通过本地检查；未发起网络请求。" if ok else "凭据太短或包含换行。"
-print("__BEAUTY_HERMES_JSON__" + json.dumps({
-    "ok": ok,
-    "reachable": False,
-    "message": message,
-    "source": "desktop-local-bridge",
-}))
-`, body || {}, 20000);
-  }
-
-  return null;
-}
-
 async function localSettingsApi(method, url, body) {
-  if (url.pathname === '/api/settings/runtime-policy' && (method === 'GET' || method === 'PUT')) {
-    return runHermesPython(`
-import json, sys
-from hermes_cli.config import load_config, save_config
-
-payload = json.loads(sys.stdin.read() or "{}")
-cfg = load_config()
-agent = cfg.get("agent")
-if not isinstance(agent, dict):
-    agent = {}
-    cfg["agent"] = agent
-
-def _to_int(value, name, minimum, maximum):
-    if value is None or value == "":
-        raise SystemExit(f"{name} is required")
-    try:
-        parsed = int(value)
-    except Exception:
-        raise SystemExit(f"{name} must be an integer")
-    if parsed < minimum or parsed > maximum:
-        raise SystemExit(f"{name} must be between {minimum} and {maximum}")
-    return parsed
-
-def _to_bool(value, name):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in ("1", "true", "yes", "on"):
-            return True
-        if text in ("0", "false", "no", "off"):
-            return False
-    raise SystemExit(f"{name} must be a boolean")
-
-def _tool_policy(value):
-    if value is True:
-        return "always"
-    if value is False:
-        return "off"
-    if value == "auto":
-        return "auto"
-    return "custom"
-
-def _current_policy():
-    raw_tool_policy = agent.get("tool_use_enforcement", "auto")
-    return {
-        "max_turns": agent.get("max_turns"),
-        "gateway_timeout": agent.get("gateway_timeout"),
-        "gateway_timeout_warning": agent.get("gateway_timeout_warning"),
-        "clarify_timeout": agent.get("clarify_timeout"),
-        "tool_use_enforcement": _tool_policy(raw_tool_policy),
-        "tool_use_enforcement_custom": _tool_policy(raw_tool_policy) == "custom",
-        "task_completion_guidance": bool(agent.get("task_completion_guidance", True)),
-        "environment_probe": bool(agent.get("environment_probe", True)),
-        "image_input_mode": agent.get("image_input_mode", "auto"),
-        "source": "desktop-local-bridge",
-    }
-
-if "${method}" == "PUT":
-    numbers = {
-        "max_turns": (1, 500),
-        "gateway_timeout": (0, 7200),
-        "gateway_timeout_warning": (0, 7200),
-        "clarify_timeout": (30, 7200),
-    }
-    for key, bounds in numbers.items():
-        if key in payload:
-            agent[key] = _to_int(payload.get(key), key, bounds[0], bounds[1])
-    timeout = int(agent.get("gateway_timeout") or 0)
-    warning = int(agent.get("gateway_timeout_warning") or 0)
-    if timeout > 0 and warning > timeout:
-        raise SystemExit("gateway_timeout_warning must be <= gateway_timeout, or set gateway_timeout to 0")
-
-    if "tool_use_enforcement" in payload:
-        value = str(payload.get("tool_use_enforcement") or "").strip().lower()
-        if value == "auto":
-            agent["tool_use_enforcement"] = "auto"
-        elif value == "always":
-            agent["tool_use_enforcement"] = True
-        elif value == "off":
-            agent["tool_use_enforcement"] = False
-        elif value == "custom":
-            pass
-        else:
-            raise SystemExit("tool_use_enforcement must be auto, always, off, or custom")
-
-    for key in ("task_completion_guidance", "environment_probe"):
-        if key in payload:
-            agent[key] = _to_bool(payload.get(key), key)
-
-    if "image_input_mode" in payload:
-        value = str(payload.get("image_input_mode") or "").strip().lower()
-        if value not in ("auto", "native", "text"):
-            raise SystemExit("image_input_mode must be auto, native, or text")
-        agent["image_input_mode"] = value
-
-    save_config(cfg)
-
-print("__BEAUTY_HERMES_JSON__" + json.dumps(_current_policy()))
-`, body || {}, 20000);
-  }
-
-  if (url.pathname === '/api/settings/approval-policy' && (method === 'GET' || method === 'PUT')) {
-    return runHermesPython(`
-import json, sys
-from hermes_cli.config import load_config, save_config
-
-payload = json.loads(sys.stdin.read() or "{}")
-cfg = load_config()
-approvals = cfg.get("approvals")
-if not isinstance(approvals, dict):
-    approvals = {}
-    cfg["approvals"] = approvals
-
-def _to_int(value, name, minimum, maximum):
-    if value is None or value == "":
-        raise SystemExit(f"{name} is required")
-    try:
-        parsed = int(value)
-    except Exception:
-        raise SystemExit(f"{name} must be an integer")
-    if parsed < minimum or parsed > maximum:
-        raise SystemExit(f"{name} must be between {minimum} and {maximum}")
-    return parsed
-
-def _allowlist(value):
-    if isinstance(value, str):
-        rows = value.splitlines()
-    elif isinstance(value, list):
-        rows = value
-    else:
-        raise SystemExit("command_allowlist must be a list or newline-delimited string")
-    result = []
-    seen = set()
-    for item in rows:
-        text = str(item or "").strip()
-        if not text:
-            continue
-        if len(text) > 500:
-            raise SystemExit("command_allowlist entries must be <= 500 characters")
-        if text not in seen:
-            result.append(text)
-            seen.add(text)
-    if len(result) > 200:
-        raise SystemExit("command_allowlist can contain at most 200 entries")
-    return result
-
-def _current_policy():
-    raw_allowlist = cfg.get("command_allowlist") or []
-    if not isinstance(raw_allowlist, list):
-        raw_allowlist = []
-    return {
-        "mode": str(approvals.get("mode", "manual") or "manual"),
-        "timeout": approvals.get("timeout", 60),
-        "gateway_timeout": approvals.get("gateway_timeout", 300),
-        "cron_mode": str(approvals.get("cron_mode", "deny") or "deny"),
-        "command_allowlist": [str(item) for item in raw_allowlist],
-        "source": "desktop-local-bridge",
-    }
-
-if "${method}" == "PUT":
-    if "mode" in payload:
-        mode = str(payload.get("mode") or "").strip().lower()
-        if mode not in ("manual", "smart", "off"):
-            raise SystemExit("mode must be manual, smart, or off")
-        if mode == "off" and not bool(payload.get("mode_off_confirmed")):
-            raise SystemExit("mode=off requires explicit confirmation")
-        approvals["mode"] = mode
-
-    if "timeout" in payload:
-        approvals["timeout"] = _to_int(payload.get("timeout"), "timeout", 5, 600)
-
-    if "gateway_timeout" in payload:
-        approvals["gateway_timeout"] = _to_int(payload.get("gateway_timeout"), "gateway_timeout", 30, 3600)
-
-    if "cron_mode" in payload:
-        cron_mode = str(payload.get("cron_mode") or "").strip().lower()
-        if cron_mode not in ("deny", "approve"):
-            raise SystemExit("cron_mode must be deny or approve")
-        approvals["cron_mode"] = cron_mode
-
-    if "command_allowlist" in payload:
-        cfg["command_allowlist"] = _allowlist(payload.get("command_allowlist"))
-
-    save_config(cfg)
-
-print("__BEAUTY_HERMES_JSON__" + json.dumps(_current_policy()))
-`, body || {}, 20000);
-  }
-
   if (method === 'GET' && url.pathname === '/api/model/options') {
     return runHermesPython(`
 import json
@@ -2024,53 +1545,6 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps(payload))
 `, {}, 30000);
   }
 
-  if (method === 'GET' && url.pathname === '/api/model/auxiliary') {
-    return runHermesPython(`
-import json
-from hermes_cli.config import load_config
-
-AUX_TASK_SLOTS = (
-    "vision",
-    "web_extract",
-    "compression",
-    "skills_hub",
-    "approval",
-    "mcp",
-    "title_generation",
-    "triage_specifier",
-    "kanban_decomposer",
-    "profile_describer",
-    "curator",
-)
-
-cfg = load_config()
-aux_cfg = cfg.get("auxiliary", {})
-if not isinstance(aux_cfg, dict):
-    aux_cfg = {}
-
-tasks = []
-for slot in AUX_TASK_SLOTS:
-    slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
-    tasks.append({
-        "task": slot,
-        "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-        "model": str(slot_cfg.get("model", "") or ""),
-        "base_url": str(slot_cfg.get("base_url", "") or ""),
-    })
-
-model_cfg = cfg.get("model", {})
-if isinstance(model_cfg, dict):
-    main = {
-        "provider": str(model_cfg.get("provider", "") or ""),
-        "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
-    }
-else:
-    main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
-
-print("__BEAUTY_HERMES_JSON__" + json.dumps({"tasks": tasks, "main": main, "source": "desktop-local-bridge"}))
-`, {}, 20000);
-  }
-
   if (method === 'POST' && url.pathname === '/api/model/set') {
     return runHermesPython(`
 import json, sys
@@ -2079,87 +1553,20 @@ from hermes_cli.config import load_config, save_config
 scope = str(payload.get("scope") or "main").strip().lower()
 provider = str(payload.get("provider") or "").strip()
 model = str(payload.get("model") or "").strip()
-task = str(payload.get("task") or "").strip().lower()
-base_url = str(payload.get("base_url") or "").strip()
-AUX_TASK_SLOTS = (
-    "vision",
-    "web_extract",
-    "compression",
-    "skills_hub",
-    "approval",
-    "mcp",
-    "title_generation",
-    "triage_specifier",
-    "kanban_decomposer",
-    "profile_describer",
-    "curator",
-)
-if scope not in ("main", "auxiliary"):
-    raise SystemExit("scope must be main or auxiliary")
+if scope != "main":
+    raise SystemExit("Only main model assignment is supported by the desktop local bridge.")
+if not provider or not model:
+    raise SystemExit("provider and model are required")
 cfg = load_config()
-if scope == "main":
-    if not provider or not model:
-        raise SystemExit("provider and model are required")
-    model_cfg = cfg.get("model", {})
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-    model_cfg["provider"] = provider
-    model_cfg["default"] = model
-    model_cfg["name"] = model
-    if base_url:
-        model_cfg["base_url"] = base_url
-    cfg["model"] = model_cfg
-    save_config(cfg)
-    print("__BEAUTY_HERMES_JSON__" + json.dumps({
-        "ok": True,
-        "scope": scope,
-        "provider": provider,
-        "model": model,
-        "base_url": model_cfg.get("base_url", ""),
-        "source": "desktop-local-bridge",
-    }))
-    raise SystemExit(0)
-
-aux = cfg.get("auxiliary")
-if not isinstance(aux, dict):
-    aux = {}
-if task == "__reset__":
-    for slot in AUX_TASK_SLOTS:
-        slot_cfg = aux.get(slot)
-        if not isinstance(slot_cfg, dict):
-            slot_cfg = {}
-        slot_cfg["provider"] = "auto"
-        slot_cfg["model"] = ""
-        aux[slot] = slot_cfg
-    cfg["auxiliary"] = aux
-    save_config(cfg)
-    print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "scope": "auxiliary", "reset": True, "source": "desktop-local-bridge"}))
-    raise SystemExit(0)
-
-if not provider:
-    raise SystemExit("provider is required for auxiliary")
-targets = [task] if task else list(AUX_TASK_SLOTS)
-for slot in targets:
-    if slot not in AUX_TASK_SLOTS:
-        raise SystemExit(f"unknown auxiliary task: {slot}")
-    slot_cfg = aux.get(slot)
-    if not isinstance(slot_cfg, dict):
-        slot_cfg = {}
-    slot_cfg["provider"] = provider
-    slot_cfg["model"] = model
-    if base_url:
-        slot_cfg["base_url"] = base_url
-    aux[slot] = slot_cfg
-cfg["auxiliary"] = aux
+model_cfg = cfg.get("model", {})
+if not isinstance(model_cfg, dict):
+    model_cfg = {}
+model_cfg["provider"] = provider
+model_cfg["default"] = model
+model_cfg["name"] = model
+cfg["model"] = model_cfg
 save_config(cfg)
-print("__BEAUTY_HERMES_JSON__" + json.dumps({
-    "ok": True,
-    "scope": "auxiliary",
-    "tasks": targets,
-    "provider": provider,
-    "model": model,
-    "source": "desktop-local-bridge",
-}))
+print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "scope": scope, "provider": provider, "model": model, "source": "desktop-local-bridge"}))
 `, body || {}, 20000);
   }
 
@@ -2320,26 +1727,6 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "saved": 
 `, { name, env: body?.env || {} }, 20000);
   }
 
-  const toolsetPostSetupMatch = url.pathname.match(/^\/api\/tools\/toolsets\/([^/]+)\/post-setup$/);
-  if (method === 'POST' && toolsetPostSetupMatch) {
-    const name = decodeURIComponent(toolsetPostSetupMatch[1]);
-    const key = String(body?.key || '').trim();
-    await runHermesPython(`
-import json, sys
-payload = json.loads(sys.stdin.read() or "{}")
-from hermes_cli.tools_config import _get_effective_configurable_toolsets, valid_post_setup_keys
-name = str(payload.get("name") or "").strip()
-key = str(payload.get("key") or "").strip()
-valid_toolsets = {item[0] for item in _get_effective_configurable_toolsets()}
-if name not in valid_toolsets:
-    raise SystemExit(f"Unknown toolset: {name}")
-if key not in valid_post_setup_keys():
-    raise SystemExit(f"Unknown post-setup key: {key}")
-print("__BEAUTY_HERMES_JSON__" + json.dumps({"ok": True, "name": name, "key": key, "source": "desktop-local-bridge"}))
-`, { name, key }, 20000);
-    return spawnLocalHermesAction(['tools', 'post-setup', key], 'tools-post-setup');
-  }
-
   if (method === 'GET' && url.pathname === '/api/mcp/servers') {
     return runHermesPython(`
 import json
@@ -2458,108 +1845,6 @@ except Exception as exc:
     result = {"ok": False, "error": str(exc), "tools": [], "source": "desktop-local-bridge"}
 print("__BEAUTY_HERMES_JSON__" + json.dumps(result))
 `, { name }, 30000);
-  }
-
-  return null;
-}
-
-async function localFilesApi(method, url, body) {
-  if (method === 'GET' && url.pathname === '/api/files/preview') {
-    const requestedPath = url.searchParams.get('path') || '';
-    const cwd = url.searchParams.get('cwd') || '';
-    const filePath = resolveLocalPreviewPath(requestedPath, cwd);
-    if (!filePath) {
-      throw new Error('File path is required');
-    }
-
-    let stat;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      throw new Error(`File not found: ${requestedPath}`);
-    }
-
-    if (!stat.isFile()) {
-      throw new Error(`Not a file: ${requestedPath}`);
-    }
-
-    const mime = mimeFromPath(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const base = {
-      ext,
-      mime,
-      name: path.basename(filePath),
-      path: filePath,
-      requested_path: requestedPath,
-      size: stat.size,
-      source: 'desktop-local-bridge',
-    };
-
-    if (mime.startsWith('image/') && stat.size <= 8 * 1024 * 1024) {
-      const data = fs.readFileSync(filePath);
-      return {
-        ...base,
-        data_url: `data:${mime};base64,${data.toString('base64')}`,
-        kind: 'image',
-        ok: true,
-      };
-    }
-
-    if (
-      mime.startsWith('text/')
-      || [
-        '.cjs',
-        '.css',
-        '.js',
-        '.json',
-        '.jsx',
-        '.log',
-        '.md',
-        '.mdx',
-        '.mjs',
-        '.py',
-        '.rs',
-        '.sh',
-        '.toml',
-        '.ts',
-        '.tsx',
-        '.xml',
-        '.yaml',
-        '.yml',
-      ].includes(ext)
-    ) {
-      const maxBytes = 240000;
-      return {
-        ...base,
-        kind: mime === 'text/html' ? 'html' : 'text',
-        ok: true,
-        text: safeReadText(filePath, maxBytes),
-        truncated: stat.size > maxBytes,
-      };
-    }
-
-    return {
-      ...base,
-      kind: 'unsupported',
-      ok: true,
-    };
-  }
-
-  if (method === 'POST' && url.pathname === '/api/files/open') {
-    const filePath = resolveLocalPreviewPath(body?.path || '', body?.cwd || '');
-    if (!filePath || !fs.existsSync(filePath)) {
-      throw new Error('File not found');
-    }
-    const error = await shell.openPath(filePath);
-    if (error) {
-      throw new Error(error);
-    }
-
-    return {
-      ok: true,
-      path: filePath,
-      source: 'desktop-local-bridge',
-    };
   }
 
   return null;
@@ -2688,29 +1973,43 @@ function readHermesInventory() {
     : [];
 
   const sessions = Array.isArray(desktopSessions?.sessions) ? desktopSessions.sessions : [];
-  const platforms = gatewayState && typeof gatewayState === 'object' && gatewayState.platforms && typeof gatewayState.platforms === 'object'
-    ? Object.entries(gatewayState.platforms).map(([name, value]) => ({
-      name,
-      state: value && typeof value === 'object' && typeof value.state === 'string' ? value.state : 'unknown',
-      updatedAt: value && typeof value === 'object' && typeof value.updated_at === 'string' ? value.updated_at : '',
-    }))
-    : [];
   const channelCounts = channelDirectory && typeof channelDirectory === 'object' && channelDirectory.platforms && typeof channelDirectory.platforms === 'object'
     ? Object.fromEntries(Object.entries(channelDirectory.platforms).map(([name, rows]) => [name, Array.isArray(rows) ? rows.length : 0]))
     : {};
+  const messagingPairings = {
+    feishuApproved: pairingCount(hermesHome, 'feishu', 'approved'),
+    feishuPending: pairingCount(hermesHome, 'feishu', 'pending'),
+    weixinApproved: pairingCount(hermesHome, 'weixin', 'approved'),
+    weixinPending: pairingCount(hermesHome, 'weixin', 'pending'),
+  };
+  const runtimePlatforms = gatewayState && typeof gatewayState === 'object' && gatewayState.platforms && typeof gatewayState.platforms === 'object'
+    ? gatewayState.platforms
+    : {};
+  const platformNames = new Set([
+    ...Object.keys(runtimePlatforms),
+    ...Object.keys(channelCounts),
+    ...(messagingPairings.feishuApproved + messagingPairings.feishuPending > 0 ? ['feishu'] : []),
+    ...(messagingPairings.weixinApproved + messagingPairings.weixinPending > 0 ? ['weixin'] : []),
+  ]);
+  const platforms = [...platformNames].map((name) => {
+    const value = runtimePlatforms[name];
+    const runtimeState = value && typeof value === 'object' && typeof value.state === 'string' ? value.state : '';
+    const evidenceCount = (channelCounts[name] ?? 0)
+      + (name === 'feishu' ? messagingPairings.feishuApproved + messagingPairings.feishuPending : 0)
+      + (name === 'weixin' ? messagingPairings.weixinApproved + messagingPairings.weixinPending : 0);
+    return {
+      name,
+      state: runtimeState || (evidenceCount > 0 ? 'configured' : 'unknown'),
+      updatedAt: value && typeof value === 'object' && typeof value.updated_at === 'string' ? value.updated_at : '',
+    };
+  });
 
   return {
     config: {
-      clarifyTimeout: Number(yamlNestedValue(configText, 'agent', 'clarify_timeout')) || null,
       defaultModel: yamlNestedValue(configText, 'model', 'default'),
-      environmentProbe: yamlNestedValue(configText, 'agent', 'environment_probe'),
       gatewayTimeout: Number(yamlNestedValue(configText, 'agent', 'gateway_timeout')) || null,
-      gatewayTimeoutWarning: Number(yamlNestedValue(configText, 'agent', 'gateway_timeout_warning')) || null,
-      imageInputMode: yamlNestedValue(configText, 'agent', 'image_input_mode'),
       maxTurns: Number(yamlNestedValue(configText, 'agent', 'max_turns')) || null,
       provider: yamlNestedValue(configText, 'model', 'provider'),
-      taskCompletionGuidance: yamlNestedValue(configText, 'agent', 'task_completion_guidance'),
-      toolUseEnforcement: yamlNestedValue(configText, 'agent', 'tool_use_enforcement'),
       toolsets: yamlList(configText, 'toolsets'),
     },
     diagnostics: {
@@ -2725,12 +2024,7 @@ function readHermesInventory() {
     },
     messaging: {
       channelCounts,
-      pairings: {
-        feishuApproved: pairingCount(hermesHome, 'feishu', 'approved'),
-        feishuPending: pairingCount(hermesHome, 'feishu', 'pending'),
-        weixinApproved: pairingCount(hermesHome, 'weixin', 'approved'),
-        weixinPending: pairingCount(hermesHome, 'weixin', 'pending'),
-      },
+      pairings: messagingPairings,
       platforms,
       updatedAt: typeof gatewayState?.updated_at === 'string' ? gatewayState.updated_at : '',
     },
@@ -3139,58 +2433,21 @@ print("__BEAUTY_HERMES_JSON__" + json.dumps({
     return spawnLocalHermesAction(['update'], 'hermes-update');
   }
 
-  if (method === 'GET' && url.pathname === '/api/actions') {
-    return {
-      actions: listLocalActions(),
-      source: 'desktop-local-bridge',
-    };
-  }
-
-  const actionStopMatch = url.pathname.match(/^\/api\/actions\/([^/]+)\/stop$/);
-  if (method === 'POST' && actionStopMatch) {
-    const name = decodeURIComponent(actionStopMatch[1]);
-    const proc = localActionProcesses.get(name);
-    if (!proc) {
-      return {
-        exit_code: localActionResults.get(name)?.exitCode ?? null,
-        name,
-        ok: false,
-        running: false,
-        source: 'desktop-local-bridge',
-        status: 'not-running',
-      };
-    }
-    proc.kill('SIGTERM');
-    return {
-      name,
-      ok: true,
-      pid: proc.pid ?? null,
-      running: true,
-      source: 'desktop-local-bridge',
-      status: 'stopping',
-    };
-  }
-
   const actionMatch = url.pathname.match(/^\/api\/actions\/([^/]+)\/status$/);
   if (method === 'GET' && actionMatch) {
     const name = decodeURIComponent(actionMatch[1]);
-    const lines = Math.max(1, Math.min(Number(url.searchParams.get('lines') || 200), 2000));
-    const summary = localActionSummary(name);
+    const lines = Number(url.searchParams.get('lines') || 200);
+    const proc = localActionProcesses.get(name);
+    const result = localActionResults.get(name) || null;
+    const exitCode = proc ? proc.exitCode : result?.exitCode ?? null;
     return {
-      ...summary,
+      exit_code: exitCode,
       lines: tailLocalActionLog(name, lines),
+      name,
+      pid: proc?.pid ?? result?.pid ?? null,
+      running: Boolean(proc && exitCode === null),
       source: 'desktop-local-bridge',
     };
-  }
-
-  return null;
-}
-
-async function localClipboardApi(method, url, body) {
-  if (method === 'POST' && url.pathname === '/api/clipboard/write') {
-    const text = typeof body.text === 'string' ? body.text : '';
-    clipboard.writeText(text);
-    return { ok: true, bytes: Buffer.byteLength(text, 'utf8'), source: 'desktop-local-bridge' };
   }
 
   return null;
@@ -3209,16 +2466,14 @@ async function localApiFallback(request, error) {
 
   const localApis = [
     localSessionsApi,
+    localFilesApi,
     localSystemApi,
     localProfilesApi,
     localSkillsApi,
     localCronApi,
     localMessagingApi,
     localOnboardingApi,
-    localEnvApi,
     localSettingsApi,
-    localClipboardApi,
-    localFilesApi,
   ];
 
   for (const api of localApis) {
@@ -3301,14 +2556,27 @@ async function localApiFallback(request, error) {
     return {
       handled: true,
       value: {
-        platforms: inventory.messaging.platforms.map((platform) => ({
-          description: `${inventory.messaging.channelCounts[platform.name] ?? 0} 个频道 · ${platform.updatedAt || '未记录更新时间'}`,
-          enabled: platform.state !== 'disabled',
-          id: platform.name,
-          name: platform.name,
-          state: platform.state,
-          updated_at: platform.updatedAt,
-        })),
+        platforms: inventory.messaging.platforms.map((platform) => {
+          const channelCount = inventory.messaging.channelCounts[platform.name] ?? 0;
+          const pairingCountValue = platform.name === 'feishu'
+            ? inventory.messaging.pairings.feishuApproved + inventory.messaging.pairings.feishuPending
+            : platform.name === 'weixin'
+              ? inventory.messaging.pairings.weixinApproved + inventory.messaging.pairings.weixinPending
+              : 0;
+          const configured = channelCount > 0 || pairingCountValue > 0 || platform.state === 'connected' || platform.state === 'configured';
+          const state = platform.state === 'disabled' && configured ? 'configured' : platform.state;
+          return {
+            channel_count: channelCount,
+            configured,
+            description: `${channelCount} 个频道 · ${pairingCountValue} 个配对 · ${platform.updatedAt || '未记录更新时间'}`,
+            enabled: state !== 'disabled',
+            id: platform.name,
+            name: platform.name,
+            pairing_count: pairingCountValue,
+            state,
+            updated_at: platform.updatedAt,
+          };
+        }),
         source: 'desktop-local-bridge',
       },
     };
@@ -3336,8 +2604,6 @@ async function localApiFallback(request, error) {
     || url.pathname.startsWith('/api/skills')
     || url.pathname.startsWith('/api/cron/jobs')
     || url.pathname.startsWith('/api/messaging/platforms')
-    || url.pathname.startsWith('/api/env')
-    || url.pathname.startsWith('/api/providers/validate')
     || url.pathname.startsWith('/api/model')
     || url.pathname.startsWith('/api/tools/toolsets')
     || url.pathname.startsWith('/api/mcp/servers')
@@ -3352,45 +2618,7 @@ async function localApiFallback(request, error) {
 }
 
 async function desktopApi(request) {
-  const rawPath = String(request?.path || '');
-  const method = String(request?.method || 'GET').toUpperCase();
-  const preferLocal = [
-    '/api/profiles',
-    '/api/skills',
-    '/api/cron/jobs',
-    '/api/cron/delivery-targets',
-    '/api/messaging/platforms',
-    '/api/messaging/telegram/onboarding',
-    '/api/onboarding',
-    '/api/env',
-    '/api/providers/validate',
-    '/api/settings',
-    '/api/model',
-    '/api/tools/toolsets',
-    '/api/mcp/servers',
-    '/api/actions',
-    '/api/clipboard',
-    '/api/files',
-  ].some((prefix) => rawPath.startsWith(prefix));
-
-  if (process.env.BEAUTY_HERMES_DEBUG_API === '1') {
-    console.error(`[beauty-hermes] api ${method} ${rawPath} preferLocal=${preferLocal}`);
-  }
-
-  if (preferLocal) {
-    const fallback = await localApiFallback(request);
-    if (fallback.handled) {
-      if (process.env.BEAUTY_HERMES_DEBUG_API === '1') {
-        console.error(`[beauty-hermes] api ${method} ${rawPath} handled=local`);
-      }
-      return fallback.value;
-    }
-  }
-
   try {
-    if (process.env.BEAUTY_HERMES_DEBUG_API === '1') {
-      console.error(`[beauty-hermes] api ${method} ${rawPath} handled=gateway`);
-    }
     return await gatewayManager.api(request);
   } catch (error) {
     const fallback = await localApiFallback(request, error);
